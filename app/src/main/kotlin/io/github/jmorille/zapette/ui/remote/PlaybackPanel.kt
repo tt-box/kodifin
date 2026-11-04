@@ -89,7 +89,7 @@ fun PlaybackDetails(
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.semantics { contentDescription = "Vitesse : $speedLabel" },
                         )
-                        TextAction("Plus rapide", actions.faster)
+                        TextAction("Plus vite", actions.faster)
                     }
                 } else if (features.seekStep && fastKeys) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
