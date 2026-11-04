@@ -30,8 +30,14 @@ class FireTvController(
     )
     override val supportedKeys = KEYCODES.keys
 
+    /** Android 5.x : le script `input` réinterprète son argument (voir [textCommands]). */
+    @Volatile
+    private var legacyInput = false
+
     override suspend fun connect() {
-        shell.shell("echo ok")
+        // Vérifie la connexion et repère la version d'Android pour la saisie de texte.
+        val sdk = shell.shell("getprop ro.build.version.sdk").trim().toIntOrNull()
+        legacyInput = sdk != null && sdk <= LEGACY_INPUT_MAX_SDK
     }
 
     override suspend fun send(key: RemoteKey) {
@@ -40,7 +46,7 @@ class FireTvController(
     }
 
     override suspend fun sendText(text: String) {
-        textCommands(text).forEach { shell.shell(it) }
+        textCommands(text, legacyInput).forEach { shell.shell(it) }
     }
 
     override suspend fun playUrl(url: String, title: String?) {
@@ -94,15 +100,33 @@ class FireTvController(
             return "'" + value.replace("'", "'\\''") + "'"
         }
 
+        /** Dernière version (Android 5.1) dont le script `input` développe `$*` sans guillemets. */
+        const val LEGACY_INPUT_MAX_SDK = 22
+
         /**
-         * Traduit un texte en commandes `input text`. Contraintes de `input text` :
-         * - l'espace s'écrit `%s` et toute séquence `%s` littérale devient un espace, d'où la
-         *   coupure entre `%` et `s` en deux commandes ;
-         * - seul l'ASCII imprimable est accepté : les accents sont retirés (« télé » → « tele »),
-         *   les autres caractères sont refusés plutôt que d'être perdus silencieusement ;
-         * - un retour à la ligne devient la touche Entrée.
+         * Sous Android 5.x, `/system/bin/input` relance la classe Java avec `$*` non protégé :
+         * l'argument subit un second découpage et un développement des jokers (`*`, `?`, `[`),
+         * « ? » devenant par exemple le nom d'un fichier de la racine. On appelle alors la
+         * classe directement, comme le fait ce script, avec un argument correctement protégé.
          */
-        fun textCommands(text: String): List<String> {
+        private const val LEGACY_INPUT =
+            "CLASSPATH=/system/framework/input.jar app_process /system/bin com.android.commands.input.Input"
+
+        /**
+         * Traduit un texte en commandes `input text`. Deux niveaux d'interprétation :
+         * - le shell `sh -c` de l'appareil : chaque morceau est entouré de quotes simples
+         *   ([shellQuote]), ce qui neutralise espaces, `&`, `;`, `|`, `<`, `>`, `(`, `)`, `$`,
+         *   `` ` ``, `\`, `"`, `*`, `?`… ; la quote simple elle-même s'écrit `'\''` ;
+         * - `input text` (InputShellCommand, AOSP) : seule la séquence `%s` est spéciale et
+         *   devient un espace ; un `%` suivi d'autre chose reste littéral. L'espace (et la
+         *   tabulation) s'écrit donc `%s`, et une séquence « %s » réellement tapée est coupée
+         *   entre `%` et `s` en deux commandes, sans quoi elle deviendrait un espace.
+         *
+         * Seul l'ASCII imprimable est accepté : les accents sont retirés (« télé » → « tele »),
+         * les autres caractères sont refusés plutôt que d'être perdus silencieusement ; un
+         * retour à la ligne devient la touche Entrée.
+         */
+        fun textCommands(text: String, legacyInput: Boolean = false): List<String> {
             val ascii = Normalizer.normalize(text, Normalizer.Form.NFD).replace(COMBINING_MARKS, "")
             val unsupported = ascii.filter { it != '\n' && it != '\r' && it != '\t' && it !in ' '..'~' }
             if (unsupported.isNotEmpty()) {
@@ -110,22 +134,33 @@ class FireTvController(
                     "Caractères non pris en charge par la saisie ADB : ${unsupported.toSet().joinToString("")}",
                 )
             }
+            val input = if (legacyInput) LEGACY_INPUT else "input"
             val commands = mutableListOf<String>()
             ascii.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEachIndexed { index, line ->
                 if (index > 0) commands += "input keyevent $KEYCODE_ENTER"
-                val chunk = StringBuilder()
-                var previous: Char? = null
-                for (c in line.replace('\t', ' ')) {
-                    if (c == 's' && previous == '%') {
-                        commands += "input text ${shellQuote(chunk.toString())}"
-                        chunk.clear()
-                    }
-                    if (c == ' ') chunk.append("%s") else chunk.append(c)
-                    previous = c
-                }
-                if (chunk.isNotEmpty()) commands += "input text ${shellQuote(chunk.toString())}"
+                inputTextChunks(line).forEach { commands += "$input text ${shellQuote(it)}" }
             }
             return commands
+        }
+
+        /**
+         * Découpe une ligne en arguments pour `input text` : espaces encodés `%s`, et nouvel
+         * argument chaque fois qu'un `%` littéral précède un `s` littéral.
+         */
+        internal fun inputTextChunks(line: String): List<String> {
+            val chunks = mutableListOf<String>()
+            val chunk = StringBuilder()
+            var previous: Char? = null
+            for (c in line.replace('\t', ' ')) {
+                if (c == 's' && previous == '%') {
+                    chunks += chunk.toString()
+                    chunk.clear()
+                }
+                if (c == ' ') chunk.append("%s") else chunk.append(c)
+                previous = c
+            }
+            if (chunk.isNotEmpty()) chunks += chunk.toString()
+            return chunks
         }
 
         private val COMBINING_MARKS = Regex("\\p{Mn}+")

@@ -35,7 +35,18 @@ class DadbShell internal constructor(
     private val connector: () -> AdbLink,
 ) : AdbShell {
 
-    constructor(host: String, port: Int, keyDir: File) : this("$host:$port", { dadbLink(host, port, keyDir) })
+    /**
+     * [timeoutMs] : délai de connexion de l'appareil (réglage « Délai » du formulaire).
+     * [tls] : appareil appairé par « Débogage sans fil » (port `adb-tls-connect`), sinon ADB classique.
+     */
+    constructor(host: String, port: Int, keyDir: File, timeoutMs: Int = DEFAULT_TIMEOUT_MS, tls: Boolean = false) : this(
+        "$host:$port",
+        if (tls) {
+            { tlsLink(host, port, keyDir, timeoutMs) }
+        } else {
+            { dadbLink(host, port, keyDir, timeoutMs) }
+        },
+    )
 
     private val lock = Mutex()
 
@@ -93,20 +104,48 @@ class DadbShell internal constructor(
     }
 
     companion object {
-        internal const val CONNECT_TIMEOUT_MS = 5_000
+        /** Extra d'appareil : `"true"` si appairé par « Débogage sans fil » (connexion TLS). */
+        const val EXTRA_TLS = "adbTls"
 
-        /** Large : à la première connexion, l'utilisateur doit accepter la clé sur le téléviseur. */
-        internal const val SOCKET_TIMEOUT_MS = 30_000
+        /** Extra d'appareil : GUID annoncé par le téléviseur à l'appairage (information). */
+        const val EXTRA_GUID = "adbGuid"
 
-        private fun dadbLink(host: String, port: Int, keyDir: File): AdbLink {
-            val dadb = Dadb.create(host, port, AdbKeys.load(keyDir), CONNECT_TIMEOUT_MS, SOCKET_TIMEOUT_MS)
-            return object : AdbLink {
-                override fun shell(command: String): ShellResult =
-                    dadb.shell(command).let { ShellResult(it.allOutput, it.exitCode) }
+        /** Délai par défaut si l'appareil n'en précise pas. */
+        const val DEFAULT_TIMEOUT_MS = 5_000
 
-                override fun close() = dadb.close()
-            }
+        /**
+         * Minimum du délai de lecture en ADB classique : à la première connexion, l'utilisateur
+         * doit accepter la clé sur le téléviseur avant que celui-ci ne réponde.
+         */
+        internal const val KEY_APPROVAL_TIMEOUT_MS = 30_000
+
+        /** Minimum du délai de lecture en TLS : une commande (`am start`…) peut prendre quelques secondes. */
+        internal const val MIN_READ_TIMEOUT_MS = 10_000
+
+        /** Délais (connexion, lecture) dérivés du délai de l'appareil. */
+        internal fun timeouts(timeoutMs: Int, tls: Boolean): Pair<Int, Int> {
+            val connect = timeoutMs.coerceAtLeast(1)
+            // Appareil appairé : la clé est déjà autorisée, aucune confirmation à attendre.
+            val read = maxOf(connect, if (tls) MIN_READ_TIMEOUT_MS else KEY_APPROVAL_TIMEOUT_MS)
+            return connect to read
         }
+
+        private fun dadbLink(host: String, port: Int, keyDir: File, timeoutMs: Int): AdbLink {
+            val (connect, read) = timeouts(timeoutMs, tls = false)
+            return DadbLink(Dadb.create(host, port, AdbKeys.load(keyDir), connect, read))
+        }
+
+        private fun tlsLink(host: String, port: Int, keyDir: File, timeoutMs: Int): AdbLink {
+            val (connect, read) = timeouts(timeoutMs, tls = true)
+            return DadbLink(AdbTlsConnection.open(host, port, AdbIdentity.load(keyDir), connect, read))
+        }
+    }
+
+    private class DadbLink(private val dadb: Dadb) : AdbLink {
+        override fun shell(command: String): ShellResult =
+            dadb.shell(command).let { ShellResult(it.allOutput, it.exitCode) }
+
+        override fun close() = dadb.close()
     }
 }
 
