@@ -32,6 +32,36 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.cyclonedx)
+    alias(libs.plugins.kover)
+}
+
+// Couverture de code (Kover) : rapport agrégé de tous les modules, calculé localement en CI
+// (aucun service externe). `./gradlew koverXmlReport koverHtmlReport`.
+subprojects {
+    apply(plugin = "org.jetbrains.kotlinx.kover")
+}
+
+dependencies {
+    listOf(
+        ":app", ":core:model", ":feature:cast",
+        ":protocol:kodi", ":protocol:mediaserver", ":protocol:plex", ":protocol:upnp",
+        ":protocol:roku", ":protocol:airplay", ":protocol:firetv",
+    ).forEach { kover(project(it)) }
+}
+
+kover {
+    reports {
+        filters {
+            excludes {
+                // Code généré, sans logique écrite à la main.
+                classes(
+                    "*.BuildConfig", "*.R", "*.R\$*", "*.ComposableSingletons*",
+                    "*\$\$serializer", "*.Companion\$serializer",
+                )
+                annotatedBy("androidx.compose.ui.tooling.preview.Preview")
+            }
+        }
+    }
 }
 
 // Inventaire CycloneDX (scan CVE) : uniquement les bibliothèques réellement embarquées

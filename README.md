@@ -4,6 +4,7 @@
 [![Fusion auto Dependabot](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml)
 [![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/jmorille/zapette/security/dependabot)
 [![Scan CVE](https://img.shields.io/badge/CVE-OSV--Scanner-4285F4?logo=google&logoColor=white)](https://github.com/google/osv-scanner)
+[![Couverture](.github/badges/coverage.svg)](https://github.com/jmorille/zapette/actions/workflows/ci.yml)
 [![Traceurs](https://img.shields.io/badge/traceurs-0-brightgreen)](scripts/check-no-trackers.sh)
 
 [![Android](https://img.shields.io/badge/Android-8%2B%20%E2%86%92%2016%20(API%2036)-3DDC84?logo=android&logoColor=white)](app/build.gradle.kts)
@@ -72,11 +73,20 @@ Prérequis : JDK 17+ et SDK Android (plateforme 37 pour la compilation).
 ./gradlew test testDebugUnitTest lint assembleDebug
 ```
 
+Couverture de code (Kover, tous modules agrégés) :
+
+```bash
+./gradlew koverHtmlReport   # rapport : build/reports/kover/html/index.html
+```
+
 ## CI / sécurité
 
 - **CI** (`.github/workflows/ci.yml`) : tests unitaires, lint, build debug et release,
   contrôle anti-pistage, scan CVE (inventaire CycloneDX analysé par OSV-Scanner,
   aussi lancé chaque jour), soumission du graphe de dépendances pour les alertes Dependabot.
+- **Couverture** : rapport Kover agrégé publié en artefact `coverage` ; sur `main`, le badge
+  `.github/badges/coverage.svg` est recalculé et commité par la CI s'il change (aucun
+  service externe type Codecov : le code reste privé).
 - **Dependabot** (`.github/dependabot.yml`) : mises à jour Gradle (quotidiennes) et
   GitHub Actions (hebdomadaires), plus les mises à jour de sécurité. Une version n'est
   proposée que quelques jours après sa publication (`cooldown`), ce qui laisse le temps de

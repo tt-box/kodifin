@@ -2,6 +2,7 @@
 agp = "9.5.0"
 kotlin = "2.4.21"
 cyclonedx = "3.5.1"
+kover = "0.9.11"
 compose-bom = "2026.09.00"
 activity-compose = "1.13.0"
 core-ktx = "1.19.1"
@@ -50,3 +51,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 cyclonedx = { id = "org.cyclonedx.bom", version.ref = "cyclonedx" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
