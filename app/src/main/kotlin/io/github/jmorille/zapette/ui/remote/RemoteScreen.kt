@@ -482,12 +482,15 @@ private fun PhoneLayout(content: RemoteContent) {
 private fun RemotePage(content: RemoteContent) {
     BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (maxWidth > maxHeight) {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(
-                    Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-                ) { PlaybackHeader(content); VolumeFor(content) }
-                NavigationFor(content, Modifier.weight(1f).fillMaxHeight())
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ProgressFor(content)
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                    ) { if (content.playbackRows) TransportFor(content); VolumeFor(content) }
+                    NavigationFor(content, Modifier.weight(1f).fillMaxHeight())
+                }
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -507,10 +510,11 @@ private fun TabletPortraitLayout(content: RemoteContent) {
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
     PanelsEffect(content, RemoteLayout.TABLET_PORTRAIT, selected)
-    Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)) {
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    ProgressFor(content)
+    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)) {
         val remoteModifier = if (tabs.isEmpty()) Modifier.widthIn(max = 560.dp) else Modifier.weight(1f)
         Column(remoteModifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            content.state.playback?.let { BannerFor(content) }
             NavigationFor(content, Modifier.weight(1f).fillMaxWidth())
             if (content.playbackRows) TransportFor(content)
             VolumeFor(content)
@@ -518,6 +522,7 @@ private fun TabletPortraitLayout(content: RemoteContent) {
         if (tabs.isNotEmpty()) {
             SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight())
         }
+    }
     }
 }
 
@@ -528,12 +533,14 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
     PanelsEffect(content, RemoteLayout.TABLET_LANDSCAPE, selected)
-    Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    ProgressFor(content)
+    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(
             Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            PlaybackHeader(content)
+            if (content.playbackRows) TransportFor(content)
             VolumeFor(content)
             PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
         }
@@ -549,6 +556,7 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
         if (tabs.isNotEmpty()) {
             SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight())
         }
+    }
     }
 }
 
@@ -598,6 +606,27 @@ private fun BannerFor(content: RemoteContent) {
         canSeek = Capability.SEEK in content.state.capabilities,
         onSeek = content.actions.seekTo,
         details = content.state.mediaDetails,
+    )
+}
+
+/** Avancement pleine largeur (titre, curseur précis, chapitres) pour les dispositions larges. */
+@Composable
+private fun ProgressFor(content: RemoteContent) {
+    val playback = content.state.playback ?: return
+    val details = content.state.mediaDetails
+    val status = when {
+        playback.isPlaying -> "En lecture"
+        playback.title != null -> "En pause"
+        else -> null
+    }
+    ProgressCard(
+        title = playback.title,
+        status = status,
+        positionMs = playback.positionMs,
+        durationMs = playback.durationMs,
+        chapters = details?.chapters.orEmpty(),
+        canSeek = Capability.SEEK in content.state.capabilities,
+        onSeek = content.actions.seekTo,
     )
 }
 

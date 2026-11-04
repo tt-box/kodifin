@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.mediaserver
 
+import io.github.jmorille.zapette.model.Chapter
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
@@ -410,6 +411,9 @@ class MediaServerController(
                 ?: state?.shuffleMode?.let { it.equals("Shuffle", true) },
             speed = if (state?.isPaused == true) 0 else 1,
             chapterCount = chapters(session).size,
+            chapters = chapters(session)
+                .map { Chapter(it.startPositionTicks / 10_000, it.name?.trim()?.takeIf(String::isNotEmpty)) }
+                .sortedBy { it.startMs },
         )
     }
 

@@ -156,30 +156,7 @@ fun NowPlayingBanner(
             if (status.isNotEmpty()) {
                 Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
             }
-            if (playback.durationMs > 0) {
-                val slider = remember { RemoteSliderState(tolerance = SEEK_TOLERANCE_MS) }
-                val remote = playback.positionMs.toFloat()
-                LaunchedEffect(remote) { slider.onRemoteValue(remote) }
-                PendingExpiry(slider)
-                val duration = playback.durationMs.toFloat()
-                val shown = slider.displayed(remote).coerceIn(0f, duration)
-                Slider(
-                    value = shown,
-                    onValueChange = slider::onDrag,
-                    onValueChangeFinished = { slider.onDragFinished()?.let { onSeek(it.toLong()) } },
-                    valueRange = 0f..duration,
-                    enabled = canSeek,
-                    modifier = Modifier.semantics { contentDescription = "Position de lecture" },
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatHms(shown.toLong()), style = MaterialTheme.typography.labelMedium)
-                    Text(
-                        "−" + formatHms(playback.durationMs - shown.toLong()),
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.semantics { contentDescription = "Temps restant ${formatHms(playback.durationMs - shown.toLong())}" },
-                    )
-                }
-            }
+            MediaProgress(playback.positionMs, playback.durationMs, details?.chapters.orEmpty(), canSeek, onSeek)
         }
     }
 }
@@ -376,7 +353,7 @@ private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifie
 
 /** Abandonne la valeur en attente si l'appareil ne la confirme pas à temps. */
 @Composable
-private fun PendingExpiry(slider: RemoteSliderState) {
+internal fun PendingExpiry(slider: RemoteSliderState) {
     val pending = slider.pending
     LaunchedEffect(pending) {
         if (pending != null) {
@@ -386,5 +363,5 @@ private fun PendingExpiry(slider: RemoteSliderState) {
     }
 }
 
-private const val SEEK_TOLERANCE_MS = 3_000f
+internal const val SEEK_TOLERANCE_MS = 3_000f
 private const val PENDING_TIMEOUT_MS = 4_000L

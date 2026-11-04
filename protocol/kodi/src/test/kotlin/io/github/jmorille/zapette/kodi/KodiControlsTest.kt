@@ -244,9 +244,9 @@ class KodiControlsTest {
                 call(
                     KodiMethod.PLAYER_GET_PROPERTIES,
                     """{"playerid":1,"properties":["speed","repeat","shuffled","audiostreams","currentaudiostream",
-                    "subtitles","currentsubtitle","subtitleenabled"]}""",
+                    "subtitles","currentsubtitle","subtitleenabled","totaltime"]}""",
                 ),
-                call(KodiMethod.XBMC_GET_INFO_LABELS, """{"labels":["Player.ChapterCount"]}"""),
+                call(KodiMethod.XBMC_GET_INFO_LABELS, """{"labels":["Player.ChapterCount","Player.Chapters"]}"""),
             ),
             stub.commands(),
         )

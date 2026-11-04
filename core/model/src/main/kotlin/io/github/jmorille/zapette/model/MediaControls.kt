@@ -6,6 +6,9 @@ package io.github.jmorille.zapette.model
  * que [PersistsCredentials] et [DescribesServer]. Aucun envoi ailleurs qu'à l'appareil piloté.
  */
 
+/** Chapitre du média en cours : début (ms depuis le début du média) et nom éventuel. */
+data class Chapter(val startMs: Long, val name: String? = null)
+
 /** Piste audio ou de sous-titres du média en cours. [id] : identifiant propre au protocole. */
 data class MediaTrack(val id: Int, val label: String, val language: String? = null)
 
@@ -23,6 +26,8 @@ data class MediaDetails(
     /** Vitesse de lecture (1 = normale, 0 = pause, négative = retour rapide). */
     val speed: Int = 1,
     val chapterCount: Int = 0,
+    /** Chapitres positionnés (triés), si le protocole les publie ; sinon seul [chapterCount] est connu. */
+    val chapters: List<Chapter> = emptyList(),
 )
 
 /** Pistes audio / sous-titres. */

@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.Chapter
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
@@ -247,6 +248,7 @@ class KodiController(
             return MediaDetails(speed = 0) // lecteur arrêté entre les deux appels
         }
         val subtitlesOn = o["subtitleenabled"].primitive()?.booleanOrNull ?: false
+        val chapterInfo = chapterInfo(o["totaltime"]?.let(KodiClient::kodiTimeToMs) ?: 0)
         return MediaDetails(
             audioTracks = KodiLibrary.objects(o["audiostreams"]).mapNotNull { track(it, "Piste audio") },
             currentAudio = (o["currentaudiostream"] as? JsonObject)?.get("index").primitive()?.intOrNull,
@@ -260,17 +262,23 @@ class KodiController(
             },
             shuffle = o["shuffled"].primitive()?.booleanOrNull,
             speed = o["speed"].primitive()?.intOrNull ?: 0,
-            chapterCount = chapterCount(),
+            chapterCount = chapterInfo.first,
+            chapters = chapterInfo.second,
         )
     }
 
-    /** Kodi n'expose pas les chapitres dans `Player.GetProperties` : InfoLabel `Player.ChapterCount`. */
-    private suspend fun chapterCount(): Int = try {
-        client.infoLabels(listOf(CHAPTER_COUNT_LABEL))[CHAPTER_COUNT_LABEL]?.trim()?.toIntOrNull() ?: 0
+    /**
+     * Kodi n'expose pas les chapitres dans `Player.GetProperties` : InfoLabels `Player.ChapterCount`
+     * et `Player.Chapters` (débuts en pourcentage de la durée, séparés par des virgules ; Kodi 19+).
+     */
+    private suspend fun chapterInfo(durationMs: Long): Pair<Int, List<Chapter>> = try {
+        val labels = client.infoLabels(listOf(CHAPTER_COUNT_LABEL, CHAPTERS_LABEL))
+        val count = labels[CHAPTER_COUNT_LABEL]?.trim()?.toIntOrNull() ?: 0
+        count to parseChapterPercents(labels[CHAPTERS_LABEL], durationMs)
     } catch (_: RemoteException) {
-        0
+        0 to emptyList()
     } catch (_: UnsupportedActionException) {
-        0
+        0 to emptyList()
     }
 
     private fun track(o: JsonObject, fallback: String): MediaTrack? {
@@ -492,9 +500,21 @@ class KodiController(
         internal val DETAIL_PROPERTIES = listOf(
             "speed", "repeat", "shuffled",
             "audiostreams", "currentaudiostream",
-            "subtitles", "currentsubtitle", "subtitleenabled",
+            "subtitles", "currentsubtitle", "subtitleenabled", "totaltime",
         )
         internal const val CHAPTER_COUNT_LABEL = "Player.ChapterCount"
+        internal const val CHAPTERS_LABEL = "Player.Chapters"
+
+        /** `"0.00,12.5,40"` → débuts en ms ; vide si la durée est inconnue ou la valeur illisible. */
+        internal fun parseChapterPercents(raw: String?, durationMs: Long): List<Chapter> {
+            if (raw.isNullOrBlank() || durationMs <= 0) return emptyList()
+            return raw.split(',')
+                .mapNotNull { it.trim().toDoubleOrNull() }
+                .filter { it.isFinite() && it in 0.0..100.0 }
+                .map { Chapter((durationMs * it / 100.0).toLong()) }
+                .distinctBy { it.startMs }
+                .sortedBy { it.startMs }
+        }
         internal val QUEUE_PROPERTIES = listOf("title", "file", "showtitle", "artist")
 
         /** Première version JSON-RPC (Kodi 19) acceptant `Player.Seek {value:{step|seconds|time}}`. */

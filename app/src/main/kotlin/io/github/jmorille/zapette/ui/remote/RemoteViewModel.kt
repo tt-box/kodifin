@@ -396,10 +396,10 @@ class RemoteViewModel(
         val changed = titleSeen
         titleSeen = true
         lastTitle = title
-        if (!changed) return
         viewModelScope.launch {
-            if (RemotePanel.DETAILS in visiblePanels) refreshDetails()
-            if (RemotePanel.QUEUE in visiblePanels) refreshQueue()
+            // Pistes et chapitres : nécessaires à la barre d'avancement même volet fermé.
+            if (title != null) refreshDetails()
+            if (changed && RemotePanel.QUEUE in visiblePanels) refreshQueue()
         }
     }
 
