@@ -21,19 +21,32 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Chromecast / Google TV via le récepteur multimédia par défaut. Tous les appels SDK passent par
  * [main] (le thread principal en production) ; le SDK est atteint via [CastPlatform].
+ * [settings] est relu à chaque usage : un réglage modifié s'applique sans recréer le contrôleur.
  */
 class CastController internal constructor(
     override val device: Device,
     private val platform: CastPlatform,
     private val main: CoroutineContext,
     private val sessionTimeoutMs: Long = SESSION_TIMEOUT_MS,
+    private val settings: suspend () -> CastSettings = { CastSettings() },
 ) : RemoteController {
 
-    constructor(device: Device, context: Context) : this(device, SdkCastPlatform(context), Dispatchers.Main)
+    constructor(device: Device, context: Context, settings: suspend () -> CastSettings = { CastSettings() }) :
+        this(device, SdkCastPlatform(context), Dispatchers.Main, SESSION_TIMEOUT_MS, settings)
+
+    /** Réglages courants ; une lecture impossible (stockage illisible) retombe sur les valeurs par défaut. */
+    private suspend fun currentSettings(): CastSettings = try {
+        settings()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        CastSettings()
+    }
 
     override val capabilities = setOf(
         Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK, Capability.PLAY_URL, Capability.NOW_PLAYING,
@@ -119,6 +132,21 @@ class CastController internal constructor(
 
     override suspend fun connect() {
         session()
+        // Un média déjà en cours (lancé par une autre application) reçoit le style choisi ;
+        // un échec ici n'empêche pas la télécommande de fonctionner.
+        try {
+            applySubtitleStyle()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Style non appliqué : sans conséquence sur les commandes.
+        }
+    }
+
+    /** Applique le style de sous-titres des réglages au média en cours, s'il y en a un. */
+    suspend fun applySubtitleStyle() {
+        val style = currentSettings().subtitles
+        onMain { s -> s.media?.setTextTrackStyle(style) }
     }
 
     override suspend fun send(key: RemoteKey) {
@@ -142,7 +170,8 @@ class CastController internal constructor(
     }
 
     override suspend fun playUrl(url: String, title: String?) {
-        onMain { s -> s.media().load(url, CastMedia.contentType(url), title ?: url.substringAfterLast('/')) }
+        val options = CastLoadOptions.from(currentSettings())
+        onMain { s -> s.media().load(url, CastMedia.contentType(url), title ?: url.substringAfterLast('/'), options) }
     }
 
     override suspend fun setVolume(percent: Int) {
@@ -178,8 +207,17 @@ class CastController internal constructor(
         }
     }.flowOn(main)
 
-    /** Ne ferme que la session de cet appareil (pas celle qu'un autre écran aurait ouverte). */
+    /**
+     * Appelé par l'application en quittant la télécommande : ferme la session de cet appareil
+     * si le réglage « déconnexion automatique » est actif, sinon la laisse ouverte (la lecture
+     * continue sur le Chromecast).
+     */
     override suspend fun disconnect() {
+        if (currentSettings().autoDisconnect) endSession()
+    }
+
+    /** Ne ferme que la session de cet appareil (pas celle qu'un autre écran aurait ouverte). */
+    suspend fun endSession() {
         withContext(main) {
             runCatching {
                 platform.ready()

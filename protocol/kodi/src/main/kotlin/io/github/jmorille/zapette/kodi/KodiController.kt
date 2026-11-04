@@ -16,11 +16,16 @@ import okhttp3.OkHttpClient
 /**
  * Télécommande Kodi. Les commandes passent par HTTP (`/jsonrpc`) ; l'état peut
  * aussi être alimenté par le WebSocket (port 9090) quand il est disponible.
+ *
+ * Avec un [eventServer] (option `kodi_eventserver`), les touches de navigation et de lecture
+ * passent par l'Event Server UDP, plus réactif ; en cas d'échec d'envoi, repli sur JSON-RPC.
+ * Volume, texte, lecture d'URL et état restent en JSON-RPC.
  */
 class KodiController(
     override val device: Device,
     private val client: KodiClient,
     private val pollIntervalMs: Long = 1_000,
+    private val eventServer: KodiEventServer? = null,
 ) : RemoteController {
 
     override val capabilities = Capability.entries.toSet()
@@ -34,6 +39,20 @@ class KodiController(
 
     override suspend fun send(key: RemoteKey) {
         requireKey(key)
+        val events = eventServer
+        val button = EVENT_BUTTONS[key]
+        if (events != null && button != null) {
+            try {
+                events.sendButton(button)
+                return
+            } catch (_: RemoteException) {
+                // Échec UDP : repli sur JSON-RPC ci-dessous.
+            }
+        }
+        sendJsonRpc(key)
+    }
+
+    private suspend fun sendJsonRpc(key: RemoteKey) {
         when (key) {
             RemoteKey.UP -> client.input(KodiMethod.INPUT_UP)
             RemoteKey.DOWN -> client.input(KodiMethod.INPUT_DOWN)
@@ -103,8 +122,12 @@ class KodiController(
 
     override suspend fun disconnect() {
         // Sans effet pour HTTP ; ferme la connexion et libère les requêtes en attente
-        // pour un transport WebSocket.
-        client.close()
+        // pour un transport WebSocket. L'Event Server reçoit BYE.
+        try {
+            eventServer?.stop()
+        } finally {
+            client.close()
+        }
     }
 
     private suspend fun withPlayer(action: suspend (Int) -> Unit) {
@@ -116,6 +139,28 @@ class KodiController(
         const val EXTRA_USERNAME = "username"
         const val EXTRA_PASSWORD = "password"
 
+        /**
+         * Touches envoyées par l'Event Server, désignées par leur nom dans la table clavier
+         * (`KB`) de Kodi, dont les actions par défaut (keyboard.xml) correspondent aux appels
+         * JSON-RPC équivalents. HOME reste en JSON-RPC (pas de touche clavier dédiée par défaut).
+         */
+        internal val EVENT_BUTTONS: Map<RemoteKey, String> = mapOf(
+            RemoteKey.UP to "up",
+            RemoteKey.DOWN to "down",
+            RemoteKey.LEFT to "left",
+            RemoteKey.RIGHT to "right",
+            RemoteKey.SELECT to "enter",
+            RemoteKey.BACK to "backspace",
+            RemoteKey.MENU to "c",
+            RemoteKey.INFO to "i",
+            RemoteKey.PLAY_PAUSE to "space",
+            RemoteKey.STOP to "x",
+            RemoteKey.NEXT to "period",
+            RemoteKey.PREVIOUS to "comma",
+            RemoteKey.REWIND to "r",
+            RemoteKey.FAST_FORWARD to "f",
+        )
+
         fun create(device: Device, http: OkHttpClient): KodiController {
             val transport = KodiHttpTransport(
                 http,
@@ -123,7 +168,7 @@ class KodiController(
                 device.extras[EXTRA_USERNAME],
                 device.extras[EXTRA_PASSWORD],
             )
-            return KodiController(device, KodiClient(transport))
+            return KodiController(device, KodiClient(transport), eventServer = KodiEventServer.fromDevice(device))
         }
     }
 }

@@ -265,6 +265,9 @@ class UpnpRendererTest {
 
     @Volatile private var avtControl = "/AVT/control"
 
+    /** Simule un renderer qui refuse toute métadonnée DIDL non vide (faute UPnP 714). */
+    @Volatile private var rejectMetadata = false
+
     private fun description() = """<?xml version="1.0"?>
         <root xmlns="urn:schemas-upnp-org:device-1-0">
           <device>
@@ -295,6 +298,16 @@ class UpnpRendererTest {
                 soapRequests += request
                 val action = request.headers["SOAPACTION"]!!.substringAfter('#').trim('"')
                 return when (action) {
+                    "SetAVTransportURI" -> if (rejectMetadata && "<CurrentURIMetaData></CurrentURIMetaData>" !in request.body!!.utf8()) {
+                        MockResponse.Builder().code(500).body(
+                            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>""" +
+                                """<detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>714</errorCode>""" +
+                                "<errorDescription>Illegal MIME-type</errorDescription></UPnPError></detail>" +
+                                "</s:Fault></s:Body></s:Envelope>",
+                        ).build()
+                    } else {
+                        MockResponse.Builder().body(soapResponse(action, "")).build()
+                    }
                     "GetTransportInfo" -> {
                         transportGate?.await(5, TimeUnit.SECONDS)
                         if (transportFails) return error500()
@@ -337,8 +350,15 @@ class UpnpRendererTest {
         server.close()
     }
 
-    private fun controller(location: String = "/desc.xml", pollIntervalMs: Long = 0) = UpnpRendererController(
-        Device("u", "TV", DeviceKind.UPNP_RENDERER, server.hostName, server.port, mapOf("location" to server.url(location).toString())),
+    private fun controller(
+        location: String = "/desc.xml",
+        pollIntervalMs: Long = 0,
+        extras: Map<String, String> = emptyMap(),
+    ) = UpnpRendererController(
+        Device(
+            "u", "TV", DeviceKind.UPNP_RENDERER, server.hostName, server.port,
+            mapOf("location" to server.url(location).toString()) + extras,
+        ),
         OkHttpClient(),
         pollIntervalMs = pollIntervalMs,
     )
@@ -397,6 +417,39 @@ class UpnpRendererTest {
         assertTrue(body.contains("<CurrentURI>http://nas/film.mkv?a=1&amp;b=2</CurrentURI>"))
         assertTrue(body.contains("&lt;dc:title&gt;Film &amp;lt;1&amp;gt;&lt;/dc:title&gt;"))
         assertTrue(body.contains("video/x-matroska"))
+    }
+
+    @Test
+    fun `alternative didl uses a generic protocolInfo without dlna flags`() = runTest {
+        controller(extras = mapOf(UpnpRendererController.EXTRA_ALT_DIDL to "true")).playUrl("http://nas/film.mkv", "Film")
+        assertEquals(listOf("SetAVTransportURI", "Play"), actions())
+        val body = soapRequests.first().body!!.utf8()
+        assertTrue(body.contains("<CurrentURI>http://nas/film.mkv</CurrentURI>"))
+        assertTrue(body, body.contains("protocolInfo=&quot;http-get:*:*:*&quot;"))
+        assertFalse(body.contains("video/x-matroska"))
+        assertFalse(body.contains("DLNA.ORG"))
+        assertTrue(body.contains("&lt;upnp:class&gt;object.item.videoItem&lt;/upnp:class&gt;"))
+        assertTrue(body.contains("&lt;dc:title&gt;Film&lt;/dc:title&gt;"))
+    }
+
+    @Test
+    fun `alternative didl retries with empty metadata when the renderer refuses it`() = runTest {
+        rejectMetadata = true
+        controller(extras = mapOf(UpnpRendererController.EXTRA_ALT_DIDL to "true")).playUrl("http://nas/a.mp3", null)
+        assertEquals(listOf("SetAVTransportURI", "SetAVTransportURI", "Play"), actions())
+        assertTrue(soapRequests[0].body!!.utf8().contains("object.item.audioItem"))
+        assertTrue(soapRequests[1].body!!.utf8().contains("<CurrentURIMetaData></CurrentURIMetaData>"))
+    }
+
+    @Test
+    fun `standard mode keeps the typed metadata and surfaces the fault`() = runTest {
+        rejectMetadata = true
+        val fault = expectFailure<UpnpSoapFault> {
+            controller(extras = mapOf(UpnpRendererController.EXTRA_ALT_DIDL to "false")).playUrl("http://nas/film.mkv", "Film")
+        }
+        assertEquals("714", fault.errorCode)
+        assertEquals(listOf("SetAVTransportURI"), actions())
+        assertTrue(soapRequests.single().body!!.utf8().contains("http-get:*:video/x-matroska:*"))
     }
 
     @Test
