@@ -30,7 +30,19 @@ data class KodiAppProperties(val volume: Int, val muted: Boolean, val version: S
 /** Nom et version de l'application (ex. « Kodi », « 21.2 »), via `Application.GetProperties`. */
 data class KodiAppInfo(val name: String, val version: String?)
 
-data class KodiMediaItem(val id: Int?, val label: String, val type: String?)
+/**
+ * Élément en cours ou listé. Pour un épisode (`type` = `episode`), [showTitle], [season],
+ * [episode] et [tvShowId] sont renseignés si Kodi les connaît ; `null` sinon.
+ */
+data class KodiMediaItem(
+    val id: Int?,
+    val label: String,
+    val type: String?,
+    val showTitle: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val tvShowId: Int? = null,
+)
 
 /** API typée au-dessus d'un [KodiTransport]. */
 class KodiClient(private val transport: KodiTransport) {
@@ -54,6 +66,9 @@ class KodiClient(private val transport: KodiTransport) {
     }
 
     suspend fun ping(): Boolean = (call(KodiMethod.PING) as? JsonPrimitive)?.contentOrNull == "pong"
+
+    /** Téléchargeur d'images du transport HTTP (même hôte, mêmes identifiants) ; `null` pour un autre transport. */
+    internal val httpImages: KodiImageFetcher? get() = (transport as? KodiHttpTransport)?.images
 
     /** Ferme le transport sous-jacent (WebSocket notamment). */
     fun close() = transport.close()
@@ -156,14 +171,19 @@ class KodiClient(private val transport: KodiTransport) {
             KodiMethod.PLAYER_GET_ITEM,
             buildJsonObject {
                 put("playerid", playerId)
-                putJsonArray("properties") { add(JsonPrimitive("title")) }
+                putJsonArray("properties") { PLAYER_ITEM_PROPERTIES.forEach { add(JsonPrimitive(it)) } }
             },
         ).obj(KodiMethod.PLAYER_GET_ITEM)["item"].obj(KodiMethod.PLAYER_GET_ITEM)
         val title = item["title"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
+        // Kodi renvoie -1 (ou une chaîne vide) pour les champs sans objet : ignorés.
         return KodiMediaItem(
             id = item["id"].primitive()?.intOrNull,
             label = title ?: item["label"].primitive()?.contentOrNull.orEmpty(),
             type = item["type"].primitive()?.contentOrNull,
+            showTitle = item["showtitle"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() },
+            season = item["season"].primitive()?.intOrNull?.takeIf { it >= 0 },
+            episode = item["episode"].primitive()?.intOrNull?.takeIf { it >= 0 },
+            tvShowId = item["tvshowid"].primitive()?.intOrNull?.takeIf { it >= 0 },
         )
     }
 
@@ -369,6 +389,9 @@ class KodiClient(private val transport: KodiTransport) {
     private fun playerParams(playerId: Int) = buildJsonObject { put("playerid", playerId) }
 
     companion object {
+        /** Propriétés lues par `Player.GetItem` : titre et, pour un épisode, série, saison et numéro. */
+        internal val PLAYER_ITEM_PROPERTIES = listOf("title", "showtitle", "season", "episode", "tvshowid")
+
         /** Code JSON-RPC 2.0 « méthode introuvable ». */
         const val METHOD_NOT_FOUND = -32601
 

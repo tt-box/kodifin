@@ -113,7 +113,11 @@ class KodiClientRobustnessTest {
         val ok = ScriptedTransport(mapOf(KodiMethod.PING to "\"pong\""))
         KodiController(device, KodiClient(ok)).connect()
         // Version JSON-RPC lue une fois à la connexion (forme de Player.Seek) ; réponse invalide tolérée.
-        assertEquals(listOf(KodiMethod.PING, KodiMethod.VERSION), ok.calls.map { it.first })
+        // Le PVR est sondé (chaînes TV dans la recherche) ; réponse invalide = pas de PVR.
+        assertEquals(
+            listOf(KodiMethod.PING, KodiMethod.VERSION, KodiMethod.PVR_GET_CHANNEL_GROUPS),
+            ok.calls.map { it.first },
+        )
     }
 
     @Test

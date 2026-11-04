@@ -1,9 +1,12 @@
 package io.github.jmorille.zapette.kodi
 
 import io.github.jmorille.zapette.model.HttpStatusException
+import io.github.jmorille.zapette.model.DEFAULT_MAX_BODY_BYTES
 import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
 import io.github.jmorille.zapette.model.RemoteException
+import io.github.jmorille.zapette.model.await
 import io.github.jmorille.zapette.model.fetchString
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +38,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.io.IOException
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -89,6 +94,9 @@ class KodiHttpTransport(
 ) : KodiTransport {
     private val ids = AtomicInteger(1)
 
+    /** Images servies par le même serveur web, avec le même client et les mêmes identifiants. */
+    val images: KodiImageFetcher by lazy { KodiImageFetcher(client, baseUrl, username, password) }
+
     // Adresse validée une fois : un hôte saisi invalide donne une RemoteException, pas un crash.
     private val endpoint by lazy { (baseUrl.trimEnd('/') + "/jsonrpc").toHttpUrlOrNull() }
 
@@ -115,6 +123,72 @@ class KodiHttpTransport(
         val obj = runCatching { KodiJson.json.parseToJsonElement(body).jsonObject }
             .getOrElse { throw RemoteException("Réponse Kodi invalide", it) }
         return KodiJson.result(obj)
+    }
+}
+
+/**
+ * Téléchargement des images de Kodi par son serveur web : `GET {baseUrl}/image/{clé encodée}`,
+ * où la clé est un chemin d'image Kodi (`image://…`, valeurs de `art`, `thumbnail`, `fanart`).
+ *
+ * - Hôte : toujours [baseUrl] (l'appareil) ; la clé n'est qu'un segment de chemin encodé, elle ne
+ *   peut donc pas désigner un autre hôte. Les redirections suivent la politique du [client]
+ *   (le client de l'application refuse celles qui changent d'hôte).
+ * - Authentification Basic de l'appareil (octets UTF-8, comme pour `/jsonrpc`).
+ * - Taille bornée à [maxBytes] (4 Mio par défaut) : au-delà, `null` sans lire le reste.
+ * - Kodi ne redimensionne pas via `/image/` (pas de paramètre de largeur garanti) : l'image est
+ *   renvoyée telle que mise en cache par Kodi ; le redimensionnement reste à l'affichage.
+ * - Échec (clé non `image://`, HTTP non 2xx, réseau, type non image, trop gros) : `null`.
+ */
+class KodiImageFetcher(
+    private val client: OkHttpClient,
+    private val baseUrl: String,
+    private val username: String? = null,
+    private val password: String? = null,
+    private val maxBytes: Long = DEFAULT_MAX_BODY_BYTES,
+) {
+    private val base by lazy { baseUrl.trimEnd('/').toHttpUrlOrNull() }
+
+    /** Octets de l'image désignée par [imageKey], ou `null`. */
+    suspend fun fetch(imageKey: String): ByteArray? {
+        if (!imageKey.startsWith(IMAGE_SCHEME) || imageKey.length > MAX_KEY_LENGTH) return null
+        val root = base ?: return null
+        // URLEncoder code l'espace en « + » : « %20 » est décodé sans ambiguïté dans un chemin.
+        val segment = URLEncoder.encode(imageKey, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        val url = root.newBuilder().addPathSegment("image").addEncodedPathSegment(segment).build()
+        if (url.host != root.host || url.port != root.port) return null
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .apply {
+                if (!username.isNullOrEmpty()) {
+                    header("Authorization", Credentials.basic(username, password.orEmpty(), StandardCharsets.UTF_8))
+                }
+            }
+            .build()
+        return try {
+            client.newCall(request).await().use { response ->
+                if (!response.isSuccessful) return null
+                val body = response.body
+                val type = body.contentType()
+                if (type != null && type.type != "image") return null
+                if (body.contentLength() > maxBytes) return null
+                val source = body.source()
+                // Plus de maxBytes octets disponibles : refus sans lire le corps en entier.
+                if (source.request(maxBytes + 1)) return null
+                source.buffer.readByteArray().takeIf { it.isNotEmpty() }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: IOException) {
+            null
+        }
+    }
+
+    companion object {
+        const val IMAGE_SCHEME = "image://"
+
+        /** Garde-fou contre une clé démesurée (URL de requête). */
+        private const val MAX_KEY_LENGTH = 4096
     }
 }
 
