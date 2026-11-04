@@ -36,9 +36,11 @@ import io.github.jmorille.zapette.AppContainer
 import io.github.jmorille.zapette.container
 import io.github.jmorille.zapette.plex.PlexAccount
 import io.github.jmorille.zapette.plex.PlexIdentity
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -54,13 +56,46 @@ sealed interface PlexLinkState {
     data class Failed(val message: String) : PlexLinkState
 }
 
-class PlexLinkViewModel(private val container: AppContainer) : ViewModel() {
+/** Code de liaison plex.tv en attente de validation par l'utilisateur. */
+interface PlexPinRequest {
+    val code: String
+
+    /** Jeton du compte une fois le code validé, sinon `null`. */
+    suspend fun check(): String?
+}
+
+/** Dépendances du ViewModel, isolées pour les tests JVM (ni réseau ni DataStore). */
+interface PlexLinkDependencies {
+    val plexToken: Flow<String?>
+    suspend fun setPlexToken(token: String?)
+    suspend fun createPin(): PlexPinRequest
+}
+
+fun AppContainer.plexLinkDependencies(): PlexLinkDependencies = object : PlexLinkDependencies {
+    override val plexToken: Flow<String?> get() = devices.plexToken
+    override suspend fun setPlexToken(token: String?) = devices.setPlexToken(token)
+    override suspend fun createPin(): PlexPinRequest {
+        val account = PlexAccount(http, PlexIdentity(devices.installationId()))
+        val pin = account.createPin()
+        return object : PlexPinRequest {
+            override val code: String = pin.code
+            override suspend fun check(): String? = account.checkPin(pin)
+        }
+    }
+}
+
+class PlexLinkViewModel(
+    private val deps: PlexLinkDependencies,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val pollIntervalMs: Long = POLL_INTERVAL_MS,
+    private val maxPolls: Int = MAX_POLLS,
+) : ViewModel() {
     private val _state = MutableStateFlow<PlexLinkState>(PlexLinkState.Idle)
     val state: StateFlow<PlexLinkState> = _state
 
     init {
         viewModelScope.launch {
-            if (container.devices.plexToken.first() != null) _state.value = PlexLinkState.Linked
+            if (deps.plexToken.first() != null) _state.value = PlexLinkState.Linked
         }
     }
 
@@ -75,30 +110,40 @@ class PlexLinkViewModel(private val container: AppContainer) : ViewModel() {
     private suspend fun link() {
         _state.value = PlexLinkState.Loading
         try {
-            val account = PlexAccount(container.http, PlexIdentity(container.devices.installationId()))
-            val pin = withContext(Dispatchers.IO) { account.createPin() }
+            val pin = withContext(io) { deps.createPin() }
             _state.value = PlexLinkState.WaitingForCode(pin.code)
-            repeat(150) { // ~5 minutes
-                delay(2_000)
-                val token = withContext(Dispatchers.IO) { account.checkPin(pin) }
+            repeat(maxPolls) { // 150 × 2 s : environ 5 minutes
+                delay(pollIntervalMs)
+                val token = withContext(io) { pin.check() }
                 if (token != null) {
-                    container.devices.setPlexToken(token)
+                    deps.setPlexToken(token)
                     _state.value = PlexLinkState.Linked
                     return
                 }
             }
             _state.value = PlexLinkState.Failed("Code expiré, recommencez.")
         } catch (e: CancellationException) {
-            // Écran quitté : l'annulation n'est pas un échec de liaison.
+            // Écran quitté ou liaison abandonnée : l'annulation n'est pas un échec de liaison.
             throw e
         } catch (e: Exception) {
             _state.value = PlexLinkState.Failed(e.message ?: "plex.tv injoignable")
         }
     }
 
+    /**
+     * Délie le compte. Une liaison en cours est d'abord annulée (et attendue) : sinon un code
+     * validé juste après réenregistrerait le jeton qu'on vient d'effacer.
+     */
     fun unlink() = viewModelScope.launch {
-        container.devices.setPlexToken(null)
+        linkJob?.let { it.cancel(); it.join() }
+        linkJob = null
+        deps.setPlexToken(null)
         _state.value = PlexLinkState.Idle
+    }
+
+    private companion object {
+        const val POLL_INTERVAL_MS = 2_000L
+        const val MAX_POLLS = 150
     }
 }
 
@@ -106,7 +151,7 @@ class PlexLinkViewModel(private val container: AppContainer) : ViewModel() {
 @Composable
 fun PlexLinkScreen(onDone: () -> Unit) {
     val context = LocalContext.current
-    val vm: PlexLinkViewModel = viewModel(factory = viewModelFactory { initializer { PlexLinkViewModel(context.container) } })
+    val vm: PlexLinkViewModel = viewModel(factory = viewModelFactory { initializer { PlexLinkViewModel(context.container.plexLinkDependencies()) } })
     val state by vm.state.collectAsStateWithLifecycle()
 
     Scaffold(

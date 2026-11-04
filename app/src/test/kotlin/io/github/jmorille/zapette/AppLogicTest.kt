@@ -7,7 +7,6 @@ import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.ui.config.ConfigValidation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,9 +37,9 @@ class ConfigValidationTest {
     @Test
     fun `validates host port and upnp location`() {
         assertNull(ConfigValidation.error(DeviceKind.KODI, "192.168.1.2", "8080", ""))
-        assertNotNull(ConfigValidation.error(DeviceKind.KODI, "bad host!", "8080", ""))
-        assertNotNull(ConfigValidation.error(DeviceKind.ROKU, "tv.local", "70000", ""))
-        assertNotNull(ConfigValidation.error(DeviceKind.UPNP_RENDERER, "", "", "ftp://x"))
+        assertEquals("Adresse invalide", ConfigValidation.error(DeviceKind.KODI, "bad host!", "8080", ""))
+        assertEquals("Port invalide", ConfigValidation.error(DeviceKind.ROKU, "tv.local", "70000", ""))
+        assertEquals("URL de description UPnP requise", ConfigValidation.error(DeviceKind.UPNP_RENDERER, "", "", "ftp://x"))
         assertNull(ConfigValidation.error(DeviceKind.UPNP_RENDERER, "", "", "http://10.0.0.3:1400/desc.xml"))
     }
 }

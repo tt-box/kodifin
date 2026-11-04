@@ -73,7 +73,7 @@ class DeviceFormTest {
 
     @Test
     fun `upnp device built from its description url`() {
-        val d = buildDevice(null, DeviceKind.UPNP_RENDERER, " ", "", "", "http://[fe80::1]:1400/d.xml", "", "")
+        val d = buildDevice(null, DeviceKind.UPNP_RENDERER, " ", "", "", "http://[fe80::1]:1400/d.xml", "", "").device
         assertEquals("[fe80::1]", d.host)
         assertEquals(1400, d.port)
         assertEquals("http://[fe80::1]:1400", d.baseUrl)
@@ -82,7 +82,7 @@ class DeviceFormTest {
 
     @Test
     fun `invalid upnp scheme is rejected`() {
-        assertTrue(ConfigValidation.error(DeviceKind.UPNP_RENDERER, "", "", "httpfoo") != null)
+        assertEquals("URL de description UPnP requise", ConfigValidation.error(DeviceKind.UPNP_RENDERER, "", "", "httpfoo"))
     }
 }
 
@@ -163,11 +163,12 @@ class RemoteViewModelTest {
         val controllers = mutableListOf<FakeController>()
         val saves = mutableListOf<Device>()
         var gate: CompletableDeferred<Unit>? = null
+        private var stored = device
         var failNext = false
-        override suspend fun loadDevice(id: String) = device.takeIf { it.id == id }
+        override suspend fun loadDevice(id: String) = stored.takeIf { it.id == id }
         override suspend fun createController(device: Device) =
             FakeController(device, gate).also { it.failConnect = failNext; controllers += it }
-        override suspend fun saveDevice(device: Device) { saves += device }
+        override suspend fun saveDevice(device: Device) { saves += device; stored = device }
         override val backgroundScope get() = scope
     }
 
@@ -241,10 +242,16 @@ class RemoteViewModelTest {
     fun `token is persisted without password, once`() = runTest(dispatcher) {
         val deps = Deps(this)
         val store = ViewModelStore()
-        newVm(deps, store, SavedStateHandle(), url = null)
+        val vm = newVm(deps, store, SavedStateHandle(), url = null)
         advanceUntilIdle()
         assertEquals(1, deps.saves.size)
         assertEquals(mapOf("username" to "u", "token" to "t"), deps.saves.single().extras)
+        // Reconnexion : l'appareil relu porte déjà ces extras, rien n'est réenregistré.
+        vm.retry()
+        advanceUntilIdle()
+        assertEquals(2, deps.controllers.size)
+        assertTrue(vm.state.value.connected)
+        assertEquals(1, deps.saves.size)
         store.clear()
         advanceUntilIdle()
     }

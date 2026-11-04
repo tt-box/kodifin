@@ -59,6 +59,10 @@ class RemoteViewModel(
     private val sharedUrl: String?,
     private val savedState: SavedStateHandle,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Pause avant de se réabonner à l'état de lecture après une erreur. */
+    private val playbackRetryDelayMs: Long = PLAYBACK_RETRY_DELAY_MS,
+    /** Délai au-delà duquel on abandonne une déconnexion qui ne rend pas la main. */
+    private val disconnectTimeoutMs: Long = DISCONNECT_TIMEOUT_MS,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(RemoteUiState())
@@ -72,6 +76,7 @@ class RemoteViewModel(
     private var controller: RemoteController? = null
     private var connectJob: Job? = null
     private var playbackJob: Job? = null
+    private var cleared = false
 
     init {
         connect()
@@ -102,6 +107,12 @@ class RemoteViewModel(
             }
             try {
                 val c = deps.createController(device)
+                // Création non interruptible terminée après onCleared : personne d'autre ne
+                // fermerait ce contrôleur.
+                if (cleared) {
+                    release(c)
+                    return@launch
+                }
                 controller = c
                 _state.update {
                     it.copy(device = device, supportedKeys = c.supportedKeys, capabilities = c.capabilities)
@@ -153,7 +164,7 @@ class RemoteViewModel(
             } catch (_: Exception) {
                 // L'appareil peut être momentanément indisponible : on réessaie plus tard.
             }
-            delay(3_000)
+            delay(playbackRetryDelayMs)
         }
     }
 
@@ -183,11 +194,12 @@ class RemoteViewModel(
     /** Fermeture dans une portée applicative : celle du ViewModel est déjà annulée ici. */
     private fun release(c: RemoteController) {
         deps.backgroundScope.launch {
-            withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) { runCatching { c.disconnect() } }
+            withTimeoutOrNull(disconnectTimeoutMs) { runCatching { c.disconnect() } }
         }
     }
 
     override fun onCleared() {
+        cleared = true
         controller?.let(::release)
         controller = null
         _messages.close()
@@ -196,5 +208,6 @@ class RemoteViewModel(
     private companion object {
         const val KEY_URL_SENT = "shared_url_sent"
         const val DISCONNECT_TIMEOUT_MS = 5_000L
+        const val PLAYBACK_RETRY_DELAY_MS = 3_000L
     }
 }
