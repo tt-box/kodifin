@@ -3,8 +3,10 @@ package io.github.jmorille.zapette.firetv
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.RemoteController
+import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.requireKey
+import java.text.Normalizer
 
 /** Exécution de commandes shell sur l'appareil (ADB). Abstraite pour les tests. */
 interface AdbShell {
@@ -37,12 +39,18 @@ class FireTvController(
     }
 
     override suspend fun sendText(text: String) {
-        // `input text` interprète les espaces comme séparateurs : on les encode en %s.
-        shell.shell("input text ${shellQuote(text.replace(" ", "%s"))}")
+        textCommands(text).forEach { shell.shell(it) }
     }
 
     override suspend fun playUrl(url: String, title: String?) {
-        shell.shell("am start -a android.intent.action.VIEW -d ${shellQuote(url)} -t ${shellQuote(mimeFor(url))}")
+        require(url.isNotBlank()) { "URL vide" }
+        val output = shell.shell(
+            "am start -a android.intent.action.VIEW -d ${shellQuote(url)} -t ${shellQuote(mimeFor(url))}",
+        )
+        // `am start` renvoie 0 même quand aucune application ne sait ouvrir l'URL.
+        output.lineSequence().firstOrNull { it.startsWith("Error") }?.let {
+            throw RemoteException("Lecture impossible sur ${device.name} : ${it.trim()}")
+        }
     }
 
     suspend fun launchApp(packageName: String) {
@@ -77,11 +85,52 @@ class FireTvController(
             RemoteKey.MUTE to 164,
         )
 
+        private const val KEYCODE_ENTER = 66
+
         /** Protège un argument pour `sh` : entoure de quotes simples et échappe celles du texte. */
-        fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+        fun shellQuote(value: String): String {
+            require('\u0000' !in value) { "Caractère nul interdit" }
+            return "'" + value.replace("'", "'\\''") + "'"
+        }
+
+        /**
+         * Traduit un texte en commandes `input text`. Contraintes de `input text` :
+         * - l'espace s'écrit `%s` et toute séquence `%s` littérale devient un espace, d'où la
+         *   coupure entre `%` et `s` en deux commandes ;
+         * - seul l'ASCII imprimable est accepté : les accents sont retirés (« télé » → « tele »),
+         *   les autres caractères sont refusés plutôt que d'être perdus silencieusement ;
+         * - un retour à la ligne devient la touche Entrée.
+         */
+        fun textCommands(text: String): List<String> {
+            val ascii = Normalizer.normalize(text, Normalizer.Form.NFD).replace(COMBINING_MARKS, "")
+            val unsupported = ascii.filter { it != '\n' && it != '\r' && it != '\t' && it !in ' '..'~' }
+            if (unsupported.isNotEmpty()) {
+                throw RemoteException(
+                    "Caractères non pris en charge par la saisie ADB : ${unsupported.toSet().joinToString("")}",
+                )
+            }
+            val commands = mutableListOf<String>()
+            ascii.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEachIndexed { index, line ->
+                if (index > 0) commands += "input keyevent $KEYCODE_ENTER"
+                val chunk = StringBuilder()
+                var previous: Char? = null
+                for (c in line.replace('\t', ' ')) {
+                    if (c == 's' && previous == '%') {
+                        commands += "input text ${shellQuote(chunk.toString())}"
+                        chunk.clear()
+                    }
+                    if (c == ' ') chunk.append("%s") else chunk.append(c)
+                    previous = c
+                }
+                if (chunk.isNotEmpty()) commands += "input text ${shellQuote(chunk.toString())}"
+            }
+            return commands
+        }
+
+        private val COMBINING_MARKS = Regex("\\p{Mn}+")
 
         fun mimeFor(url: String): String =
-            when (url.substringBefore('?').substringAfterLast('.', "").lowercase()) {
+            when (url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()) {
                 "mp3", "aac", "m4a", "flac", "ogg" -> "audio/*"
                 "jpg", "jpeg", "png" -> "image/*"
                 else -> "video/*"
