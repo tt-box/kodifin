@@ -33,8 +33,19 @@ data class Device(
 
     private fun hostForUrl(): String = if (':' in host && !host.startsWith("[")) "[$host]" else host
 
+    /** Les valeurs secrètes des extras (mots de passe, jetons…) n'apparaissent jamais dans les journaux. */
+    override fun toString(): String {
+        val safe = extras.mapValues { (k, v) -> if (isSecretKey(k)) "***" else v }
+        return "Device(id=$id, name=$name, kind=$kind, host=$host, port=$port, extras=$safe)"
+    }
+
     companion object {
         /** Identifiant stable pour un appareil saisi manuellement. */
         fun manualId(kind: DeviceKind, host: String, port: Int): String = "${kind.name}:$host:$port"
+
+        private val SECRET_MARKERS = listOf("pass", "token", "secret", "pin", "_enc", "auth")
+
+        /** Clé d'extra dont la valeur est un secret (mot de passe, jeton, empreinte chiffrée…). */
+        fun isSecretKey(key: String): Boolean = key.lowercase().let { k -> SECRET_MARKERS.any { it in k } && k != "tls_pin" }
     }
 }
