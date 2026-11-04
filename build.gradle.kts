@@ -9,9 +9,9 @@ buildscript {
     dependencies {
         constraints {
             listOf(
-                "org.bouncycastle:bcprov-jdk18on:1.85",
-                "org.bouncycastle:bcpkix-jdk18on:1.85",
-                "org.bouncycastle:bcutil-jdk18on:1.85",
+                "org.bouncycastle:bcprov-jdk18on:1.86",
+                "org.bouncycastle:bcpkix-jdk18on:1.86",
+                "org.bouncycastle:bcutil-jdk18on:1.86",
                 "com.google.guava:guava:33.7.2-jre",
                 "com.fasterxml.jackson.core:jackson-core:2.22.3",
                 "com.fasterxml.jackson.core:jackson-databind:2.22.3",
