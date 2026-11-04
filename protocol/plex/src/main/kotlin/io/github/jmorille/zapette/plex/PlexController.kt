@@ -24,6 +24,9 @@ import kotlin.time.TimeSource
 /**
  * Contrôle direct d'un lecteur Plex (Plex HTPC, Plex pour TV…) via l'API
  * « Remote Control » exposée sur le port 32500 du lecteur.
+ *
+ * L'extra [EXTRA_SCHEME] = `https` fait passer les appels en HTTPS ; la vérification du
+ * certificat (éventuellement auto-signé) relève du client [http] fourni par l'appelant.
  */
 class PlexController(
     override val device: Device,
@@ -34,7 +37,7 @@ class PlexController(
     override val capabilities = setOf(Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK)
     override val supportedKeys = COMMANDS.keys + setOf(RemoteKey.VOLUME_UP, RemoteKey.VOLUME_DOWN)
 
-    private val base: HttpUrl? = device.baseUrl.toHttpUrlOrNull()
+    private val base: HttpUrl? = baseUrl(device).toHttpUrlOrNull()
     private val commandId = AtomicInteger(0)
 
     /** Volume connu (0–100) ; -1 tant qu'il n'a pas été lu sur le lecteur ni fixé. */
@@ -50,8 +53,9 @@ class PlexController(
     private val token: String? = device.extras[EXTRA_TOKEN]?.ifBlank { null }
 
     /**
-     * Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local : l'API du lecteur
-     * est en HTTP clair, l'envoyer à un hôte public l'exposerait.
+     * Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local, en HTTP comme en
+     * HTTPS : un certificat auto-signé accepté par l'appelant n'authentifie pas l'hôte, et
+     * l'envoyer à un hôte public l'exposerait.
      */
     private fun request(url: HttpUrl): Request.Builder {
         val builder = identity.apply(Request.Builder().url(url))
@@ -120,6 +124,9 @@ class PlexController(
     companion object {
         const val EXTRA_TOKEN = "token"
         const val EXTRA_CLIENT_ID = "clientIdentifier"
+
+        /** Schéma des appels au lecteur : `https` ou, par défaut, `http`. */
+        const val EXTRA_SCHEME = "scheme"
         const val GDM_ADDRESS = "239.0.0.250"
         const val GDM_PLAYER_PORT = 32412
         private const val MEDIA_TYPE = "video"
@@ -143,6 +150,14 @@ class PlexController(
             RemoteKey.REWIND to "/player/playback/stepBack",
             RemoteKey.FAST_FORWARD to "/player/playback/stepForward",
         )
+
+        /** URL racine du lecteur : `https://hôte:port` si l'extra [EXTRA_SCHEME] vaut `https`. */
+        internal fun baseUrl(device: Device): String =
+            if (device.extras[EXTRA_SCHEME].equals("https", ignoreCase = true)) {
+                "https://" + device.baseUrl.removePrefix("http://")
+            } else {
+                device.baseUrl
+            }
 
         private val ELEMENT = Regex("<(\\w+)\\s([^>]*)>")
         private val ATTRIBUTE = Regex("([\\w:-]+)\\s*=\\s*\"([^\"]*)\"")

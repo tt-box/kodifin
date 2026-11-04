@@ -78,20 +78,18 @@ class MediaServerController(
 
     /** Essaie les chemins de base usuels ; `true` (et client recalé) si l'un expose l'API. */
     private suspend fun detectBasePath(): Boolean {
-        val root = client.baseUrl ?: return false
-        if (client.isServer()) return false
-        for (path in BASE_PATH_CANDIDATES) {
-            val candidate = root.trimEnd('/') + path
-            if (client.isServer(candidate)) {
-                client.rebase(candidate)
+        if (client.baseUrl == null) return false
+        return when (val path = client.locateBasePath(BASE_PATH_CANDIDATES)) {
+            "" -> false
+            null -> throw RemoteException(
+                "${device.name} ne répond pas comme un serveur ${device.kind.label} à cette adresse : " +
+                    "vérifiez le port et le chemin de base (ex. /jellyfin) dans les options avancées",
+            )
+            else -> {
                 detectedBasePath = path
-                return true
+                true
             }
         }
-        throw RemoteException(
-            "${device.name} ne répond pas comme un serveur ${device.kind.label} à cette adresse : " +
-                "vérifiez le port et le chemin de base (ex. /jellyfin) dans les options avancées",
-        )
     }
 
     private suspend fun authenticateLocked() {
@@ -242,7 +240,7 @@ class MediaServerController(
         /** Chemin de base de l'API (« URL de base » du serveur), ex. `/jellyfin`. */
         const val EXTRA_BASE_PATH = "base_path"
 
-        private val BASE_PATH_CANDIDATES = listOf("/jellyfin", "/emby")
+        private val BASE_PATH_CANDIDATES = MediaServerClient.DEFAULT_BASE_PATHS
         private val BASE_PATH = Regex("^(/[A-Za-z0-9._~-]+)+$")
 
         /** Chemin de base normalisé (`/a/b`), ou `null` s'il est vide ou invalide. */
@@ -255,7 +253,7 @@ class MediaServerController(
          * URL du serveur : [Device.baseUrl] impose `http` ; le schéma `https` annoncé à la
          * découverte (extra [MediaServerDiscovery.EXTRA_SCHEME]) est respecté.
          */
-        internal fun baseUrl(device: Device): String {
+        fun baseUrl(device: Device): String {
             val root = if (device.extras[MediaServerDiscovery.EXTRA_SCHEME] == "https") {
                 "https://" + device.baseUrl.removePrefix("http://")
             } else {
