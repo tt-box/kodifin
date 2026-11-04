@@ -15,6 +15,7 @@ import io.github.jmorille.zapette.connection.forDevice
 import io.github.jmorille.zapette.kodi.KodiClient
 import io.github.jmorille.zapette.kodi.KodiController
 import io.github.jmorille.zapette.kodi.KodiHttpTransport
+import io.github.jmorille.zapette.kodi.KodiImageFetcher
 import io.github.jmorille.zapette.kodi.KodiWebSocketTransport
 import io.github.jmorille.zapette.mediaserver.MediaServerController
 import io.github.jmorille.zapette.model.Device
@@ -73,14 +74,18 @@ class ControllerFactory(
     fun httpFor(device: Device): OkHttpClient = http.forDevice(device)
 
     private fun kodi(device: Device, http: OkHttpClient): RemoteController {
-        val transport = DeviceOptions.kodiWebSocketUrl(device)?.let { KodiWebSocketTransport(http, it) }
-            ?: KodiHttpTransport(
-                http,
-                DeviceOptions.httpBaseUrl(device),
-                device.extras[KodiController.EXTRA_USERNAME],
-                device.extras[KodiController.EXTRA_PASSWORD],
-            )
-        return KodiController(device, KodiClient(transport), eventServer = KodiEventServer.fromDevice(device))
+        val user = device.extras[KodiController.EXTRA_USERNAME]
+        val pass = device.extras[KodiController.EXTRA_PASSWORD]
+        val wsUrl = DeviceOptions.kodiWebSocketUrl(device)
+        val transport = wsUrl?.let { KodiWebSocketTransport(http, it) }
+            ?: KodiHttpTransport(http, DeviceOptions.httpBaseUrl(device), user, pass)
+        // WebSocket : images via le serveur web HTTP du même appareil (en HTTP, le transport les fournit).
+        val images = if (wsUrl != null) KodiImageFetcher(http, DeviceOptions.httpBaseUrl(device), user, pass)::fetch else null
+        return KodiController(
+            device, KodiClient(transport),
+            eventServer = KodiEventServer.fromDevice(device),
+            imageFetcher = images,
+        )
     }
 
     private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {
