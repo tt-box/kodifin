@@ -39,6 +39,8 @@ import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import java.net.URI
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Types configurables à la main (Chromecast est uniquement découvert via MediaRouter). */
 private val MANUAL_KINDS = DeviceKind.entries.filter { it != DeviceKind.CHROMECAST }
@@ -50,11 +52,57 @@ object ConfigValidation {
     private val HOST = Regex("""^[A-Za-z0-9.\-:\[\]]+$""")
 
     fun error(kind: DeviceKind, host: String, port: String, location: String): String? = when {
-        kind == DeviceKind.UPNP_RENDERER && !location.startsWith("http") -> "URL de description UPnP requise"
+        kind == DeviceKind.UPNP_RENDERER && locationEndpoint(location) == null -> "URL de description UPnP requise"
         kind != DeviceKind.UPNP_RENDERER && !HOST.matches(host.trim()) -> "Adresse invalide"
         kind != DeviceKind.UPNP_RENDERER && (port.toIntOrNull() ?: 0) !in 1..65535 -> "Port invalide"
         else -> null
     }
+
+    /**
+     * Hôte et port d'une URL de description UPnP (`http(s)://hôte[:port]/…`), ou `null` si
+     * l'URL est invalide. Gère IPv6 (`[fe80::1]`) et le port implicite (80 / 443), ce que
+     * le découpage manuel sur « : » faisait mal.
+     */
+    fun locationEndpoint(location: String): Pair<String, Int>? {
+        val uri = runCatching { URI(location.trim()) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
+        val port = if (uri.port in 1..65535) uri.port else if (scheme == "https") 443 else 80
+        return host to port
+    }
+}
+
+/** Construction de l'appareil à partir du formulaire (logique pure, testée unitairement). */
+internal fun buildDevice(
+    prefill: Device?,
+    kind: DeviceKind,
+    name: String,
+    host: String,
+    port: String,
+    location: String,
+    username: String,
+    password: String,
+): Device {
+    val extras = buildMap {
+        prefill?.extras?.let(::putAll)
+        if (kind == DeviceKind.UPNP_RENDERER) put("location", location.trim())
+        if (usesCredentials(kind) && username.isNotBlank()) {
+            put("username", username.trim())
+            put("password", password)
+        }
+    }
+    val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
+    val effectiveHost = endpoint?.first ?: host.trim()
+    val effectivePort = endpoint?.second ?: port.toInt()
+    return Device(
+        id = prefill?.id ?: Device.manualId(kind, effectiveHost, effectivePort),
+        name = name.trim().ifBlank { "${kind.label} $effectiveHost" },
+        kind = kind,
+        host = effectiveHost,
+        port = effectivePort,
+        extras = extras,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,7 +121,8 @@ fun DeviceConfigScreen(prefillJson: String?, onSaved: (String) -> Unit, onBack: 
     var location by rememberSaveable { mutableStateOf(prefill?.extras?.get("location").orEmpty()) }
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -106,10 +155,17 @@ fun DeviceConfigScreen(prefillJson: String?, onSaved: (String) -> Unit, onBack: 
                     location, { location = it },
                     label = { Text("URL de description (http://…/description.xml)") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
-                OutlinedTextField(host, { host = it }, label = { Text("Adresse IP ou nom") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    host, { host = it },
+                    label = { Text("Adresse IP ou nom") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 OutlinedTextField(
                     port, { port = it.filter(Char::isDigit) },
                     label = { Text("Port") },
@@ -150,51 +206,24 @@ fun DeviceConfigScreen(prefillJson: String?, onSaved: (String) -> Unit, onBack: 
                     error = ConfigValidation.error(kind, host, port, location)
                     if (error != null) return@Button
                     val device = buildDevice(prefill, kind, name, host, port, location, username, password)
+                    // Désactive le bouton : un double appui enregistrait et ouvrait deux télécommandes.
+                    saving = true
                     scope.launch {
-                        context.container.devices.save(device)
-                        onSaved(device.id)
+                        try {
+                            context.container.devices.save(device)
+                            onSaved(device.id)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            error = "Enregistrement impossible : ${e.message.orEmpty()}"
+                        } finally {
+                            saving = false
+                        }
                     }
                 },
+                enabled = !saving,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Enregistrer et ouvrir") }
         }
     }
-}
-
-private fun buildDevice(
-    prefill: Device?,
-    kind: DeviceKind,
-    name: String,
-    host: String,
-    port: String,
-    location: String,
-    username: String,
-    password: String,
-): Device {
-    val extras = buildMap {
-        prefill?.extras?.let(::putAll)
-        if (kind == DeviceKind.UPNP_RENDERER) put("location", location.trim())
-        if (usesCredentials(kind) && username.isNotBlank()) {
-            put("username", username.trim())
-            put("password", password)
-        }
-    }
-    val effectiveHost = if (kind == DeviceKind.UPNP_RENDERER) {
-        location.substringAfter("://").substringBefore('/').substringBeforeLast(':')
-    } else {
-        host.trim()
-    }
-    val effectivePort = if (kind == DeviceKind.UPNP_RENDERER) {
-        location.substringAfter("://").substringBefore('/').substringAfterLast(':', "80").toIntOrNull() ?: 80
-    } else {
-        port.toInt()
-    }
-    return Device(
-        id = prefill?.id ?: Device.manualId(kind, effectiveHost, effectivePort),
-        name = name.ifBlank { "${kind.label} $effectiveHost" },
-        kind = kind,
-        host = effectiveHost,
-        port = effectivePort,
-        extras = extras,
-    )
 }

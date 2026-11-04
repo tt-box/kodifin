@@ -1,6 +1,8 @@
 package io.github.jmorille.zapette.ui.plex
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,12 +37,14 @@ import io.github.jmorille.zapette.container
 import io.github.jmorille.zapette.plex.PlexAccount
 import io.github.jmorille.zapette.plex.PlexIdentity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface PlexLinkState {
     data object Idle : PlexLinkState
@@ -60,7 +64,15 @@ class PlexLinkViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun start() = viewModelScope.launch {
+    private var linkJob: Job? = null
+
+    /** Démarre la liaison ; un second appel pendant l'attente du code est ignoré. */
+    fun start() {
+        if (linkJob?.isActive == true) return
+        linkJob = viewModelScope.launch { link() }
+    }
+
+    private suspend fun link() {
         _state.value = PlexLinkState.Loading
         try {
             val account = PlexAccount(container.http, PlexIdentity(container.devices.installationId()))
@@ -72,10 +84,13 @@ class PlexLinkViewModel(private val container: AppContainer) : ViewModel() {
                 if (token != null) {
                     container.devices.setPlexToken(token)
                     _state.value = PlexLinkState.Linked
-                    return@launch
+                    return
                 }
             }
             _state.value = PlexLinkState.Failed("Code expiré, recommencez.")
+        } catch (e: CancellationException) {
+            // Écran quitté : l'annulation n'est pas un échec de liaison.
+            throw e
         } catch (e: Exception) {
             _state.value = PlexLinkState.Failed(e.message ?: "plex.tv injoignable")
         }
@@ -121,7 +136,12 @@ fun PlexLinkScreen(onDone: () -> Unit) {
                     Text("Saisissez ce code sur plex.tv/link :", style = MaterialTheme.typography.bodyLarge)
                     Text(s.code, style = MaterialTheme.typography.displayMedium)
                     OutlinedButton(onClick = {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, "https://plex.tv/link".toUri()))
+                        // Aucun navigateur installé (profil restreint, TV) : ne pas planter.
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, "https://plex.tv/link".toUri()))
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(context, "Aucun navigateur : ouvrez plex.tv/link sur un autre appareil.", Toast.LENGTH_LONG).show()
+                        }
                     }) { Text("Ouvrir plex.tv/link") }
                     CircularProgressIndicator()
                 }

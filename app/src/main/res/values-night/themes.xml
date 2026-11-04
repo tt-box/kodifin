@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mode sombre : fond de fenêtre sombre dès le lancement (évite le flash blanc
+         avant le premier rendu Compose). -->
+    <style name="Theme.Zapette" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
