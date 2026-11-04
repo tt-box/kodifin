@@ -112,7 +112,8 @@ class KodiClientRobustnessTest {
         assertFailsWithMessage<RemoteException>("serveur Kodi") { controller.connect() }
         val ok = ScriptedTransport(mapOf(KodiMethod.PING to "\"pong\""))
         KodiController(device, KodiClient(ok)).connect()
-        assertEquals(listOf(KodiMethod.PING), ok.calls.map { it.first })
+        // Version JSON-RPC lue une fois à la connexion (forme de Player.Seek) ; réponse invalide tolérée.
+        assertEquals(listOf(KodiMethod.PING, KodiMethod.VERSION), ok.calls.map { it.first })
     }
 
     @Test

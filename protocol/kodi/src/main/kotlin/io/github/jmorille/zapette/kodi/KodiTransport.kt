@@ -5,6 +5,12 @@ import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.fetchString
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,6 +37,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Notification poussée par Kodi (WebSocket uniquement), ex. `Player.OnPlay`. */
@@ -42,6 +49,9 @@ class KodiRpcException(val code: Int, message: String) : RemoteException("Kodi $
 interface KodiTransport {
     suspend fun call(method: String, params: JsonObject? = null): JsonElement
     val notifications: Flow<KodiNotification> get() = emptyFlow()
+
+    /** `true` si [notifications] reflète réellement l'état de Kodi (WebSocket). */
+    val pushesNotifications: Boolean get() = false
     fun close() {}
 }
 
@@ -111,13 +121,30 @@ class KodiHttpTransport(
 /**
  * Transport WebSocket (port TCP 9090 par défaut) : requêtes corrélées par `id`
  * et notifications temps réel.
+ *
+ * - Délai de réponse : par défaut celui du client OkHttp fourni (dérivé par appareil par l'appelant).
+ * - Maintien de connexion : ping WebSocket toutes les [PING_INTERVAL_MS] si le client n'en a pas.
+ * - Connexion perdue : les appels en cours échouent aussitôt, puis la connexion est rétablie
+ *   automatiquement avec un délai croissant ([reconnectDelaysMs]) ; une notification
+ *   [RECONNECTED] est alors émise pour que l'état soit relu. [close] arrête définitivement.
  */
 class KodiWebSocketTransport(
     client: OkHttpClient,
-    url: String,
-    private val timeoutMs: Long = 10_000,
+    private val url: String,
+    private val timeoutMs: Long = defaultTimeoutMs(client),
+    private val reconnectDelaysMs: List<Long> = DEFAULT_RECONNECT_DELAYS_MS,
 ) : KodiTransport {
-    /** Erreur définitive une fois la connexion perdue ou fermée ; `null` tant qu'elle est utilisable. */
+    private val http: OkHttpClient =
+        if (client.pingIntervalMillis > 0) {
+            client
+        } else {
+            client.newBuilder().pingInterval(PING_INTERVAL_MS, TimeUnit.MILLISECONDS).build()
+        }
+
+    /** Intervalle de ping WebSocket effectif (maintien de connexion). */
+    internal val pingIntervalMs: Long get() = http.pingIntervalMillis.toLong()
+
+    /** Erreur définitive après [close] ; `null` tant que le transport est utilisable. */
     @Volatile
     private var closedError: RemoteException? = null
 
@@ -128,32 +155,77 @@ class KodiWebSocketTransport(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val notifications: Flow<KodiNotification> = _notifications.asSharedFlow()
+    override val pushesNotifications: Boolean get() = true
 
-    private val opened = CompletableDeferred<Unit>()
+    /** Portée des tentatives de reconnexion, annulée par [close]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val socket: WebSocket = client.newWebSocket(
-        Request.Builder().url(url).build(),
-        object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                opened.complete(Unit)
+    /** Tentatives de reconnexion consécutives sans succès (remis à zéro à l'ouverture). */
+    private val attempts = AtomicInteger(0)
+
+    /** Une connexion WebSocket ; remplacée à chaque reconnexion. */
+    private inner class Connection(val reconnect: Boolean) {
+        val opened = CompletableDeferred<Unit>()
+
+        @Volatile
+        var error: RemoteException? = null
+
+        val socket: WebSocket = http.newWebSocket(
+            Request.Builder().url(url).build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    attempts.set(0)
+                    opened.complete(Unit)
+                    if (reconnect) _notifications.tryEmit(KodiNotification(RECONNECTED, JsonNull))
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) =
+                    lost(RemoteException("WebSocket Kodi fermée", t))
+
+                // Fermeture demandée par Kodi : on répond pour terminer la poignée de main
+                // et on libère tout de suite les appels en attente.
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    lost(RemoteException("WebSocket Kodi fermée ($code)"))
+                    webSocket.close(1000, null)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) =
+                    lost(RemoteException("WebSocket Kodi fermée ($code)"))
+            },
+        )
+
+        /** Connexion perdue : échec des appels en attente puis reconnexion programmée (une seule fois). */
+        fun lost(e: RemoteException) {
+            val first = synchronized(this) {
+                if (error != null) {
+                    false
+                } else {
+                    error = e
+                    true
+                }
             }
+            opened.completeExceptionally(e)
+            failPending(e)
+            if (first) scheduleReconnect(this)
+        }
+    }
 
-            override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
+    @Volatile
+    private var connection: Connection = Connection(reconnect = false)
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) =
-                failAll(RemoteException("WebSocket Kodi fermée", t))
-
-            // Fermeture demandée par Kodi : on répond pour terminer la poignée de main
-            // et on libère tout de suite les appels en attente.
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                failAll(RemoteException("WebSocket Kodi fermée ($code)"))
-                webSocket.close(1000, null)
+    private fun scheduleReconnect(failed: Connection) {
+        if (closedError != null || reconnectDelaysMs.isEmpty()) return
+        val attempt = attempts.getAndIncrement()
+        val wait = reconnectDelaysMs[attempt.coerceAtMost(reconnectDelaysMs.lastIndex)]
+        scope.launch {
+            delay(wait)
+            synchronized(this@KodiWebSocketTransport) {
+                if (closedError == null && connection === failed) connection = Connection(reconnect = true)
             }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) =
-                failAll(RemoteException("WebSocket Kodi fermée ($code)"))
-        },
-    )
+        }
+    }
 
     internal fun handle(text: String) {
         val obj = runCatching { KodiJson.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
@@ -166,9 +238,7 @@ class KodiWebSocketTransport(
         _notifications.tryEmit(KodiNotification(method, obj["params"] ?: JsonNull))
     }
 
-    private fun failAll(error: RemoteException) {
-        if (closedError == null) closedError = error
-        opened.completeExceptionally(error)
+    private fun failPending(error: RemoteException) {
         // Retrait un par un : une entrée ajoutée pendant le parcours n'est pas perdue sans réponse.
         pending.keys.forEach { id -> pending.remove(id)?.completeExceptionally(error) }
     }
@@ -178,14 +248,16 @@ class KodiWebSocketTransport(
         val deferred = CompletableDeferred<JsonObject>()
         pending[id] = deferred
         try {
-            // Revérifié après l'enregistrement : couvre une fermeture concurrente de failAll().
+            val conn = connection
+            // Revérifié après l'enregistrement : couvre une fermeture ou une perte concurrente.
             closedError?.let { throw it }
+            conn.error?.let { throw it }
             // withTimeoutOrNull plutôt que withTimeout : une TimeoutCancellationException
             // serait prise pour une annulation et silencieusement ignorée par l'appelant.
             val response = withTimeoutOrNull(timeoutMs) {
-                opened.await()
-                if (!socket.send(KodiJson.request(id, method, params))) {
-                    throw closedError ?: RemoteException("Envoi WebSocket impossible")
+                conn.opened.await()
+                if (!conn.socket.send(KodiJson.request(id, method, params))) {
+                    throw conn.error ?: closedError ?: RemoteException("Envoi WebSocket impossible")
                 }
                 deferred.await()
             } ?: throw RemoteException("Kodi n'a pas répondu à $method dans le délai imparti")
@@ -196,8 +268,27 @@ class KodiWebSocketTransport(
     }
 
     override fun close() {
-        failAll(RemoteException("WebSocket Kodi fermée"))
+        val error = RemoteException("WebSocket Kodi fermée")
+        synchronized(this) { if (closedError == null) closedError = error }
+        scope.cancel()
+        val conn = connection
+        conn.opened.completeExceptionally(error)
+        failPending(error)
         // Fermeture propre ; OkHttp coupe de lui-même si Kodi ne répond pas à la trame de fermeture.
-        socket.close(1000, null)
+        conn.socket.close(1000, null)
+    }
+
+    companion object {
+        /** Pseudo-notification émise après une reconnexion réussie (l'état a pu changer entre-temps). */
+        const val RECONNECTED = "Zapette.OnReconnected"
+
+        const val PING_INTERVAL_MS = 30_000L
+        val DEFAULT_RECONNECT_DELAYS_MS = listOf(1_000L, 2_000L, 5_000L, 10_000L, 30_000L)
+
+        /** Délai de lecture du client (réglage par appareil), sinon délai global, sinon 10 s. */
+        fun defaultTimeoutMs(client: OkHttpClient): Long =
+            client.readTimeoutMillis.takeIf { it > 0 }?.toLong()
+                ?: client.callTimeoutMillis.takeIf { it > 0 }?.toLong()
+                ?: 10_000L
     }
 }

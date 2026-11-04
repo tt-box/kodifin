@@ -44,6 +44,7 @@ object KodiMethod {
     const val PLAYLIST_GET_PLAYLISTS = "Playlist.GetPlaylists"
     const val PLAYLIST_GET_ITEMS = "Playlist.GetItems"
     const val PLAYLIST_ADD = "Playlist.Add"
+    const val PLAYLIST_INSERT = "Playlist.Insert"
     const val PLAYLIST_CLEAR = "Playlist.Clear"
     const val PLAYLIST_REMOVE = "Playlist.Remove"
 
