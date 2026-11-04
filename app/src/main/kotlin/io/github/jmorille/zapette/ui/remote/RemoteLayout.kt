@@ -72,6 +72,6 @@ object RemoteLayouts {
     fun visiblePanels(layout: RemoteLayout, selected: RemoteTab?, features: RemoteFeatures): Set<RemotePanel> =
         buildSet {
             selected?.panel?.let(::add)
-            if (layout == RemoteLayout.TABLET_LANDSCAPE && features.tracks) add(RemotePanel.DETAILS)
+            if (layout == RemoteLayout.TABLET_LANDSCAPE && features.hasPlaybackDetails) add(RemotePanel.DETAILS)
         }
 }

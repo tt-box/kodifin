@@ -80,7 +80,7 @@ class KodiMediaTest {
         assertEquals(2, state.season)
         assertEquals(10, state.episode)
         assertEquals(
-            json("""{"playerid":1,"properties":["title","showtitle","season","episode","tvshowid"]}"""),
+            json("""{"playerid":1,"properties":["title","showtitle","season","episode","tvshowid","artist","album","art","thumbnail","fanart"]}"""),
             paramsOf(KodiMethod.PLAYER_GET_ITEM),
         )
 
@@ -92,6 +92,32 @@ class KodiMediaTest {
         assertNull(movie.seriesTitle)
         assertNull(movie.season)
         assertNull(movie.episode)
+    }
+
+    @Test
+    fun `snapshot picks series poster and fanart, song artwork and artist`() = runTest {
+        stub.results[KodiMethod.APP_GET_PROPERTIES] = """{"volume":10,"muted":false}"""
+        stub.results[KodiMethod.PLAYER_GET_PROPERTIES] = """{"speed":1}"""
+        stub.results[KodiMethod.PLAYER_GET_ITEM] = """{"item":{"id":41,"type":"episode","label":"x","title":"É",
+            "art":{"thumb":"image://ep/","tvshow.poster":"image://poster/","tvshow.fanart":"image://fanart/"}}}"""
+        var state = controller.snapshot()
+        assertEquals("image://poster/", state.artworkKey)
+        assertEquals("image://fanart/", state.backdropKey)
+
+        stub.results[KodiMethod.PLAYER_GET_ITEM] = """{"item":{"id":5,"type":"song","label":"x","title":"Chanson",
+            "artist":["", "Groupe"],"album":"Album","thumbnail":"image://cover/","fanart":"/pas/une/image",
+            "art":{"artist.fanart":"image://artist/"}}}"""
+        state = controller.snapshot()
+        assertEquals("Groupe", state.artist)
+        assertEquals("Album", state.album)
+        assertEquals("image://cover/", state.artworkKey)
+        assertEquals("image://artist/", state.backdropKey)
+
+        stub.results[KodiMethod.PLAYER_GET_ITEM] = """{"item":{"id":5,"type":"movie","label":"x","title":"Film"}}"""
+        state = controller.snapshot()
+        assertNull(state.artworkKey)
+        assertNull(state.backdropKey)
+        assertNull(state.artist)
     }
 
     @Test

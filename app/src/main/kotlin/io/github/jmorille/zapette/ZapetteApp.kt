@@ -46,7 +46,7 @@ class AppContainer(context: Context) {
         SettingsRepository.createStore { appContext.preferencesDataStoreFile(SettingsRepository.FILE_NAME) },
     )
     val discovery = DiscoveryManager(appContext, http)
-    val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext, settings))
+    val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext, settings, http))
 }
 
 class ZapetteApp : Application() {

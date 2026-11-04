@@ -72,7 +72,12 @@ data class NowPlayingTitles(val title: String?, val subtitle: String?)
 
 fun nowPlayingTitles(playback: PlaybackState): NowPlayingTitles {
     val series = playback.seriesTitle?.takeIf { it.isNotBlank() }
-        ?: return NowPlayingTitles(playback.title, null)
+        ?: return NowPlayingTitles(
+            playback.title,
+            // Musique : « Artiste · Album » ; sinon l'application qui diffuse (Chromecast).
+            listOfNotNull(playback.artist, playback.album).filter { it.isNotBlank() }.joinToString(" · ")
+                .ifEmpty { playback.appName?.takeIf { it.isNotBlank() && it != playback.title } },
+        )
     val subtitle = listOfNotNull(playback.episodeCode(), playback.title?.takeIf { it != series })
         .joinToString(" · ")
         .ifEmpty { null }
@@ -155,6 +160,36 @@ fun MediaImage(entry: MediaEntry, modifier: Modifier = Modifier, iconSize: Dp = 
                     modifier = Modifier.size(iconSize),
                 )
             }
+        }
+    }
+}
+
+/**
+ * Image désignée par [imageKey] (pochette, fond), chargée à la largeur réelle ; [fallback] est
+ * affiché tant qu'elle manque (ou s'il n'y a ni clé ni chargeur).
+ */
+@Composable
+fun KeyedImage(
+    imageKey: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    alpha: Float = 1f,
+    fallback: @Composable () -> Unit = {},
+) {
+    val loader = LocalImageLoader.current
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val width = constraints.maxWidth.takeIf { it in 1 until Int.MAX_VALUE } ?: 0
+        var image by remember(imageKey, loader, width) {
+            mutableStateOf(if (imageKey != null && loader != null && width > 0) loader.cached(imageKey, width) else null)
+        }
+        if (imageKey != null && loader != null && width > 0 && image == null) {
+            LaunchedEffect(imageKey, loader, width) { image = loader.load(imageKey, width) }
+        }
+        val bitmap = image
+        if (bitmap != null) {
+            Image(bitmap, contentDescription = null, contentScale = contentScale, alpha = alpha, modifier = Modifier.fillMaxSize())
+        } else {
+            fallback()
         }
     }
 }

@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.model
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -70,6 +71,35 @@ suspend fun OkHttpClient.fetchString(request: Request, maxBodyBytes: Long = DEFA
             buffer.readString(charset)
         } catch (e: IOException) {
             throw RemoteException("Réponse interrompue (${request.url.host})", e)
+        }
+    }
+}
+
+/**
+ * Télécharge une image (pochette, affiche) à l'adresse [url], sans cookie ni authentification :
+ * `null` si l'adresse n'est pas http(s), si le statut n'est pas 2xx, si le type n'est pas une
+ * image, si le corps dépasse [maxBytes] (jamais lu en entier) ou si le réseau échoue.
+ */
+suspend fun OkHttpClient.fetchImage(url: String, maxBytes: Long = DEFAULT_MAX_BODY_BYTES): ByteArray? {
+    val parsed = url.toHttpUrlOrNull() ?: return null
+    val request = Request.Builder().url(parsed).header("Accept", "image/*").build()
+    val response = try {
+        newCall(request).await()
+    } catch (_: IOException) {
+        return null
+    }
+    response.use {
+        if (!it.isSuccessful) return null
+        val body = it.body
+        val type = body.contentType()
+        if (type != null && type.type != "image") return null
+        if (body.contentLength() > maxBytes) return null
+        return try {
+            val source = body.source()
+            if (source.request(maxBytes + 1)) return null
+            source.buffer.readByteArray()
+        } catch (_: IOException) {
+            null
         }
     }
 }

@@ -266,7 +266,7 @@ class KodiClientTest {
         // Titre vide : repli sur le libellé.
         assertEquals(KodiMediaItem(7, "file.mkv", "movie"), client.playerItem(2))
         assertEquals(
-            json("""{"playerid":2,"properties":["title","showtitle","season","episode","tvshowid"]}"""),
+            json("""{"playerid":2,"properties":["title","showtitle","season","episode","tvshowid","artist","album","art","thumbnail","fanart"]}"""),
             transport.calls.last().second,
         )
     }

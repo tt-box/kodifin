@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.SupportsMediaDetails
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -439,7 +440,7 @@ class RemoteViewModel(
     // --- Pistes, vitesse, synchronisation, modes, chapitres ---------------------------------
 
     fun refreshDetails() {
-        val c = connectedAs<SupportsTracks>() ?: return
+        val c = connectedAs<SupportsMediaDetails>() ?: return
         detailsJob?.cancel()
         detailsJob = viewModelScope.launch {
             load { c.mediaDetails() }?.let { d -> _state.update { it.copy(mediaDetails = d) } }

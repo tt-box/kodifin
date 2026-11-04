@@ -1,5 +1,14 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.PlaybackState
+import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Cast
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.blur
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.focusable
@@ -192,6 +201,7 @@ fun RemoteScreen(
                     vm = vm,
                     onClearQueue = { dialog = RemoteDialog.ClearQueue },
                 )
+                RemoteBackdrop(state.playback)
                 when (layout) {
                     RemoteLayout.PHONE -> PhoneLayout(content)
                     RemoteLayout.TABLET_PORTRAIT -> TabletPortraitLayout(content)
@@ -598,7 +608,7 @@ private fun SidePane(
     onSelect: (RemoteTab) -> Unit,
     modifier: Modifier,
 ) {
-    Surface(modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+    Surface(modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.88f)) {
         Column {
             if (tabs.size > 1) {
                 PrimaryTabRow(selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0)) {
@@ -684,9 +694,65 @@ private fun NavigationFor(content: RemoteContent, modifier: Modifier) {
     if (content.navigation) {
         NavigationCluster(content.keys, content.features.uiCommands, content.actions, modifier)
     } else {
-        Spacer(modifier)
+        // Lecteurs sans pavé (Chromecast, DLNA, AirPlay…) : la place revient à la pochette.
+        NowPlayingArtwork(content, modifier)
     }
 }
+
+/** Grande pochette du média en cours (icône de l'appareil à défaut). */
+@Composable
+private fun NowPlayingArtwork(content: RemoteContent, modifier: Modifier) {
+    val playback = content.state.playback
+    Box(modifier.padding(8.dp), contentAlignment = Alignment.Center) {
+        KeyedImage(playback?.artworkKey, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) {
+            Surface(Modifier.size(160.dp), shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceVariant) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (content.state.device?.kind == DeviceKind.CHROMECAST) Icons.Filled.Cast else Icons.Filled.Speaker,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(72.dp),
+                    )
+                }
+            }
+        }
+        playback?.appName?.takeIf { it.isNotBlank() }?.let { app ->
+            Surface(
+                Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f),
+            ) {
+                Text(app, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Fond de la télécommande : fanart de la série ou du film (à défaut la pochette, floutée), très
+ * atténué et voilé par un dégradé pour que les commandes restent lisibles.
+ */
+@Composable
+private fun RemoteBackdrop(playback: PlaybackState?) {
+    val backdrop = playback?.backdropKey
+    val key = backdrop ?: playback?.artworkKey ?: return
+    val background = MaterialTheme.colorScheme.background
+    Box(Modifier.fillMaxSize()) {
+        KeyedImage(
+            key,
+            Modifier.fillMaxSize().then(if (backdrop == null) Modifier.blur(24.dp) else Modifier),
+            alpha = BACKDROP_ALPHA,
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(background.copy(alpha = 0.25f), background.copy(alpha = 0.7f))),
+            ),
+        )
+    }
+}
+
+/** Opacité de l'image de fond : présente sans gêner la lecture des commandes. */
+private const val BACKDROP_ALPHA = 0.35f
 
 @Composable
 private fun QueueContent(content: RemoteContent) {

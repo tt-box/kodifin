@@ -42,6 +42,11 @@ data class KodiMediaItem(
     val season: Int? = null,
     val episode: Int? = null,
     val tvShowId: Int? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    /** Chemins Kodi `image://…` de la pochette (affiche) et du fond (fanart). */
+    val artwork: String? = null,
+    val fanart: String? = null,
 )
 
 /** API typée au-dessus d'un [KodiTransport]. */
@@ -184,7 +189,19 @@ class KodiClient(private val transport: KodiTransport) {
             season = item["season"].primitive()?.intOrNull?.takeIf { it >= 0 },
             episode = item["episode"].primitive()?.intOrNull?.takeIf { it >= 0 },
             tvShowId = item["tvshowid"].primitive()?.intOrNull?.takeIf { it >= 0 },
+            artist = (item["artist"] as? JsonArray)?.firstNotNullOfOrNull { it.primitive()?.contentOrNull?.takeIf(String::isNotBlank) },
+            album = item["album"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() },
+            artwork = pickArt(item, ARTWORK_KEYS),
+            fanart = pickArt(item, FANART_KEYS),
         )
+    }
+
+    /** Première image connue parmi [keys] (`art.<clé>`, puis `thumbnail` / `fanart` à la racine). */
+    private fun pickArt(item: JsonObject, keys: List<String>): String? {
+        val art = item["art"] as? JsonObject
+        return keys.firstNotNullOfOrNull { key ->
+            (art?.get(key) ?: item[key]).primitive()?.contentOrNull?.takeIf { it.startsWith("image://") }
+        }
     }
 
     // --- Application -----------------------------------------------------
@@ -390,7 +407,15 @@ class KodiClient(private val transport: KodiTransport) {
 
     companion object {
         /** Propriétés lues par `Player.GetItem` : titre et, pour un épisode, série, saison et numéro. */
-        internal val PLAYER_ITEM_PROPERTIES = listOf("title", "showtitle", "season", "episode", "tvshowid")
+        internal val PLAYER_ITEM_PROPERTIES = listOf(
+            "title", "showtitle", "season", "episode", "tvshowid", "artist", "album", "art", "thumbnail", "fanart",
+        )
+
+        /** Pochette : affiche de la série, du film, puis vignette de l'élément ou de l'album. */
+        private val ARTWORK_KEYS = listOf("tvshow.poster", "poster", "album.thumb", "thumb", "thumbnail")
+
+        /** Fond : fanart de la série, de l'élément, puis de l'artiste. */
+        private val FANART_KEYS = listOf("tvshow.fanart", "fanart", "artist.fanart")
 
         /** Code JSON-RPC 2.0 « méthode introuvable ». */
         const val METHOD_NOT_FOUND = -32601

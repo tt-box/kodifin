@@ -65,6 +65,19 @@ class PlaybackActions(
     val nextChapter: () -> Unit,
 )
 
+/**
+ * Libellé de vitesse : « En pause », « Normale », « ×2 » (Kodi, vitesses entières) ou « ×1,25 »
+ * (Chromecast, [MediaDetails.playbackRate]).
+ */
+fun speedText(details: MediaDetails?): String {
+    val speed = details?.speed ?: 1
+    if (speed == 0) return "En pause"
+    val rate = details?.playbackRate ?: return if (speed == 1) "Normale" else "×$speed"
+    if (kotlin.math.abs(rate - 1.0) < 0.01) return "Normale"
+    val text = if (rate % 1.0 == 0.0) rate.toInt().toString() else rate.toString().trimEnd('0').replace('.', ',')
+    return "×$text"
+}
+
 /** Contrôles avancés du média en cours ; chaque section n'apparaît que si l'appareil la gère. */
 @Composable
 fun PlaybackDetails(
@@ -84,20 +97,12 @@ fun PlaybackDetails(
         }
         val fastKeys = RemoteKey.REWIND in keys || RemoteKey.FAST_FORWARD in keys
         if (features.speed || features.chapters || (features.seekStep && fastKeys)) {
-            val speedSummary = when (val speed = details?.speed ?: 1) {
-                0 -> "En pause"
-                1 -> "Vitesse normale"
-                else -> "Vitesse ×$speed"
-            }
+            val speedSummary = speedText(details).let { if (it == "En pause") it else "Vitesse : ${it.lowercase()}" }
             Section("Vitesse et chapitres", summary = speedSummary) {
                 if (features.speed) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextAction("Plus lent", actions.slower)
-                        val speedLabel = when (val speed = details?.speed ?: 1) {
-                            0 -> "En pause"
-                            1 -> "Normale"
-                            else -> "×$speed"
-                        }
+                        val speedLabel = speedText(details)
                         Text(
                             speedLabel,
                             style = MaterialTheme.typography.titleMedium,

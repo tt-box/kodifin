@@ -1,5 +1,12 @@
 package io.github.jmorille.zapette.upnp
 
+import io.github.jmorille.zapette.model.fetchImage
+import io.github.jmorille.zapette.model.SupportsSeekStep
+import io.github.jmorille.zapette.model.SupportsPlayMode
+import io.github.jmorille.zapette.model.SupportsMediaDetails
+import io.github.jmorille.zapette.model.SupportsImages
+import io.github.jmorille.zapette.model.RepeatMode
+import io.github.jmorille.zapette.model.MediaDetails
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
@@ -29,7 +36,7 @@ class UpnpRendererController(
     private val http: OkHttpClient,
     private val soap: SoapClient = SoapClient(http),
     private val pollIntervalMs: Long = 1_000,
-) : RemoteController {
+) : RemoteController, SupportsMediaDetails, SupportsPlayMode, SupportsSeekStep, SupportsImages {
 
     override val capabilities = setOf(
         Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK, Capability.PLAY_URL, Capability.NOW_PLAYING,
@@ -151,8 +158,58 @@ class UpnpRendererController(
     }
 
     override suspend fun seekTo(positionMs: Long) {
-        avTransport("Seek", "Unit" to "REL_TIME", "Target" to formatHms(positionMs))
+        avTransport("Seek", "Unit" to "REL_TIME", "Target" to formatHms(positionMs.coerceAtLeast(0)))
     }
+
+    override suspend fun seekBy(deltaMs: Long) {
+        val position = avTransport("GetPositionInfo")
+        val duration = parseHms(position["TrackDuration"])
+        val target = parseHms(position["RelTime"]) + deltaMs
+        seekTo(if (duration > 0) target.coerceAtMost(duration - 1_000) else target)
+    }
+
+    // --- Modes de lecture (AVTransport PlayMode) ----------------------------------------------
+
+    override suspend fun mediaDetails(): MediaDetails {
+        val playing = avTransport("GetTransportInfo")["CurrentTransportState"] == "PLAYING"
+        // GetTransportSettings est obligatoire selon UPnP AV, mais des renderers l'omettent.
+        val mode = try {
+            avTransport("GetTransportSettings")["PlayMode"]?.trim()?.uppercase()
+        } catch (_: RemoteException) {
+            null
+        }
+        return MediaDetails(
+            repeat = when (mode) {
+                null -> null
+                "REPEAT_ONE" -> RepeatMode.ONE
+                "REPEAT_ALL" -> RepeatMode.ALL
+                else -> RepeatMode.OFF
+            },
+            shuffle = mode?.let { it == "SHUFFLE" || it == "RANDOM" },
+            speed = if (playing) 1 else 0,
+        )
+    }
+
+    override suspend fun setRepeat(mode: RepeatMode) = setPlayMode(
+        when (mode) {
+            RepeatMode.OFF -> "NORMAL"
+            RepeatMode.ONE -> "REPEAT_ONE"
+            RepeatMode.ALL -> "REPEAT_ALL"
+        },
+    )
+
+    override suspend fun setShuffle(enabled: Boolean) = setPlayMode(if (enabled) "SHUFFLE" else "NORMAL")
+
+    private suspend fun setPlayMode(mode: String) {
+        try {
+            avTransport("SetPlayMode", "NewPlayMode" to mode)
+        } catch (e: UpnpSoapFault) {
+            throw RemoteException("${device.name} ne gère pas ce mode de lecture", e)
+        }
+    }
+
+    /** Pochette annoncée par le renderer (`upnp:albumArtURI`), téléchargée sans authentification. */
+    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? = http.fetchImage(imageKey)
 
     /** Option « DLNA alternatif » : métadonnées minimales pour les renderers capricieux. */
     private val alternativeDidl: Boolean
@@ -189,9 +246,13 @@ class UpnpRendererController(
             // Volume et sourdine sont facultatifs : un échec ne doit pas interrompre le suivi.
             val volume = try { currentVolume() } catch (_: RemoteException) { null }
             val muted = try { currentMute() } catch (_: RemoteException) { null }
+            val meta = position["TrackMetaData"]?.let(::didlInfo)
             emit(
                 PlaybackState(
-                    title = position["TrackMetaData"]?.let(::didlTitle),
+                    title = meta?.title,
+                    artist = meta?.artist,
+                    album = meta?.album,
+                    artworkKey = meta?.artUrl,
                     isPlaying = transport["CurrentTransportState"] == "PLAYING",
                     positionMs = parseHms(position["RelTime"]),
                     durationMs = parseHms(position["TrackDuration"]),
@@ -263,9 +324,21 @@ class UpnpRendererController(
             else -> null
         }
 
-        internal fun didlTitle(metadata: String): String? = runCatching {
+        internal fun didlTitle(metadata: String): String? = didlInfo(metadata)?.title
+
+        /** Métadonnées DIDL-Lite du morceau en cours ; `null` si absentes ou illisibles. */
+        internal fun didlInfo(metadata: String): DidlInfo? = runCatching {
             if (metadata.isBlank() || metadata == "NOT_IMPLEMENTED") return null
-            with(UpnpXml) { UpnpXml.parseDocument(metadata).find("title")?.textContent?.trim() }
+            with(UpnpXml) {
+                val root = UpnpXml.parseDocument(metadata)
+                fun text(name: String) = root.find(name)?.textContent?.trim()?.ifEmpty { null }
+                DidlInfo(
+                    title = text("title"),
+                    artist = text("artist") ?: text("creator"),
+                    album = text("album"),
+                    artUrl = text("albumArtURI")?.takeIf { it.startsWith("http://") || it.startsWith("https://") },
+                )
+            }
         }.getOrNull()
 
         /** Construit l'appareil à partir d'une réponse SSDP et de sa description ; `null` si LOCATION est invalide. */
@@ -282,3 +355,6 @@ class UpnpRendererController(
         }
     }
 }
+
+/** Titre, artiste, album et pochette d'un élément DIDL-Lite. */
+data class DidlInfo(val title: String?, val artist: String?, val album: String?, val artUrl: String?)

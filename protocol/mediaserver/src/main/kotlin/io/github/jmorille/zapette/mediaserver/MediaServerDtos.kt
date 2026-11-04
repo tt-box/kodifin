@@ -66,8 +66,34 @@ data class NowPlayingDto(
     @SerialName("ParentIndexNumber") val parentIndexNumber: Int? = null,
     /** Épisode : numéro dans la saison. */
     @SerialName("IndexNumber") val indexNumber: Int? = null,
+    @SerialName("Album") val album: String? = null,
+    @SerialName("AlbumId") val albumId: String? = null,
+    @SerialName("AlbumArtist") val albumArtist: String? = null,
+    @SerialName("Artists") val artists: List<String>? = null,
+    @SerialName("ImageTags") val imageTags: Map<String, String>? = null,
+    @SerialName("BackdropImageTags") val backdropImageTags: List<String>? = null,
+    @SerialName("ParentBackdropItemId") val parentBackdropItemId: String? = null,
 ) {
     val isEpisode: Boolean get() = type.equals("Episode", ignoreCase = true)
+    val isAudio: Boolean get() = type.equals("Audio", ignoreCase = true)
+
+    /** Affiche : celle de la série pour un épisode, la pochette d'album pour un titre, sinon la sienne. */
+    val artworkKey: String?
+        get() = when {
+            isEpisode && !seriesId.isNullOrBlank() -> "$seriesId/Primary"
+            isAudio && imageTags?.containsKey("Primary") != true && !albumId.isNullOrBlank() -> "$albumId/Primary"
+            !id.isNullOrBlank() -> "$id/Primary"
+            else -> null
+        }
+
+    /** Fond : fanart de l'élément, sinon de son parent (série, album), sinon de la série. */
+    val backdropKey: String?
+        get() = when {
+            !backdropImageTags.isNullOrEmpty() && !id.isNullOrBlank() -> "$id/Backdrop/${backdropImageTags.first()}"
+            !parentBackdropItemId.isNullOrBlank() -> "$parentBackdropItemId/Backdrop"
+            isEpisode && !seriesId.isNullOrBlank() -> "$seriesId/Backdrop"
+            else -> null
+        }
 }
 
 @Serializable

@@ -1,5 +1,18 @@
 package io.github.jmorille.zapette.cast
 
+import io.github.jmorille.zapette.model.UnsupportedActionException
+import io.github.jmorille.zapette.model.SupportsTracks
+import io.github.jmorille.zapette.model.SupportsSpeed
+import io.github.jmorille.zapette.model.SupportsSeekStep
+import io.github.jmorille.zapette.model.SupportsQueue
+import io.github.jmorille.zapette.model.SupportsPower
+import io.github.jmorille.zapette.model.SupportsPlayMode
+import io.github.jmorille.zapette.model.SupportsImages
+import io.github.jmorille.zapette.model.RepeatMode
+import io.github.jmorille.zapette.model.PowerAction
+import io.github.jmorille.zapette.model.MediaTrack
+import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaDetails
 import android.content.Context
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
@@ -35,10 +48,17 @@ class CastController internal constructor(
     private val main: CoroutineContext,
     private val sessionTimeoutMs: Long = SESSION_TIMEOUT_MS,
     private val settings: suspend () -> CastSettings = { CastSettings() },
-) : RemoteController {
+    /** Téléchargement des pochettes (adresses publiées par l'application émettrice) ; `null` : sans image. */
+    private val imageFetcher: (suspend (String) -> ByteArray?)? = null,
+) : RemoteController, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsQueue,
+    SupportsImages, SupportsPower {
 
-    constructor(device: Device, context: Context, settings: suspend () -> CastSettings = { CastSettings() }) :
-        this(device, SdkCastPlatform(context), Dispatchers.Main, SESSION_TIMEOUT_MS, settings)
+    constructor(
+        device: Device,
+        context: Context,
+        settings: suspend () -> CastSettings = { CastSettings() },
+        imageFetcher: (suspend (String) -> ByteArray?)? = null,
+    ) : this(device, SdkCastPlatform(context), Dispatchers.Main, SESSION_TIMEOUT_MS, settings, imageFetcher)
 
     /** Réglages courants ; une lecture impossible (stockage illisible) retombe sur les valeurs par défaut. */
     private suspend fun currentSettings(): CastSettings = try {
@@ -235,13 +255,22 @@ class CastController internal constructor(
             val media = s.media
             emit(
                 translating {
+                    val meta = media?.nowPlaying
                     PlaybackState(
-                        title = media?.title,
+                        title = meta?.title ?: media?.title,
                         isPlaying = media?.isPlaying == true,
                         positionMs = media?.positionMs ?: 0,
                         durationMs = media?.durationMs ?: 0,
                         volumePercent = (s.volume * 100).toInt(),
                         muted = s.isMute,
+                        seriesTitle = meta?.seriesTitle,
+                        season = meta?.season,
+                        episode = meta?.episode,
+                        artist = meta?.artist ?: meta?.subtitle?.takeIf { meta.seriesTitle == null },
+                        album = meta?.album,
+                        appName = s.appName,
+                        artworkKey = meta?.imageUrl?.takeIf { imageFetcher != null },
+                        backdropKey = meta?.backdropUrl?.takeIf { imageFetcher != null },
                     )
                 },
             )
@@ -269,7 +298,149 @@ class CastController internal constructor(
         }
     }
 
+    // --- Pistes, vitesse, modes ---------------------------------------------------------------
+
+    override suspend fun mediaDetails(): MediaDetails = onMain { s ->
+        val media = s.media ?: return@onMain MediaDetails(speed = 0)
+        val tracks = media.tracks
+        val active = media.activeTrackIds
+        fun list(type: CastTrackType) = tracks.filter { it.type == type }.mapIndexed { i, t ->
+            MediaTrack(t.id.toInt(), t.name?.takeIf { it.isNotBlank() } ?: t.language ?: "Piste ${i + 1}", t.language)
+        }
+        val audio = list(CastTrackType.AUDIO)
+        val text = list(CastTrackType.TEXT)
+        MediaDetails(
+            audioTracks = audio,
+            currentAudio = audio.firstOrNull { it.id.toLong() in active }?.id,
+            subtitles = text,
+            currentSubtitle = text.firstOrNull { it.id.toLong() in active }?.id,
+            repeat = when (media.repeat) {
+                CastRepeat.OFF -> RepeatMode.OFF
+                CastRepeat.SINGLE -> RepeatMode.ONE
+                CastRepeat.ALL, CastRepeat.ALL_AND_SHUFFLE -> RepeatMode.ALL
+            },
+            shuffle = media.repeat == CastRepeat.ALL_AND_SHUFFLE,
+            speed = if (media.isPlaying) 1 else 0,
+            playbackRate = media.playbackRate,
+        )
+    }
+
+    /** Remplace, parmi les pistes actives, celles de nature [type] par [id] (aucune si `null`). */
+    private suspend fun selectTrack(type: CastTrackType, id: Long?) = onMain { s ->
+        val media = s.media()
+        val ofType = media.tracks.filter { it.type == type }.map { it.id }.toSet()
+        media.setActiveTracks(media.activeTrackIds - ofType + setOfNotNull(id))
+    }
+
+    /** Piste suivante de nature [type] ; pour les sous-titres, « désactivés » fait partie du cycle. */
+    private suspend fun cycleTrack(type: CastTrackType, allowNone: Boolean) {
+        val (ids, current) = onMain { s ->
+            val media = s.media()
+            val ids = media.tracks.filter { it.type == type }.map { it.id }
+            ids to ids.firstOrNull { it in media.activeTrackIds }
+        }
+        if (ids.isEmpty()) return
+        val cycle: List<Long?> = if (allowNone) listOf<Long?>(null) + ids else ids
+        selectTrack(type, cycle[(cycle.indexOf(current) + 1) % cycle.size])
+    }
+
+    override suspend fun setAudioTrack(id: Int) = selectTrack(CastTrackType.AUDIO, id.toLong())
+    override suspend fun setSubtitle(id: Int?) = selectTrack(CastTrackType.TEXT, id?.toLong())
+    override suspend fun nextSubtitle() = cycleTrack(CastTrackType.TEXT, allowNone = true)
+    override suspend fun nextAudioTrack() = cycleTrack(CastTrackType.AUDIO, allowNone = false)
+
+    override suspend fun seekBy(deltaMs: Long) = onMain { s ->
+        val media = s.media()
+        media.seek(CastMedia.clampSeek(media.positionMs + deltaMs, media.durationMs))
+    }
+
+    override suspend fun faster() = stepRate(+1)
+    override suspend fun slower() = stepRate(-1)
+
+    private suspend fun stepRate(direction: Int) = onMain { s ->
+        val media = s.media()
+        media.setPlaybackRate(nextRate(media.playbackRate, direction))
+    }
+
+    override suspend fun setRepeat(mode: RepeatMode) = onMain { s ->
+        val media = s.media()
+        val shuffle = media.repeat == CastRepeat.ALL_AND_SHUFFLE
+        media.setRepeat(
+            when (mode) {
+                RepeatMode.OFF -> CastRepeat.OFF
+                RepeatMode.ONE -> CastRepeat.SINGLE
+                RepeatMode.ALL -> if (shuffle) CastRepeat.ALL_AND_SHUFFLE else CastRepeat.ALL
+            },
+        )
+    }
+
+    /** Cast ne connaît l'aléatoire qu'avec la répétition de toute la file. */
+    override suspend fun setShuffle(enabled: Boolean) = onMain { s ->
+        s.media().setRepeat(if (enabled) CastRepeat.ALL_AND_SHUFFLE else CastRepeat.ALL)
+    }
+
+    // --- File du récepteur --------------------------------------------------------------------
+
+    override suspend fun queue(): List<MediaEntry> = onMain { s ->
+        s.media?.queueItems.orEmpty().map { item ->
+            MediaEntry(
+                id = item.itemId.toString(),
+                title = item.title?.takeIf { it.isNotBlank() } ?: "Élément ${item.itemId}",
+                subtitle = item.subtitle,
+                imageKey = item.imageUrl.takeIf { imageFetcher != null },
+            )
+        }
+    }
+
+    override suspend fun queuePosition(): Int? = onMain { s ->
+        val media = s.media ?: return@onMain null
+        media.queueItems.indexOfFirst { it.itemId == media.currentItemId }.takeIf { it >= 0 }
+    }
+
+    private suspend fun queueItemId(index: Int): Int = onMain { s ->
+        s.media().queueItems.getOrNull(index)?.itemId ?: throw RemoteException("Élément de file introuvable")
+    }
+
+    override suspend fun playQueueItem(index: Int) {
+        val id = queueItemId(index)
+        onMain { it.media().jumpTo(id) }
+    }
+
+    override suspend fun removeQueueItem(index: Int) {
+        val id = queueItemId(index)
+        onMain { it.media().removeItems(listOf(id)) }
+    }
+
+    /** Vide la file en gardant l'élément en cours de lecture. */
+    override suspend fun clearQueue() = onMain { s ->
+        val media = s.media()
+        media.removeItems(media.queueItems.map { it.itemId }.filter { it != media.currentItemId })
+    }
+
+    // --- Images et fin de diffusion -----------------------------------------------------------
+
+    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? = imageFetcher?.invoke(imageKey)
+
+    override suspend fun availablePowerActions(): Set<PowerAction> = setOf(PowerAction.QUIT_APP)
+
+    /** « Quitter l'application » : arrête la diffusion (ferme la session de cet appareil). */
+    override suspend fun power(action: PowerAction) {
+        if (action != PowerAction.QUIT_APP) throw UnsupportedActionException("${action.label} : non disponible sur Chromecast")
+        endSession()
+    }
+
     companion object {
+        /** Vitesses proposées par le récepteur multimédia par défaut (0,5 à 2). */
+        internal val RATES = listOf(0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+
+        /** Vitesse voisine de [rate] dans [RATES] ([direction] = +1 plus vite, -1 plus lent). */
+        internal fun nextRate(rate: Double, direction: Int): Double {
+            val index = RATES.indexOfFirst { it >= rate - 0.01 }.let { if (it < 0) RATES.lastIndex else it }
+            val exact = kotlin.math.abs(RATES[index] - rate) < 0.01
+            val target = if (direction > 0) (if (exact) index + 1 else index) else index - 1
+            return RATES[target.coerceIn(0, RATES.lastIndex)]
+        }
+
         private const val SEEK_STEP_MS = 10_000L
         private const val VOLUME_STEP = 0.05
         private const val SESSION_TIMEOUT_MS = 15_000L

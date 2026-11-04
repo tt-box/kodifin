@@ -28,11 +28,17 @@ data class MediaDetails(
     val chapterCount: Int = 0,
     /** Chapitres positionnés (triés), si le protocole les publie ; sinon seul [chapterCount] est connu. */
     val chapters: List<Chapter> = emptyList(),
+    /** Vitesse fractionnaire (Chromecast : 0,5 à 2) ; prioritaire sur [speed] pour l'affichage. */
+    val playbackRate: Double? = null,
 )
 
-/** Pistes audio / sous-titres. */
-interface SupportsTracks {
+/** État étendu du média en cours (modes, vitesse), sans forcément de choix de pistes. */
+interface SupportsMediaDetails {
     suspend fun mediaDetails(): MediaDetails
+}
+
+/** Pistes audio / sous-titres. */
+interface SupportsTracks : SupportsMediaDetails {
     suspend fun setAudioTrack(id: Int)
 
     /** `null` désactive les sous-titres. */

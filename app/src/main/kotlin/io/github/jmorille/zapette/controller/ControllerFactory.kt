@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.controller
 
+import io.github.jmorille.zapette.model.fetchImage
 import io.github.jmorille.zapette.data.SettingsRepository
 import io.github.jmorille.zapette.kodi.KodiEventServer
 import android.content.Context
@@ -36,11 +37,20 @@ interface PlatformControllers {
 }
 
 /** Implémentation réelle : clés ADB dans le stockage privé, Cast via le SDK Google. */
-class AndroidPlatformControllers(private val context: Context, private val settings: SettingsRepository) : PlatformControllers {
+class AndroidPlatformControllers(
+    private val context: Context,
+    private val settings: SettingsRepository,
+    /** Client des pochettes Cast (sans cookie ni authentification) ; `null` : pas d'images. */
+    private val imageHttp: OkHttpClient? = null,
+) : PlatformControllers {
     override fun fireTv(device: Device): RemoteController =
         FireTvController(device, DadbShell(device.host, device.port, File(context.filesDir, "adb"), DeviceOptions.timeoutSeconds(device) * 1000, device.extras[DadbShell.EXTRA_TLS] == "true"))
 
-    override fun cast(device: Device): RemoteController = CastController(device, context) { settings.cast.first() }
+    override fun cast(device: Device): RemoteController = CastController(
+        device, context,
+        settings = { settings.cast.first() },
+        imageFetcher = imageHttp?.let { client -> { url: String -> client.fetchImage(url) } },
+    )
 }
 
 /** Instancie la télécommande adaptée au protocole de l'appareil. */

@@ -256,6 +256,10 @@ class KodiController(
             seriesTitle = if (episode) item.showTitle else null,
             season = if (episode) item.season else null,
             episode = if (episode) item.episode else null,
+            artist = item.artist,
+            album = item.album,
+            artworkKey = item.artwork,
+            backdropKey = item.fanart,
         )
     }
 

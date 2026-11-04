@@ -23,6 +23,15 @@ data class PlaybackState(
     val seriesTitle: String? = null,
     val season: Int? = null,
     val episode: Int? = null,
+    /** Musique : artiste et album (affichés sous le titre). */
+    val artist: String? = null,
+    val album: String? = null,
+    /** Application qui diffuse (Chromecast : « YouTube », « Netflix »…). */
+    val appName: String? = null,
+    /** Pochette ou affiche, clé à passer à [SupportsImages.image] ; `null` sans image. */
+    val artworkKey: String? = null,
+    /** Image de fond (fanart de la série ou du film), même principe que [artworkKey]. */
+    val backdropKey: String? = null,
 )
 
 /** « S01E10 » si saison et épisode sont connus, « E10 » si seul l'épisode l'est, sinon `null`. */

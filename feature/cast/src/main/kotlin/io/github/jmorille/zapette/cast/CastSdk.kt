@@ -1,5 +1,8 @@
 package io.github.jmorille.zapette.cast
 
+import com.google.android.gms.cast.MediaQueueItem
+import com.google.android.gms.cast.MediaStatus
+import com.google.android.gms.cast.MediaTrack
 import android.annotation.SuppressLint
 import android.content.Context
 import androidx.mediarouter.media.MediaRouteSelector
@@ -203,6 +206,7 @@ private class SdkCastSession(private val session: CastSession) : CastSessionPort
             session.isMute = value
         }
     override val media: CastMediaPort? get() = session.remoteMediaClient?.let(::SdkCastMedia)
+    override val appName: String? get() = session.applicationMetadata?.name
 }
 
 private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPort {
@@ -210,6 +214,87 @@ private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPor
     override val isPlaying: Boolean get() = client.isPlaying
     override val positionMs: Long get() = client.approximateStreamPosition
     override val durationMs: Long get() = client.streamDuration
+
+    override val nowPlaying: CastNowPlaying?
+        get() {
+            val m = client.mediaInfo?.metadata ?: return null
+            fun str(key: String) = runCatching { m.getString(key) }.getOrNull()?.takeIf { it.isNotBlank() }
+            fun int(key: String) = runCatching { if (m.containsKey(key)) m.getInt(key) else null }.getOrNull()
+            val images = m.images.orEmpty()
+            return CastNowPlaying(
+                title = str(MediaMetadata.KEY_TITLE),
+                subtitle = str(MediaMetadata.KEY_SUBTITLE),
+                artist = str(MediaMetadata.KEY_ARTIST) ?: str(MediaMetadata.KEY_ALBUM_ARTIST),
+                album = str(MediaMetadata.KEY_ALBUM_TITLE),
+                seriesTitle = str(MediaMetadata.KEY_SERIES_TITLE),
+                season = int(MediaMetadata.KEY_SEASON_NUMBER),
+                episode = int(MediaMetadata.KEY_EPISODE_NUMBER),
+                imageUrl = images.firstOrNull()?.url?.toString(),
+                backdropUrl = images.maxByOrNull { it.width }?.takeIf { images.size > 1 }?.url?.toString(),
+            )
+        }
+
+    override val tracks: List<CastTrack>
+        get() = client.mediaInfo?.mediaTracks.orEmpty().map { t ->
+            val type = when (t.type) {
+                MediaTrack.TYPE_AUDIO -> CastTrackType.AUDIO
+                MediaTrack.TYPE_TEXT -> CastTrackType.TEXT
+                else -> CastTrackType.VIDEO
+            }
+            CastTrack(t.id, type, t.name, t.language)
+        }
+
+    override val activeTrackIds: Set<Long>
+        get() = client.mediaStatus?.activeTrackIds?.toSet().orEmpty()
+
+    override val playbackRate: Double get() = client.mediaStatus?.playbackRate ?: 1.0
+
+    override val repeat: CastRepeat
+        get() = when (client.mediaStatus?.queueRepeatMode) {
+            MediaStatus.REPEAT_MODE_REPEAT_ALL -> CastRepeat.ALL
+            MediaStatus.REPEAT_MODE_REPEAT_SINGLE -> CastRepeat.SINGLE
+            MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE -> CastRepeat.ALL_AND_SHUFFLE
+            else -> CastRepeat.OFF
+        }
+
+    override val queueItems: List<CastQueueItem>
+        get() = client.mediaStatus?.queueItems.orEmpty().map { item ->
+            val m = item.media?.metadata
+            CastQueueItem(
+                itemId = item.itemId,
+                title = m?.getString(MediaMetadata.KEY_TITLE),
+                subtitle = m?.getString(MediaMetadata.KEY_ARTIST) ?: m?.getString(MediaMetadata.KEY_SUBTITLE),
+                imageUrl = m?.images?.firstOrNull()?.url?.toString(),
+            )
+        }
+
+    override val currentItemId: Int? get() = client.mediaStatus?.currentItemId?.takeIf { it != MediaQueueItem.INVALID_ITEM_ID }
+
+    override fun setActiveTracks(ids: Set<Long>) {
+        client.setActiveMediaTracks(ids.toLongArray())
+    }
+
+    override fun setPlaybackRate(rate: Double) {
+        client.setPlaybackRate(rate)
+    }
+
+    override fun setRepeat(mode: CastRepeat) {
+        val sdk = when (mode) {
+            CastRepeat.OFF -> MediaStatus.REPEAT_MODE_REPEAT_OFF
+            CastRepeat.ALL -> MediaStatus.REPEAT_MODE_REPEAT_ALL
+            CastRepeat.SINGLE -> MediaStatus.REPEAT_MODE_REPEAT_SINGLE
+            CastRepeat.ALL_AND_SHUFFLE -> MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE
+        }
+        client.queueSetRepeatMode(sdk, null)
+    }
+
+    override fun jumpTo(itemId: Int) {
+        client.queueJumpToItem(itemId, null)
+    }
+
+    override fun removeItems(itemIds: List<Int>) {
+        if (itemIds.isNotEmpty()) client.queueRemoveItems(itemIds.toIntArray(), null)
+    }
 
     override fun togglePlayback() {
         client.togglePlayback()

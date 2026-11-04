@@ -305,6 +305,11 @@ class MediaServerController(
                     seriesTitle = episode?.seriesName?.takeIf { it.isNotBlank() },
                     season = episode?.parentIndexNumber,
                     episode = episode?.indexNumber,
+                    artist = s?.nowPlaying?.takeIf { it.isAudio }
+                        ?.let { it.artists?.firstOrNull() ?: it.albumArtist }?.takeIf { it.isNotBlank() },
+                    album = s?.nowPlaying?.takeIf { it.isAudio }?.album?.takeIf { it.isNotBlank() },
+                    artworkKey = s?.nowPlaying?.artworkKey,
+                    backdropKey = s?.nowPlaying?.backdropKey,
                     isPlaying = s?.nowPlaying != null && s.playState?.isPaused == false,
                     positionMs = (s?.playState?.positionTicks ?: 0) / TICKS_PER_MS,
                     durationMs = (s?.nowPlaying?.runTimeTicks ?: 0) / TICKS_PER_MS,
