@@ -1,6 +1,7 @@
 package io.github.jmorille.zapette.mediaserver
 
 import io.github.jmorille.zapette.model.EMPTY_BODY
+import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.fetchString
@@ -9,6 +10,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -26,7 +28,39 @@ enum class MediaServerFlavor { JELLYFIN, EMBY }
 data class AuthResult(
     @SerialName("AccessToken") val accessToken: String,
     @SerialName("User") val user: UserDto,
-)
+) {
+    /** Le jeton n'apparaît jamais dans un journal ou un message d'erreur. */
+    override fun toString() = "AuthResult(accessToken=***, user=$user)"
+}
+
+/**
+ * Utilisateur listé par `GET /Users/Public` (Jellyfin et Emby) : seuls les comptes que
+ * l'administrateur laisse visibles sur l'écran de connexion y figurent.
+ */
+@Serializable
+data class PublicUserDto(
+    @SerialName("Id") val id: String = "",
+    @SerialName("Name") val name: String = "",
+    @SerialName("HasPassword") val hasPassword: Boolean = false,
+    @SerialName("HasConfiguredPassword") val hasConfiguredPassword: Boolean = false,
+) {
+    /** Un mot de passe est à saisir : l'un ou l'autre indicateur suffit (selon serveur et version). */
+    val requiresPassword: Boolean get() = hasPassword || hasConfiguredPassword
+}
+
+/**
+ * Demande Quick Connect (Jellyfin) : [code] est saisi par l'utilisateur dans l'interface
+ * Jellyfin d'un appareil déjà connecté ; [secret] permet ensuite d'obtenir le jeton.
+ */
+@Serializable
+data class QuickConnectDto(
+    @SerialName("Secret") val secret: String = "",
+    @SerialName("Code") val code: String = "",
+    @SerialName("Authenticated") val authenticated: Boolean = false,
+) {
+    /** Le secret vaut un jeton tant que la demande est valide : jamais affiché. */
+    override fun toString() = "QuickConnectDto(code=$code, authenticated=$authenticated, secret=***)"
+}
 
 /** Réponse publique (sans authentification) de `GET …/System/Info/Public`. */
 @Serializable
@@ -151,6 +185,73 @@ class MediaServerClient(
         return result
     }
 
+    /**
+     * Comptes visibles sur l'écran de connexion (`GET /Users/Public`), sans authentification.
+     * Les entrées sans nom sont ignorées.
+     */
+    suspend fun publicUsers(): List<PublicUserDto> {
+        val text = http.fetchString(request(url("Users", "Public")).get().build())
+        return decode(ListSerializer(PublicUserDto.serializer()), text).filter { it.name.isNotBlank() }
+    }
+
+    /** `true` si Quick Connect est activé sur le serveur Jellyfin (`GET /QuickConnect/Enabled`). */
+    suspend fun quickConnectEnabled(): Boolean {
+        val text = http.fetchString(request(url("QuickConnect", "Enabled")).get().build())
+        return decode(Boolean.serializer(), text)
+    }
+
+    /**
+     * Ouvre une demande Quick Connect (`POST /QuickConnect/Initiate`) ; les serveurs
+     * Jellyfin 10.8 n'acceptent que `GET` (405 sur `POST`), d'où le second essai.
+     */
+    suspend fun quickConnectInitiate(): QuickConnectDto {
+        val target = url("QuickConnect", "Initiate")
+        val text = try {
+            http.fetchString(request(target).post(EMPTY_BODY).build())
+        } catch (e: HttpStatusException) {
+            if (e.code != 405) throw e
+            http.fetchString(request(target).get().build())
+        }
+        val result = decode(QuickConnectDto.serializer(), text)
+        if (result.secret.isBlank() || result.code.isBlank()) throw RemoteException("Réponse Quick Connect incomplète")
+        return result
+    }
+
+    /** État de la demande (`GET /QuickConnect/Connect?secret=…`) ; 404 si elle a expiré. */
+    suspend fun quickConnectState(secret: String): QuickConnectDto {
+        val text = http.fetchString(request(url("QuickConnect", "Connect", query = mapOf("secret" to secret))).get().build())
+        return decode(QuickConnectDto.serializer(), text)
+    }
+
+    /** Échange une demande approuvée contre un jeton (`POST /Users/AuthenticateWithQuickConnect`). */
+    suspend fun authenticateWithQuickConnect(secret: String): AuthResult {
+        val body = buildJsonObject { put("Secret", secret) }.toString()
+        val text = http.fetchString(
+            request(url("Users", "AuthenticateWithQuickConnect")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build(),
+        )
+        val result = decode(AuthResult.serializer(), text)
+        if (result.accessToken.isBlank()) throw RemoteException("Jeton absent de la réponse du serveur")
+        accessToken = result.accessToken
+        return result
+    }
+
+    /**
+     * Recale le client sur l'URL qui expose l'API : `""` si l'URL actuelle convient, sinon le
+     * premier chemin de [candidates] qui répond (client recalé dessus), ou `null` si aucun.
+     */
+    suspend fun locateBasePath(candidates: List<String> = DEFAULT_BASE_PATHS): String? {
+        val root = baseUrl ?: return null
+        if (isServer()) return ""
+        for (path in candidates) {
+            val candidate = root.trimEnd('/') + path
+            if (isServer(candidate)) {
+                rebase(candidate)
+                return path
+            }
+        }
+        return null
+    }
+
     suspend fun sessions(userId: String? = null): List<SessionDto> {
         val query = if (userId != null) mapOf("ControllableByUserId" to userId) else emptyMap()
         val text = http.fetchString(request(url("Sessions", query = query)).get().build())
@@ -199,4 +300,11 @@ class MediaServerClient(
     }
 
     suspend fun requireToken(): String = accessToken ?: throw RemoteException("Non authentifié sur le serveur")
+
+    override fun toString() = "MediaServerClient(baseUrl=$baseUrl, flavor=$flavor, token=${if (accessToken == null) "null" else "***"})"
+
+    companion object {
+        /** Chemins de base usuels quand le serveur est publié derrière un proxy (« URL de base »). */
+        val DEFAULT_BASE_PATHS = listOf("/jellyfin", "/emby")
+    }
 }
