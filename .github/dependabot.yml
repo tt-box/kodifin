@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  # Dépendances Gradle (catalogue gradle/libs.versions.toml, plugins et wrapper).
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: daily
+      time: "04:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 10
+    labels: [dependencies]
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Ordre important : un artefact rejoint le premier groupe qui correspond.
+      kotlinx:
+        patterns: ["org.jetbrains.kotlinx*"]
+      android-kotlin:
+        patterns: ["androidx.*", "org.jetbrains.kotlin*", "com.android*"]
+      network:
+        patterns: ["com.squareup.okhttp3*"]
+      google-cast:
+        patterns: ["com.google.android.gms*"]
+      test:
+        patterns: ["junit*", "app.cash.turbine*"]
+
+  # Versions des actions GitHub utilisées par la CI.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Europe/Paris
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

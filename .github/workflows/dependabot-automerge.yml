@@ -1,0 +1,40 @@
+name: Dependabot auto-merge
+
+# Déclenché à la fin de la CI : fusionne une PR Dependabot uniquement si TOUS les jobs
+# de la CI (build, tests, lint, contrôle anti-pistage, scan CVE) sont verts pour le
+# dernier commit de la PR. Fonctionne sans règle de protection de branche.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fusionner la PR Dependabot verte
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list -R "$REPO" --head "$HEAD_BRANCH" --state open \
+                 --json number,author,headRefOid \
+                 --jq ".[] | select(.author.login == \"app/dependabot\" and .headRefOid == \"$HEAD_SHA\") | .number")"
+          if [[ -z "$pr" ]]; then
+            echo "Aucune PR Dependabot ouverte correspondant à $HEAD_SHA — rien à faire."
+            exit 0
+          fi
+          gh pr merge "$pr" -R "$REPO" --squash --delete-branch --match-head-commit "$HEAD_SHA"
+          echo "PR #$pr fusionnée."

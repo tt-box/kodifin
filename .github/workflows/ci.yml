@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Scan CVE quotidien même sans commit (nouvelles vulnérabilités publiées).
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, tests unitaires, lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Valide aussi la somme de contrôle du gradle-wrapper.jar.
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Tests unitaires, lint et assemblage
+        run: ./gradlew test testDebugUnitTest lint assembleDebug assembleRelease --continue --stacktrace
+
+      - name: Aucune dépendance de pistage
+        run: bash scripts/check-no-trackers.sh
+
+      - name: Rapports de tests et de lint
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/build/reports/lint-results-*.html
+          retention-days: 14
+
+      - name: APK de debug
+        uses: actions/upload-artifact@v7
+        with:
+          name: zapette-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+  vulnerabilities:
+    name: Scan CVE des dépendances (OSV)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Inventaire CycloneDX (SBOM)
+        run: ./gradlew cyclonedxBom
+
+      - name: Installer OSV-Scanner
+        run: |
+          curl -sSfL -o osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+
+      - name: Scan des vulnérabilités connues
+        run: ./osv-scanner scan source --lockfile build/reports/cyclonedx/bom.json --format table
+
+      - name: SBOM
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: build/reports/cyclonedx/bom.json
+          retention-days: 30
+
+  dependency-graph:
+    name: Graphe de dépendances (alertes Dependabot)
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Publie les dépendances transitives résolues par Gradle : Dependabot peut ainsi
+      # signaler les CVE de toutes les bibliothèques, pas seulement celles déclarées.
+      - uses: gradle/actions/dependency-submission@v6

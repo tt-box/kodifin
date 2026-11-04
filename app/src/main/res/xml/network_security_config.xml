@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Kodi, UPnP, Roku, AirPlay et les serveurs locaux parlent HTTP en clair sur le réseau
+  local : le trafic non chiffré reste autorisé, mais il est interdit vers plex.tv.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">plex.tv</domain>
+    </domain-config>
+</network-security-config>
