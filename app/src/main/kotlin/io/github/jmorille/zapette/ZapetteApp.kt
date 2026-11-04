@@ -2,8 +2,12 @@ package io.github.jmorille.zapette
 
 import android.app.Application
 import android.content.Context
+import androidx.datastore.preferences.preferencesDataStoreFile
+import io.github.jmorille.zapette.controller.AndroidPlatformControllers
 import io.github.jmorille.zapette.controller.ControllerFactory
 import io.github.jmorille.zapette.data.DeviceRepository
+import io.github.jmorille.zapette.data.KeystoreSecretStore
+import io.github.jmorille.zapette.data.SecretStore
 import io.github.jmorille.zapette.discovery.DiscoveryManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,9 +35,16 @@ class AppContainer(context: Context) {
      */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val devices = DeviceRepository(appContext)
+    /** Chiffrement des mots de passe conservés (Kodi), clé non exportable de l'Android Keystore. */
+    private val secrets: SecretStore = KeystoreSecretStore()
+
+    /** Même fichier que l'ancien délégué `preferencesDataStore("zapette")` : aucune donnée perdue. */
+    val devices = DeviceRepository(
+        DeviceRepository.createStore { appContext.preferencesDataStoreFile("zapette") },
+        secrets,
+    )
     val discovery = DiscoveryManager(appContext, http)
-    val controllers = ControllerFactory(appContext, http, devices)
+    val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext))
 }
 
 class ZapetteApp : Application() {

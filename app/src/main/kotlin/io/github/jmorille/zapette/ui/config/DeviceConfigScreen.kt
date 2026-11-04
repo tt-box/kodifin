@@ -35,6 +35,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.jmorille.zapette.container
+import io.github.jmorille.zapette.data.DeviceSecrets
+import io.github.jmorille.zapette.mediaserver.MediaServerController
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import kotlinx.coroutines.launch
@@ -73,6 +75,23 @@ object ConfigValidation {
     }
 }
 
+/**
+ * Résultat du formulaire : l'appareil à enregistrer, sans aucun mot de passe, et le mot de
+ * passe saisi à part (`null` si les identifiants ne changent pas). Le dépôt décide de son sort :
+ * chiffré pour Kodi, gardé en mémoire jusqu'à l'obtention du jeton pour Jellyfin/Emby.
+ */
+internal data class DeviceDraft(val device: Device, val password: String?) {
+    override fun toString() = "DeviceDraft(device=$device, password=${if (password == null) "null" else "***"})"
+}
+
+/** Extras liés à l'ancien compte, invalides dès que de nouveaux identifiants sont saisis. */
+private val STALE_CREDENTIALS = setOf(
+    DeviceSecrets.PASSWORD,
+    DeviceSecrets.ENCRYPTED_PASSWORD,
+    MediaServerController.EXTRA_TOKEN,
+    MediaServerController.EXTRA_USER_ID,
+)
+
 /** Construction de l'appareil à partir du formulaire (logique pure, testée unitairement). */
 internal fun buildDevice(
     prefill: Device?,
@@ -83,26 +102,31 @@ internal fun buildDevice(
     location: String,
     username: String,
     password: String,
-): Device {
+): DeviceDraft {
+    // Changement de type : les extras (jeton Plex/Jellyfin, identifiant de session…) et
+    // l'identifiant de l'appareil pré-rempli appartiennent à un autre protocole.
+    val base = prefill?.takeIf { it.kind == kind }
+    val newCredentials = usesCredentials(kind) && username.isNotBlank()
     val extras = buildMap {
-        prefill?.extras?.let(::putAll)
+        base?.extras?.let { putAll(it - DeviceSecrets.PASSWORD) }
         if (kind == DeviceKind.UPNP_RENDERER) put("location", location.trim())
-        if (usesCredentials(kind) && username.isNotBlank()) {
+        if (newCredentials) {
+            STALE_CREDENTIALS.forEach { remove(it) }
             put("username", username.trim())
-            put("password", password)
         }
     }
     val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
     val effectiveHost = endpoint?.first ?: host.trim()
     val effectivePort = endpoint?.second ?: port.toInt()
-    return Device(
-        id = prefill?.id ?: Device.manualId(kind, effectiveHost, effectivePort),
+    val device = Device(
+        id = base?.id ?: Device.manualId(kind, effectiveHost, effectivePort),
         name = name.trim().ifBlank { "${kind.label} $effectiveHost" },
         kind = kind,
         host = effectiveHost,
         port = effectivePort,
         extras = extras,
     )
+    return DeviceDraft(device, password.takeIf { newCredentials })
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -184,12 +208,14 @@ fun DeviceConfigScreen(prefillJson: String?, onSaved: (String) -> Unit, onBack: 
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (kind != DeviceKind.KODI) {
-                    Text(
-                        "Le mot de passe sert uniquement à obtenir un jeton ; il n'est pas conservé.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
+                Text(
+                    if (kind == DeviceKind.KODI) {
+                        "Le mot de passe est conservé chiffré (Android Keystore) sur ce téléphone."
+                    } else {
+                        "Le mot de passe sert uniquement à obtenir un jeton ; il n'est pas conservé."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             if (kind == DeviceKind.FIRE_TV) {
                 Text(
@@ -205,13 +231,13 @@ fun DeviceConfigScreen(prefillJson: String?, onSaved: (String) -> Unit, onBack: 
                 onClick = {
                     error = ConfigValidation.error(kind, host, port, location)
                     if (error != null) return@Button
-                    val device = buildDevice(prefill, kind, name, host, port, location, username, password)
+                    val draft = buildDevice(prefill, kind, name, host, port, location, username, password)
                     // Désactive le bouton : un double appui enregistrait et ouvrait deux télécommandes.
                     saving = true
                     scope.launch {
                         try {
-                            context.container.devices.save(device)
-                            onSaved(device.id)
+                            context.container.devices.save(draft.device, draft.password)
+                            onSaved(draft.device.id)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {

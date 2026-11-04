@@ -56,7 +56,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.runningReduce
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -67,33 +70,63 @@ data class DevicesUiState(
     val scanning: Boolean = true,
 )
 
+/** Résultat courant de la découverte : `found == null` signifie « garder la liste précédente ». */
+private data class Discovery(val found: List<Device>?, val scanning: Boolean)
+
 /**
  * Combine appareils enregistrés et découverte réseau.
  * - La découverte n'émet qu'après la première recherche SSDP / NSD (plusieurs secondes) :
  *   sans valeur initiale, `combine` masquait les appareils enregistrés pendant ce temps.
  * - Une erreur de découverte ne doit pas faire planter l'écran (exception non interceptée
- *   dans `stateIn`) : la liste découverte devient simplement vide.
+ *   dans `stateIn`) : la recherche s'arrête (`scanning = false`) et les appareils déjà
+ *   trouvés restent affichés.
+ * - Un appareil découvert puis enregistré n'apparaît plus que dans « Mes appareils ».
  */
 fun devicesUiState(saved: Flow<List<Device>>, discovered: Flow<List<Device>>): Flow<DevicesUiState> = combine(
     saved,
-    discovered.onStart { emit(emptyList()) }.catch { emit(emptyList()) },
-) { savedList, found ->
+    discovered
+        .map { Discovery(it, scanning = true) }
+        .onStart { emit(Discovery(emptyList(), scanning = true)) }
+        // Fin normale de la recherche : la barre de progression disparaît, la liste reste.
+        .onCompletion { cause -> if (cause == null) emit(Discovery(null, scanning = false)) }
+        .catch { emit(Discovery(null, scanning = false)) }
+        .runningReduce { previous, next -> if (next.found == null) next.copy(found = previous.found) else next },
+) { savedList, discovery ->
     val savedIds = savedList.map { it.id }.toSet()
-    DevicesUiState(saved = savedList, discovered = found.filterNot { it.id in savedIds }, scanning = true)
+    DevicesUiState(
+        saved = savedList,
+        discovered = discovery.found.orEmpty().filterNot { it.id in savedIds },
+        scanning = discovery.scanning,
+    )
 }
 
-class DevicesViewModel(private val container: AppContainer) : ViewModel() {
-    val state: StateFlow<DevicesUiState> = devicesUiState(container.devices.saved, container.discovery.scan())
+/** Dépendances du ViewModel, isolées pour les tests JVM (ni NSD ni DataStore). */
+interface DevicesDependencies {
+    val saved: Flow<List<Device>>
+    fun scan(): Flow<List<Device>>
+    suspend fun save(device: Device)
+    suspend fun delete(id: String)
+}
+
+fun AppContainer.devicesDependencies(): DevicesDependencies = object : DevicesDependencies {
+    override val saved: Flow<List<Device>> get() = devices.saved
+    override fun scan(): Flow<List<Device>> = discovery.scan()
+    override suspend fun save(device: Device) = devices.save(device)
+    override suspend fun delete(id: String) = devices.delete(id)
+}
+
+class DevicesViewModel(private val deps: DevicesDependencies) : ViewModel() {
+    val state: StateFlow<DevicesUiState> = devicesUiState(deps.saved, deps.scan())
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DevicesUiState())
 
     /** Enregistre l'appareil découvert s'il n'exige aucun réglage ; renvoie `false` sinon. */
     suspend fun adopt(device: Device): Boolean {
         if (ControllerFactory.needsSetup(device)) return false
-        container.devices.save(device)
+        deps.save(device)
         return true
     }
 
-    fun delete(device: Device) = viewModelScope.launch { container.devices.delete(device.id) }
+    fun delete(device: Device) = viewModelScope.launch { deps.delete(device.id) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -105,7 +138,7 @@ fun DevicesScreen(
     onPlexLink: () -> Unit,
 ) {
     val context = LocalContext.current
-    val vm: DevicesViewModel = viewModel(factory = viewModelFactory { initializer { DevicesViewModel(context.container) } })
+    val vm: DevicesViewModel = viewModel(factory = viewModelFactory { initializer { DevicesViewModel(context.container.devicesDependencies()) } })
     val state by vm.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // Suppression confirmée : elle efface aussi les identifiants enregistrés de l'appareil.
