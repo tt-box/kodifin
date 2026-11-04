@@ -5,12 +5,32 @@ import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.HttpStatusException
+import io.github.jmorille.zapette.model.MediaDetails
+import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaSection
+import io.github.jmorille.zapette.model.MediaTrack
 import io.github.jmorille.zapette.model.PersistsCredentials
 import io.github.jmorille.zapette.model.PlaybackState
+import io.github.jmorille.zapette.model.PlaybackTarget
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
+import io.github.jmorille.zapette.model.RepeatMode
+import io.github.jmorille.zapette.model.SupportsChapters
+import io.github.jmorille.zapette.model.SupportsLibrary
+import io.github.jmorille.zapette.model.SupportsLibraryMaintenance
+import io.github.jmorille.zapette.model.SupportsNotify
+import io.github.jmorille.zapette.model.SupportsPlayMode
+import io.github.jmorille.zapette.model.SupportsQueue
+import io.github.jmorille.zapette.model.SupportsSeekStep
+import io.github.jmorille.zapette.model.SupportsSpeed
+import io.github.jmorille.zapette.model.SupportsTargets
+import io.github.jmorille.zapette.model.SupportsTracks
+import io.github.jmorille.zapette.model.SupportsUiCommands
+import io.github.jmorille.zapette.model.UiCommand
+import io.github.jmorille.zapette.model.UnsupportedActionException
 import io.github.jmorille.zapette.model.requireKey
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -25,13 +45,20 @@ import okhttp3.OkHttpClient
  *
  * Une session disparue (404) entraîne une nouvelle sélection ; un jeton refusé (401)
  * entraîne une nouvelle authentification si les identifiants sont encore en mémoire.
+ *
+ * Les touches ([supportedKeys]) et commandes d'interface ([uiCommands]) sont filtrées selon
+ * les `SupportedCommands` déclarées par la session cible (liste absente ou vide : tout est permis).
+ * L'API de contrôle à distance ne permet ni de retirer un élément de la file d'une autre
+ * session ni de la vider : [removeQueueItem] et [clearQueue] lèvent [UnsupportedActionException].
  */
 class MediaServerController(
     override val device: Device,
     private val client: MediaServerClient,
     private val pollIntervalMs: Long = 2_000,
     private val ownDeviceId: String? = null,
-) : RemoteController, PersistsCredentials, DescribesServer {
+) : RemoteController, PersistsCredentials, DescribesServer,
+    SupportsTargets, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsChapters,
+    SupportsUiCommands, SupportsNotify, SupportsLibraryMaintenance, SupportsLibrary, SupportsQueue {
 
     override fun persistableExtras(): Map<String, String> = buildMap {
         putAll(device.extras - EXTRA_PASSWORD - EXTRA_SESSION_ID - EXTRA_TOKEN - EXTRA_USER_ID)
@@ -49,12 +76,50 @@ class MediaServerController(
         Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK,
         Capability.TEXT_INPUT, Capability.NOW_PLAYING,
     )
-    override val supportedKeys = RemoteKey.entries.toSet()
+
+    /** Dernier état connu de la session cible (capacités, lecture en cours) ; `null` : inconnu. */
+    @Volatile private var lastSession: SessionDto? = null
+
+    /** Type de média (`Video`, `Audio`…) des éléments déjà parcourus, pour [play]. */
+    private val knownMediaTypes = ConcurrentHashMap<String, String>()
+
+    /** Pistes et chapitres du dernier élément consulté via l'API de bibliothèque (repli). */
+    @Volatile private var itemDetailsCache: Pair<String, ItemDto>? = null
+
+    /** Commandes générales acceptées par la session cible, en minuscules ; vide : inconnues. */
+    private fun knownCommands(): Set<String> = lastSession?.commands.orEmpty().mapTo(HashSet()) { it.lowercase() }
+
+    private fun accepts(commands: Set<String>, command: String) = commands.isEmpty() || command.lowercase() in commands
+
+    override val supportedKeys: Set<RemoteKey>
+        get() {
+            val commands = knownCommands()
+            return RemoteKey.entries.filterTo(LinkedHashSet()) { key ->
+                KEY_COMMANDS[key]?.let { accepts(commands, it) } ?: true
+            }
+        }
+
+    override val uiCommands: Set<UiCommand>
+        get() {
+            val commands = knownCommands()
+            return UiCommand.entries.filterTo(LinkedHashSet()) { accepts(commands, UI_COMMANDS.getValue(it)) }
+        }
+
+    /** Lève [UnsupportedActionException] si la session déclare ne pas accepter [command]. */
+    private fun requireCommand(command: String, label: String) {
+        if (!accepts(knownCommands(), command)) {
+            throw UnsupportedActionException("$label non pris en charge par ce client ${device.kind.label}")
+        }
+    }
 
     /** Protège l'authentification et la sélection de session contre les appels concurrents. */
     private val mutex = Mutex()
 
     @Volatile private var userId: String? = device.extras[EXTRA_USER_ID]
+
+    init {
+        if (client.userId == null) client.userId = userId
+    }
 
     @Volatile private var pinnedSessionId: String? = device.extras[EXTRA_SESSION_ID]
 
@@ -111,7 +176,12 @@ class MediaServerController(
     private suspend fun session(): String {
         sessionId?.let { return it }
         return mutex.withLock {
-            sessionId ?: selectSession(client.sessions(userId)).also { sessionId = it }
+            sessionId ?: client.sessions(userId).let { all ->
+                selectSession(all).also { id ->
+                    sessionId = id
+                    lastSession = all.firstOrNull { it.id == id }
+                }
+            }
         }
     }
 
@@ -127,6 +197,7 @@ class MediaServerController(
     private suspend fun forgetSession(stale: String) = mutex.withLock {
         if (sessionId == stale) sessionId = null
         if (pinnedSessionId == stale) pinnedSessionId = null
+        if (lastSession?.id == stale) lastSession = null
     }
 
     /**
@@ -217,7 +288,7 @@ class MediaServerController(
             val s = withSession { id ->
                 client.sessions(userId).firstOrNull { it.id == id }.also {
                     // Session disparue : nouvelle sélection au prochain tour.
-                    if (it == null) forgetSession(id)
+                    if (it == null) forgetSession(id) else remember(it)
                 }
             }
             emit(
@@ -234,6 +305,316 @@ class MediaServerController(
         }
     }
 
+    /** Mémorise l'état de [session] s'il s'agit toujours de la session cible. */
+    private fun remember(session: SessionDto) {
+        if (session.id == sessionId) lastSession = session
+    }
+
+    /** Exécute [action] hors session, avec au plus une nouvelle authentification (401). */
+    private suspend fun <T> withAuth(action: suspend () -> T): T {
+        val token = client.accessToken
+        return try {
+            action()
+        } catch (e: HttpStatusException) {
+            if (e.code != 401) throw e
+            renewToken(token)
+            action()
+        }
+    }
+
+    /** Exécute [action] avec l'état frais de la session cible (une session disparue est resélectionnée). */
+    private suspend fun <T> withCurrent(action: suspend (SessionDto) -> T): T = withSession { id ->
+        val current = client.sessions(userId).firstOrNull { it.id == id }
+            ?: throw HttpStatusException(404, "Session $id disparue")
+        remember(current)
+        action(current)
+    }
+
+    private fun requireUserId(): String =
+        userId ?: throw RemoteException("Utilisateur inconnu sur ${device.name} : reconnectez-vous")
+
+    /** Ni jeton ni extras (qui portent jeton et mot de passe) : sans risque dans un journal. */
+    override fun toString() = "MediaServerController(device=${device.id}, kind=${device.kind}, session=$sessionId)"
+
+    // --- Cibles (sessions) ---
+
+    override val currentTargetId: String? get() = sessionId
+
+    override suspend fun targets(): List<PlaybackTarget> {
+        val sessions = withAuth { client.sessions(userId) }
+        sessions.firstOrNull { it.id == sessionId }?.let(::remember)
+        return sessions.filter { it.isControllable() }.map { s ->
+            val name = listOf(s.client, s.deviceName).filter { it.isNotBlank() }.joinToString(" – ").ifEmpty { s.id }
+            PlaybackTarget(s.id, name, s.userName?.takeIf { it.isNotBlank() })
+        }
+    }
+
+    /**
+     * Impose la session [id] : elle remplace la sélection automatique et est enregistrée
+     * (extra [EXTRA_SESSION_ID] de [persistableExtras]).
+     */
+    override suspend fun selectTarget(id: String) {
+        val target = withAuth { client.sessions(userId) }.firstOrNull { it.id == id && it.isControllable() }
+            ?: throw RemoteException("Client introuvable ou non contrôlable sur ${device.name}")
+        mutex.withLock {
+            pinnedSessionId = id
+            sessionId = id
+            lastSession = target
+        }
+    }
+
+    private fun SessionDto.isControllable() = supportsRemoteControl && (ownDeviceId == null || deviceId != ownDeviceId)
+
+    // --- Pistes ---
+
+    /** Pistes et chapitres de l'élément en cours ; repli sur l'API de bibliothèque s'ils manquent. */
+    private suspend fun itemDetails(session: SessionDto): ItemDto? {
+        val itemId = session.nowPlaying?.id ?: return null
+        val uid = userId ?: return null
+        itemDetailsCache?.let { (cachedId, item) -> if (cachedId == itemId) return item }
+        val item = try {
+            client.item(uid, itemId)
+        } catch (e: HttpStatusException) {
+            // Un 404 ici concerne l'élément, pas la session : il ne doit pas la faire oublier.
+            if (e.code == 401) throw e
+            return null
+        }
+        itemDetailsCache = itemId to item
+        return item
+    }
+
+    private suspend fun streams(session: SessionDto): List<MediaStreamDto> {
+        session.nowPlaying?.mediaStreams?.takeIf { it.isNotEmpty() }?.let { return it }
+        val item = itemDetails(session) ?: return emptyList()
+        val sources = item.mediaSources.orEmpty()
+        val source = sources.firstOrNull { it.id != null && it.id == session.playState?.mediaSourceId } ?: sources.firstOrNull()
+        return source?.mediaStreams?.takeIf { it.isNotEmpty() } ?: item.mediaStreams.orEmpty()
+    }
+
+    private suspend fun chapters(session: SessionDto): List<ChapterDto> {
+        session.nowPlaying?.chapters?.takeIf { it.isNotEmpty() }?.let { return it }
+        return itemDetails(session)?.chapters.orEmpty()
+    }
+
+    private suspend fun details(session: SessionDto): MediaDetails {
+        val playing = session.nowPlaying ?: return MediaDetails(speed = 0)
+        val state = session.playState
+        val streams = streams(session)
+        return MediaDetails(
+            audioTracks = streams.filter { it.type.equals("Audio", true) }.map { it.toTrack() },
+            currentAudio = state?.audioStreamIndex,
+            subtitles = streams.filter { it.type.equals("Subtitle", true) }.map { it.toTrack() },
+            currentSubtitle = state?.subtitleStreamIndex?.takeIf { it >= 0 },
+            repeat = repeatMode(state?.repeatMode),
+            shuffle = state?.playbackOrder?.let { it.equals("Shuffle", true) }
+                ?: state?.shuffleMode?.let { it.equals("Shuffle", true) },
+            speed = if (state?.isPaused == true) 0 else 1,
+            chapterCount = chapters(session).size,
+        )
+    }
+
+    override suspend fun mediaDetails(): MediaDetails = withCurrent { details(it) }
+
+    override suspend fun setAudioTrack(id: Int) {
+        requireCommand("SetAudioStreamIndex", "Changement de piste audio")
+        withSession { client.generalCommand(it, "SetAudioStreamIndex", mapOf("Index" to id.toString())) }
+    }
+
+    /** `null` désactive les sous-titres (index -1). */
+    override suspend fun setSubtitle(id: Int?) {
+        requireCommand("SetSubtitleStreamIndex", "Changement de sous-titres")
+        withSession { client.generalCommand(it, "SetSubtitleStreamIndex", mapOf("Index" to (id ?: -1).toString())) }
+    }
+
+    /** Sous-titres suivants : désactivés → premier → … → dernier → désactivés. */
+    override suspend fun nextSubtitle() {
+        val d = mediaDetails()
+        if (d.subtitles.isEmpty()) throw UnsupportedActionException("Aucun sous-titre pour ce média")
+        setSubtitle(nextOf(d.subtitles, d.currentSubtitle, wrapToNull = true))
+    }
+
+    /** Piste audio suivante, en boucle. */
+    override suspend fun nextAudioTrack() {
+        val d = mediaDetails()
+        if (d.audioTracks.isEmpty()) throw UnsupportedActionException("Aucune piste audio pour ce média")
+        setAudioTrack(nextOf(d.audioTracks, d.currentAudio, wrapToNull = false)!!)
+    }
+
+    // --- Déplacement, vitesse, modes ---
+
+    override suspend fun seekBy(deltaMs: Long) {
+        withCurrent { s ->
+            val state = s.playState
+            if (s.nowPlaying == null || state == null) throw RemoteException("Aucune lecture en cours sur ce client")
+            val runtime = s.nowPlaying.runTimeTicks
+            val target = (state.positionTicks + deltaMs * TICKS_PER_MS)
+                .coerceAtLeast(0)
+                .let { if (runtime > 0) it.coerceAtMost(runtime) else it }
+            client.playstate(s.id, "Seek", seekPositionTicks = target)
+        }
+    }
+
+    override suspend fun faster() {
+        withSession { client.playstate(it, "FastForward") }
+    }
+
+    override suspend fun slower() {
+        withSession { client.playstate(it, "Rewind") }
+    }
+
+    override suspend fun setRepeat(mode: RepeatMode) {
+        requireCommand("SetRepeatMode", "Mode de répétition")
+        val value = when (mode) {
+            RepeatMode.OFF -> "RepeatNone"
+            RepeatMode.ONE -> "RepeatOne"
+            RepeatMode.ALL -> "RepeatAll"
+        }
+        withSession { client.generalCommand(it, "SetRepeatMode", mapOf("RepeatMode" to value)) }
+    }
+
+    override suspend fun setShuffle(enabled: Boolean) {
+        requireCommand("SetShuffleQueue", "Lecture aléatoire")
+        withSession {
+            client.generalCommand(it, "SetShuffleQueue", mapOf("ShuffleMode" to if (enabled) "Shuffle" else "Sorted"))
+        }
+    }
+
+    // --- Chapitres ---
+
+    override suspend fun nextChapter() = seekChapter(next = true)
+
+    override suspend fun previousChapter() = seekChapter(next = false)
+
+    /**
+     * Saut au chapitre suivant (sans effet après le dernier) ou précédent ; dans les
+     * [CHAPTER_GRACE_MS] premières millisecondes d'un chapitre, « précédent » remonte d'un cran.
+     */
+    private suspend fun seekChapter(next: Boolean) {
+        withCurrent { s ->
+            val starts = chapters(s).map { it.startPositionTicks }.sorted()
+            if (starts.isEmpty()) throw UnsupportedActionException("Aucun chapitre pour ce média")
+            val position = s.playState?.positionTicks ?: 0
+            val target = if (next) {
+                starts.firstOrNull { it > position } ?: return@withCurrent
+            } else {
+                starts.lastOrNull { it <= position - CHAPTER_GRACE_MS * TICKS_PER_MS } ?: 0
+            }
+            client.playstate(s.id, "Seek", seekPositionTicks = target)
+        }
+    }
+
+    // --- Interface, messages ---
+
+    override suspend fun uiCommand(command: UiCommand) {
+        if (command !in uiCommands) {
+            throw UnsupportedActionException("${command.label} non pris en charge par ce client ${device.kind.label}")
+        }
+        withSession { client.generalCommand(it, UI_COMMANDS.getValue(command)) }
+    }
+
+    override suspend fun showMessage(title: String, text: String) {
+        requireCommand("DisplayMessage", "Affichage de message")
+        withSession { client.sendMessage(it, title, text, MESSAGE_TIMEOUT_MS) }
+    }
+
+    // --- Maintenance ---
+
+    override suspend fun scanLibrary() {
+        try {
+            withAuth { client.refreshLibrary() }
+        } catch (e: HttpStatusException) {
+            if (e.code != 401 && e.code != 403) throw e
+            throw RemoteException("L'analyse de la bibliothèque est réservée à un administrateur de ${device.name}", e)
+        }
+    }
+
+    override suspend fun cleanLibrary() {
+        throw UnsupportedActionException(
+            "Nettoyage de la bibliothèque non disponible : ${device.kind.label} retire les éléments disparus lors de l'analyse",
+        )
+    }
+
+    // --- Bibliothèque ---
+
+    override suspend fun sections(): List<MediaSection> {
+        val uid = requireUserId()
+        return withAuth { client.userViews(uid) }.filter { it.id.isNotBlank() }.map { MediaSection(it.id, it.name) }
+    }
+
+    override suspend fun browse(parentId: String, offset: Int, limit: Int): List<MediaEntry> {
+        val uid = requireUserId()
+        val query = mapOf(
+            "ParentId" to parentId,
+            "StartIndex" to offset.coerceAtLeast(0).toString(),
+            "Limit" to limit.coerceIn(1, MAX_PAGE).toString(),
+            "SortBy" to "SortName",
+            "SortOrder" to "Ascending",
+        )
+        val items = withAuth { client.items(uid, query) }.items.filter { it.id.isNotBlank() }
+        if (knownMediaTypes.size > MAX_KNOWN_TYPES) knownMediaTypes.clear()
+        items.forEach { item -> item.mediaType?.takeIf { it.isNotBlank() }?.let { knownMediaTypes[item.id] = it } }
+        return items.map { it.toEntry() }
+    }
+
+    override suspend fun play(entryId: String) {
+        requirePlayable(entryId)
+        withSession { client.play(it, "PlayNow", listOf(entryId)) }
+    }
+
+    override suspend fun enqueue(entryId: String, next: Boolean) {
+        requirePlayable(entryId)
+        withSession { client.play(it, if (next) "PlayNext" else "PlayLast", listOf(entryId)) }
+    }
+
+    /** Refuse un média dont le type est connu et absent des `PlayableMediaTypes` de la session. */
+    private fun requirePlayable(entryId: String) {
+        val playable = lastSession?.mediaTypes.orEmpty()
+        val type = knownMediaTypes[entryId] ?: return
+        if (playable.isNotEmpty() && playable.none { it.equals(type, true) }) {
+            throw UnsupportedActionException("Ce client ne lit pas les médias de type $type")
+        }
+    }
+
+    // --- File d'attente ---
+
+    override suspend fun queue(): List<MediaEntry> = withCurrent { s ->
+        val queue = s.nowPlayingQueue.orEmpty().filter { it.id.isNotBlank() }
+        if (queue.isEmpty()) return@withCurrent emptyList()
+        val uid = userId
+        val titles = if (uid == null) {
+            emptyMap()
+        } else {
+            val ids = queue.map { it.id }.distinct().joinToString(",")
+            client.items(uid, mapOf("Ids" to ids)).items.associateBy { it.id }
+        }
+        queue.map { q -> titles[q.id]?.toEntry() ?: MediaEntry(q.id, q.id) }
+    }
+
+    override suspend fun queuePosition(): Int? = withCurrent { s ->
+        val queue = s.nowPlayingQueue.orEmpty()
+        s.playlistItemId?.let { pid -> queue.indexOfFirst { it.playlistItemId == pid } }?.takeIf { it >= 0 }
+            ?: s.nowPlaying?.id?.let { id -> queue.indexOfFirst { it.id == id } }?.takeIf { it >= 0 }
+    }
+
+    /** Relance toute la file à partir de [index] (`PlayNow` + `startIndex`), sans la modifier. */
+    override suspend fun playQueueItem(index: Int) {
+        withCurrent { s ->
+            val ids = s.nowPlayingQueue.orEmpty().map { it.id }.filter { it.isNotBlank() }
+            if (index !in ids.indices) throw RemoteException("Élément absent de la file d'attente")
+            client.play(s.id, "PlayNow", ids, startIndex = index)
+        }
+    }
+
+    override suspend fun removeQueueItem(index: Int) {
+        throw UnsupportedActionException(
+            "${device.kind.label} ne permet pas de retirer un élément de la file d'un autre client",
+        )
+    }
+
+    override suspend fun clearQueue() {
+        throw UnsupportedActionException("${device.kind.label} ne permet pas de vider la file d'un autre client")
+    }
+
     companion object {
         const val EXTRA_USERNAME = "username"
         const val EXTRA_PASSWORD = "password"
@@ -243,6 +624,99 @@ class MediaServerController(
 
         /** Chemin de base de l'API (« URL de base » du serveur), ex. `/jellyfin`. */
         const val EXTRA_BASE_PATH = "base_path"
+
+        /** Durée d'affichage d'un message à l'écran. */
+        const val MESSAGE_TIMEOUT_MS = 5_000L
+
+        /** Dans un chapitre depuis moins longtemps, « chapitre précédent » remonte d'un cran. */
+        const val CHAPTER_GRACE_MS = 3_000L
+
+        private const val MAX_PAGE = 500
+        private const val MAX_KNOWN_TYPES = 2_000
+
+        /** Touches envoyées comme commandes générales (filtrables par `SupportedCommands`). */
+        internal val KEY_COMMANDS = mapOf(
+            RemoteKey.UP to "MoveUp",
+            RemoteKey.DOWN to "MoveDown",
+            RemoteKey.LEFT to "MoveLeft",
+            RemoteKey.RIGHT to "MoveRight",
+            RemoteKey.SELECT to "Select",
+            RemoteKey.BACK to "Back",
+            RemoteKey.HOME to "GoHome",
+            RemoteKey.MENU to "ToggleContextMenu",
+            RemoteKey.INFO to "ToggleOsdMenu",
+            RemoteKey.VOLUME_UP to "VolumeUp",
+            RemoteKey.VOLUME_DOWN to "VolumeDown",
+            RemoteKey.MUTE to "ToggleMute",
+        )
+
+        /** Commande générale (`GeneralCommandType`) de chaque commande d'interface. */
+        internal val UI_COMMANDS = mapOf(
+            UiCommand.OSD to "ToggleOsdMenu",
+            UiCommand.CONTEXT_MENU to "ToggleContextMenu",
+            UiCommand.CODEC_INFO to "ToggleStats",
+            UiCommand.FULLSCREEN to "ToggleFullscreen",
+            UiCommand.HOME_SCREEN to "GoHome",
+            UiCommand.SETTINGS to "GoToSettings",
+            UiCommand.SEARCH to "GoToSearch",
+            UiCommand.PAGE_UP to "PageUp",
+            UiCommand.PAGE_DOWN to "PageDown",
+            UiCommand.CHANNEL_UP to "ChannelUp",
+            UiCommand.CHANNEL_DOWN to "ChannelDown",
+            UiCommand.GUIDE to "Guide",
+        )
+
+        /** Types toujours navigables, même si `IsFolder` est absent. */
+        private val BROWSABLE_TYPES = setOf(
+            "Series", "Season", "MusicAlbum", "MusicArtist", "BoxSet", "Folder", "CollectionFolder",
+            "UserView", "Playlist", "PhotoAlbum",
+        )
+
+        internal fun repeatMode(raw: String?): RepeatMode? = when (raw) {
+            "RepeatNone" -> RepeatMode.OFF
+            "RepeatOne" -> RepeatMode.ONE
+            "RepeatAll" -> RepeatMode.ALL
+            else -> null
+        }
+
+        /**
+         * Piste suivant [current] dans [tracks] ; après la dernière : `null` si [wrapToNull]
+         * (désactivation), sinon la première. Sans piste courante : la première.
+         */
+        internal fun nextOf(tracks: List<MediaTrack>, current: Int?, wrapToNull: Boolean): Int? {
+            val position = tracks.indexOfFirst { it.id == current }
+            return when {
+                position < 0 -> tracks.firstOrNull()?.id
+                position + 1 < tracks.size -> tracks[position + 1].id
+                wrapToNull -> null
+                else -> tracks.first().id
+            }
+        }
+
+        internal fun MediaStreamDto.toTrack() = MediaTrack(
+            id = index,
+            label = displayTitle?.takeIf { it.isNotBlank() } ?: title?.takeIf { it.isNotBlank() }
+                ?: language?.takeIf { it.isNotBlank() } ?: "Piste $index",
+            language = language?.takeIf { it.isNotBlank() },
+        )
+
+        internal fun ItemDto.toEntry(): MediaEntry {
+            val episode = if (parentIndexNumber != null && indexNumber != null) {
+                "S%02dE%02d".format(parentIndexNumber, indexNumber)
+            } else {
+                null
+            }
+            val subtitle = when (type) {
+                "Episode" -> listOfNotNull(seriesName?.takeIf { it.isNotBlank() }, episode).joinToString(" · ")
+                else -> productionYear?.toString()
+            }?.takeIf { it.isNotBlank() }
+            return MediaEntry(
+                id = id,
+                title = name.ifBlank { id },
+                subtitle = subtitle,
+                browsable = isFolder || type in BROWSABLE_TYPES,
+            )
+        }
 
         private val BASE_PATH_CANDIDATES = MediaServerClient.DEFAULT_BASE_PATHS
         private val BASE_PATH = Regex("^(/[A-Za-z0-9._~-]+)+$")
