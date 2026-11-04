@@ -8,7 +8,12 @@ import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.MediaDetails
 import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
+import io.github.jmorille.zapette.model.SeriesContext
+import io.github.jmorille.zapette.model.SupportsImages
+import io.github.jmorille.zapette.model.SupportsSearch
+import io.github.jmorille.zapette.model.SupportsSeries
 import io.github.jmorille.zapette.model.MediaTrack
 import io.github.jmorille.zapette.model.PersistsCredentials
 import io.github.jmorille.zapette.model.PlaybackState
@@ -59,7 +64,8 @@ class MediaServerController(
     private val ownDeviceId: String? = null,
 ) : RemoteController, PersistsCredentials, DescribesServer,
     SupportsTargets, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsChapters,
-    SupportsUiCommands, SupportsNotify, SupportsLibraryMaintenance, SupportsLibrary, SupportsQueue {
+    SupportsUiCommands, SupportsNotify, SupportsLibraryMaintenance, SupportsLibrary, SupportsQueue,
+    SupportsSeries, SupportsSearch, SupportsImages {
 
     override fun persistableExtras(): Map<String, String> = buildMap {
         putAll(device.extras - EXTRA_PASSWORD - EXTRA_SESSION_ID - EXTRA_TOKEN - EXTRA_USER_ID)
@@ -292,9 +298,13 @@ class MediaServerController(
                     if (it == null) forgetSession(id) else remember(it)
                 }
             }
+            val episode = s?.nowPlaying?.takeIf { it.isEpisode }
             emit(
                 PlaybackState(
                     title = s?.nowPlaying?.name,
+                    seriesTitle = episode?.seriesName?.takeIf { it.isNotBlank() },
+                    season = episode?.parentIndexNumber,
+                    episode = episode?.indexNumber,
                     isPlaying = s?.nowPlaying != null && s.playState?.isPaused == false,
                     positionMs = (s?.playState?.positionTicks ?: 0) / TICKS_PER_MS,
                     durationMs = (s?.nowPlaying?.runTimeTicks ?: 0) / TICKS_PER_MS,
@@ -545,19 +555,133 @@ class MediaServerController(
         return withAuth { client.userViews(uid) }.filter { it.id.isNotBlank() }.map { MediaSection(it.id, it.name) }
     }
 
+    /**
+     * Contenu de [parentId]. Une saison déjà rencontrée (série en cours, parcours d'une série,
+     * recherche) est listée par `GET /Shows/{seriesId}/Episodes?seasonId=…`, dans l'ordre des
+     * épisodes ; tout autre dossier par la route générique (`ParentId`, tri par nom).
+     */
     override suspend fun browse(parentId: String, offset: Int, limit: Int): List<MediaEntry> {
         val uid = requireUserId()
-        val query = mapOf(
-            "ParentId" to parentId,
+        val paging = mapOf(
             "StartIndex" to offset.coerceAtLeast(0).toString(),
             "Limit" to limit.coerceIn(1, MAX_PAGE).toString(),
-            "SortBy" to "SortName",
-            "SortOrder" to "Ascending",
         )
-        val items = withAuth { client.items(uid, query) }.items.filter { it.id.isNotBlank() }
+        seasonSeries[parentId]?.let { seriesId ->
+            val episodes = try {
+                withAuth { client.episodes(uid, seriesId, parentId, paging + ITEM_FIELDS) }.items
+            } catch (e: HttpStatusException) {
+                // Saison disparue ou route absente : repli sur le parcours générique.
+                if (e.code != 404 && e.code != 400) throw e
+                null
+            }
+            if (episodes != null) {
+                val sorted = episodes.filter { it.id.isNotBlank() }
+                    .sortedWith(
+                        compareBy<ItemDto, Int?>(nullsLast()) { it.parentIndexNumber }
+                            .thenBy(nullsLast<Int>()) { it.indexNumber },
+                    )
+                return learn(sorted).map { it.toEntry(withSeriesName = false) }
+            }
+        }
+        val query = mapOf("ParentId" to parentId, "SortBy" to "SortName", "SortOrder" to "Ascending") + paging + ITEM_FIELDS
+        return learn(withAuth { client.items(uid, query) }.items).map { it.toEntry() }
+    }
+
+    /** Saison → série, pour lister les épisodes d'une saison via `/Shows/{seriesId}/Episodes`. */
+    private val seasonSeries = ConcurrentHashMap<String, String>()
+
+    /** Retient type de média (pour [play]) et rattachement des saisons ; ignore les éléments sans id. */
+    private fun learn(items: List<ItemDto>): List<ItemDto> {
+        val valid = items.filter { it.id.isNotBlank() }
         if (knownMediaTypes.size > MAX_KNOWN_TYPES) knownMediaTypes.clear()
-        items.forEach { item -> item.mediaType?.takeIf { it.isNotBlank() }?.let { knownMediaTypes[item.id] = it } }
-        return items.map { it.toEntry() }
+        if (seasonSeries.size > MAX_KNOWN_TYPES) seasonSeries.clear()
+        valid.forEach { item ->
+            item.mediaType?.takeIf { it.isNotBlank() }?.let { knownMediaTypes[item.id] = it }
+            val series = item.seriesId?.takeIf { it.isNotBlank() }
+            if (series != null && item.type == "Season") seasonSeries[item.id] = series
+            // Un épisode fait connaître sa saison.
+            val season = item.seasonId?.takeIf { it.isNotBlank() }
+            if (series != null && season != null && item.type == "Episode") seasonSeries[season] = series
+        }
+        return valid
+    }
+
+    // --- Série en cours ---
+
+    /**
+     * Série de l'épisode en cours : saisons via `GET /Shows/{seriesId}/Seasons`. Si la session
+     * ne publie pas `SeriesId` (anciens serveurs), il est lu sur la fiche de l'épisode.
+     */
+    override suspend fun currentSeries(): SeriesContext? {
+        val playing = withCurrent { it.nowPlaying }?.takeIf { it.isEpisode } ?: return null
+        val uid = requireUserId()
+        var seriesId = playing.seriesId?.takeIf { it.isNotBlank() }
+        var seasonId = playing.seasonId?.takeIf { it.isNotBlank() }
+        var seriesName = playing.seriesName?.takeIf { it.isNotBlank() }
+        if (seriesId == null) {
+            val id = playing.id?.takeIf { it.isNotBlank() } ?: return null
+            val item = try {
+                withAuth { client.item(uid, id) }
+            } catch (e: HttpStatusException) {
+                if (e.code == 404) return null
+                throw e
+            }
+            seriesId = item.seriesId?.takeIf { it.isNotBlank() } ?: return null
+            seasonId = seasonId ?: item.seasonId?.takeIf { it.isNotBlank() }
+            seriesName = seriesName ?: item.seriesName?.takeIf { it.isNotBlank() }
+        }
+        val seasons = learn(withAuth { client.seasons(uid, seriesId, ITEM_FIELDS) }.items)
+        seasons.forEach { seasonSeries[it.id] = seriesId }
+        seasonId?.let { seasonSeries[it] = seriesId }
+        return SeriesContext(
+            seriesId = seriesId,
+            title = seriesName ?: playing.name.ifBlank { seriesId },
+            seasons = seasons.map { it.toEntry() },
+            currentSeasonId = seasonId,
+            currentEpisodeId = playing.id?.takeIf { it.isNotBlank() },
+        )
+    }
+
+    // --- Recherche ---
+
+    override val searchKinds: Set<MediaKind> = SEARCH_TYPES.keys
+
+    /**
+     * Recherche native : `GET /Items?searchTerm=…&Recursive=true&IncludeItemTypes=…` (Emby :
+     * `/Users/{id}/Items`), dans l'ordre de pertinence du serveur (aucun `SortBy`). Préférée à
+     * `/Search/Hints`, dont les résultats n'ont ni `UserData` ni le même schéma que le parcours.
+     * Les artistes passent par `GET /Artists?searchTerm=…` et sont placés en tête.
+     */
+    override suspend fun search(query: String, kinds: Set<MediaKind>, limit: Int): List<MediaEntry> {
+        val term = query.trim()
+        if (term.isEmpty()) return emptyList()
+        val uid = requireUserId()
+        val wanted = kinds.filter { it in SEARCH_TYPES }.ifEmpty { SEARCH_TYPES.keys }.toSet()
+        val max = limit.coerceIn(1, MAX_PAGE)
+        val base = mapOf("searchTerm" to term, "Limit" to max.toString()) + ITEM_FIELDS
+        val artists = if (MediaKind.ARTIST in wanted) withAuth { client.artists(uid, base) }.items else emptyList()
+        val types = (wanted - MediaKind.ARTIST).map { SEARCH_TYPES.getValue(it) }
+        val items = if (types.isEmpty()) {
+            emptyList()
+        } else {
+            val q = base + mapOf("Recursive" to "true", "IncludeItemTypes" to types.joinToString(","))
+            withAuth { client.items(uid, q) }.items
+        }
+        return learn(artists + items).distinctBy { it.id }.take(max).map { it.toEntry() }
+    }
+
+    // --- Images ---
+
+    /**
+     * Image désignée par [imageKey] (`<itemId>/<type>[/<tag>]`, voir [imageKey]) : même client
+     * HTTP et même authentification (en-tête) que le reste de l'API, même hôte uniquement,
+     * au plus [MAX_IMAGE_BYTES] octets. Clé invalide ou image absente (404) : `null`.
+     */
+    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? {
+        val (itemId, type, tag) = parseImageKey(imageKey) ?: return null
+        return withAuth {
+            client.image(itemId, type, tag, maxWidth.coerceIn(MIN_IMAGE_WIDTH, MAX_IMAGE_WIDTH), IMAGE_QUALITY, MAX_IMAGE_BYTES)
+        }
     }
 
     override suspend fun play(entryId: String) {
@@ -589,7 +713,7 @@ class MediaServerController(
             emptyMap()
         } else {
             val ids = queue.map { it.id }.distinct().joinToString(",")
-            client.items(uid, mapOf("Ids" to ids)).items.associateBy { it.id }
+            learn(client.items(uid, mapOf("Ids" to ids) + ITEM_FIELDS).items).associateBy { it.id }
         }
         queue.map { q -> titles[q.id]?.toEntry() ?: MediaEntry(q.id, q.id) }
     }
@@ -704,23 +828,109 @@ class MediaServerController(
             language = language?.takeIf { it.isNotBlank() },
         )
 
-        internal fun ItemDto.toEntry(): MediaEntry {
-            val episode = if (parentIndexNumber != null && indexNumber != null) {
-                "S%02dE%02d".format(parentIndexNumber, indexNumber)
+        /**
+         * Entrée de bibliothèque enrichie (nature, année, saison/épisode, vu, image). Sous-titre
+         * d'un épisode : « Série · S01E03 · 24 min » ([withSeriesName]) ou « S01E03 · 24 min ».
+         */
+        internal fun ItemDto.toEntry(withSeriesName: Boolean = true): MediaEntry {
+            val isEpisode = type == "Episode"
+            val subtitle = if (isEpisode) {
+                val code = when {
+                    parentIndexNumber != null && indexNumber != null -> "S%02dE%02d".format(parentIndexNumber, indexNumber)
+                    indexNumber != null -> "E%02d".format(indexNumber)
+                    else -> null
+                }
+                val minutes = runTimeTicks?.takeIf { it > 0 }?.let { ((it + TICKS_PER_MINUTE / 2) / TICKS_PER_MINUTE).coerceAtLeast(1) }
+                listOfNotNull(
+                    seriesName?.takeIf { withSeriesName && it.isNotBlank() },
+                    code,
+                    minutes?.let { "$it min" },
+                ).joinToString(" · ")
             } else {
-                null
-            }
-            val subtitle = when (type) {
-                "Episode" -> listOfNotNull(seriesName?.takeIf { it.isNotBlank() }, episode).joinToString(" · ")
-                else -> productionYear?.toString()
+                productionYear?.toString()
             }?.takeIf { it.isNotBlank() }
             return MediaEntry(
                 id = id,
                 title = name.ifBlank { id },
                 subtitle = subtitle,
                 browsable = isFolder || type in BROWSABLE_TYPES,
+                kind = mediaKind(type),
+                imageKey = imageKey(),
+                year = productionYear?.takeIf { it > 0 },
+                season = if (isEpisode) parentIndexNumber else null,
+                episode = if (isEpisode) indexNumber else null,
+                watched = userData?.played,
             )
         }
+
+        /** Nature d'un élément selon son `Type` (`BaseItemKind`) ; `null` si le type est absent. */
+        internal fun mediaKind(type: String?): MediaKind? = when (type) {
+            null, "" -> null
+            "Movie" -> MediaKind.MOVIE
+            "Series" -> MediaKind.SERIES
+            "Season" -> MediaKind.SEASON
+            "Episode" -> MediaKind.EPISODE
+            "MusicArtist" -> MediaKind.ARTIST
+            "MusicAlbum" -> MediaKind.ALBUM
+            "Audio" -> MediaKind.SONG
+            "TvChannel", "LiveTvChannel" -> MediaKind.CHANNEL
+            "Folder", "CollectionFolder", "UserView", "BoxSet", "Playlist", "PhotoAlbum", "AggregateFolder",
+            "ManualPlaylistsFolder", "PlaylistsFolder", "UserRootFolder", "Channel", "ChannelFolderItem",
+            -> MediaKind.FOLDER
+            else -> MediaKind.OTHER
+        }
+
+        /**
+         * Clé d'image `<itemId>/<type>/<tag>` : image `Primary` de l'élément, sinon `Thumb`,
+         * sinon premier `Backdrop` ; à défaut, pour un épisode ou une saison, l'affiche de la
+         * série (`<seriesId>/Primary/<SeriesPrimaryImageTag>`, ou `<seriesId>/Primary` sans
+         * étiquette connue). `null` : aucune image annoncée.
+         */
+        internal fun ItemDto.imageKey(): String? {
+            val tags = imageTags.orEmpty()
+            fun key(item: String, type: String, tag: String?) =
+                if (tag.isNullOrBlank()) "$item/$type" else "$item/$type/$tag"
+            tags["Primary"]?.let { return key(id, "Primary", it) }
+            tags["Thumb"]?.let { return key(id, "Thumb", it) }
+            backdropImageTags?.firstOrNull()?.let { return key(id, "Backdrop", it) }
+            val series = seriesId?.takeIf { it.isNotBlank() } ?: return null
+            if (type != "Episode" && type != "Season") return null
+            return key(series, "Primary", seriesPrimaryImageTag)
+        }
+
+        /** Décompose une clé d'image ; `null` si elle est mal formée ou désigne un type non autorisé. */
+        internal fun parseImageKey(key: String): Triple<String, String, String?>? {
+            val parts = key.split('/')
+            if (parts.size !in 2..3) return null
+            val (itemId, type) = parts
+            val tag = parts.getOrNull(2)
+            if (!IMAGE_ID.matches(itemId) || type !in IMAGE_TYPES) return null
+            if (tag != null && !IMAGE_ID.matches(tag)) return null
+            return Triple(itemId, type, tag)
+        }
+
+        /** Champs demandés en plus des champs par défaut (images, `UserData`, année, numéros). */
+        internal val ITEM_FIELDS = mapOf("Fields" to "PrimaryImageAspectRatio", "EnableUserData" to "true")
+
+        /** Natures interrogeables et `BaseItemKind` correspondants (ARTIST : route `/Artists`). */
+        internal val SEARCH_TYPES = linkedMapOf(
+            MediaKind.MOVIE to "Movie",
+            MediaKind.SERIES to "Series",
+            MediaKind.EPISODE to "Episode",
+            MediaKind.ARTIST to "MusicArtist",
+            MediaKind.ALBUM to "MusicAlbum",
+            MediaKind.SONG to "Audio",
+            MediaKind.CHANNEL to "TvChannel",
+        )
+
+        /** Taille maximale d'une image reçue (4 Mio). */
+        const val MAX_IMAGE_BYTES = 4L * 1024 * 1024
+        private const val IMAGE_QUALITY = 85
+        private const val MIN_IMAGE_WIDTH = 16
+        private const val MAX_IMAGE_WIDTH = 3_840
+        private const val TICKS_PER_MINUTE = 60_000L * TICKS_PER_MS
+        private val IMAGE_TYPES = setOf("Primary", "Thumb", "Backdrop", "Banner", "Logo", "Art", "Disc")
+        private val IMAGE_ID = Regex("^[A-Za-z0-9-]{1,128}$")
 
         private val BASE_PATH_CANDIDATES = MediaServerClient.DEFAULT_BASE_PATHS
         private val BASE_PATH = Regex("^(/[A-Za-z0-9._~-]+)+$")

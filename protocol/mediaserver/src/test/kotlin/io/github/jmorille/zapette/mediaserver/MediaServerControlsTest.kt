@@ -3,6 +3,7 @@ package io.github.jmorille.zapette.mediaserver
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
 import io.github.jmorille.zapette.model.MediaTrack
 import io.github.jmorille.zapette.model.PlaybackTarget
@@ -313,10 +314,10 @@ class MediaServerControlsTest {
         val entries = c.browse("v1", offset = 20, limit = 10)
         assertEquals(
             listOf(
-                MediaEntry("m1", "Alien", "1979"),
-                MediaEntry("se1", "Dark", browsable = true),
-                MediaEntry("sa1", "Saison 1", browsable = true),
-                MediaEntry("e1", "Secrets", "Dark · S01E02"),
+                MediaEntry("m1", "Alien", "1979", kind = MediaKind.MOVIE, year = 1979),
+                MediaEntry("se1", "Dark", browsable = true, kind = MediaKind.SERIES),
+                MediaEntry("sa1", "Saison 1", browsable = true, kind = MediaKind.SEASON),
+                MediaEntry("e1", "Secrets", "Dark · S01E02", kind = MediaKind.EPISODE, season = 1, episode = 2),
             ),
             entries,
         )
