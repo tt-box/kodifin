@@ -170,18 +170,31 @@ fun ProgressCard(
     canSeek: Boolean,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    /** Épisode : « S01E10 · Titre de l'épisode » (le titre est alors le nom de la série). */
+    subtitle: String? = null,
 ) {
     Surface(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.secondaryContainer) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title ?: "Rien en lecture",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        title ?: "Rien en lecture",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (subtitle != null) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false).padding(start = 12.dp),
+                        )
+                    }
+                }
                 if (status != null) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 12.dp))
             }
             MediaProgress(positionMs, durationMs, chapters, canSeek, onSeek)

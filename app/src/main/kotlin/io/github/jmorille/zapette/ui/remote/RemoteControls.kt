@@ -141,13 +141,24 @@ fun NowPlayingBanner(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            // Épisode : la série en titre, « S01E10 · Titre de l'épisode » en dessous.
+            val titles = nowPlayingTitles(playback)
             Text(
-                playback.title ?: "Rien en lecture",
+                titles.title ?: "Rien en lecture",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            titles.subtitle?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             val status = buildList {
                 add(if (playback.isPlaying) "En lecture" else if (playback.title != null) "En pause" else null)
                 details?.speed?.takeIf { it != 1 && it != 0 }?.let { add("Vitesse ×$it") }

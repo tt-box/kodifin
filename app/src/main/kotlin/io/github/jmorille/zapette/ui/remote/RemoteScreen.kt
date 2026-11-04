@@ -56,6 +56,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -180,6 +181,7 @@ fun RemoteScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.networkBlocked?.let { NetworkBlockedCard(it) }
+            CompositionLocalProvider(LocalImageLoader provides vm.images.takeIf { state.features.images }) {
             BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
                 val layout = RemoteLayouts.forSize(maxWidth.value, maxHeight.value)
                 val content = RemoteContent(
@@ -195,7 +197,28 @@ fun RemoteScreen(
                     RemoteLayout.TABLET_LANDSCAPE -> TabletLandscapeLayout(content)
                 }
             }
+            }
         }
+    }
+
+    // Recherche plein écran : au-dessus de toutes les dispositions (y compris tablette 3 volets).
+    if (state.search.open && state.features.search) {
+        val searchActions = remember(vm) {
+            SearchActions(
+                close = vm::closeSearch, query = vm::setSearchQuery, submit = vm::submitSearch,
+                toggleKind = vm::toggleSearchKind, clearKinds = vm::clearSearchKinds, open = vm::openSearchEntry,
+                back = vm::searchBack, loadMore = vm::loadMoreSearchLevel, play = vm::playEntry,
+                enqueue = { entry, next -> vm.enqueue(entry, next) },
+            )
+        }
+        SearchScreen(
+            search = state.search,
+            searchKinds = state.features.searchKinds,
+            canEnqueue = state.features.library,
+            images = vm.images.takeIf { state.features.images },
+            snackbar = snackbar,
+            actions = searchActions,
+        )
     }
 
     if (sheet) {
@@ -614,13 +637,15 @@ private fun BannerFor(content: RemoteContent) {
 private fun ProgressFor(content: RemoteContent) {
     val playback = content.state.playback ?: return
     val details = content.state.mediaDetails
+    val titles = nowPlayingTitles(playback)
     val status = when {
         playback.isPlaying -> "En lecture"
         playback.title != null -> "En pause"
         else -> null
     }
     ProgressCard(
-        title = playback.title,
+        title = titles.title,
+        subtitle = titles.subtitle,
         status = status,
         positionMs = playback.positionMs,
         durationMs = playback.durationMs,
@@ -658,12 +683,20 @@ private fun NavigationFor(content: RemoteContent, modifier: Modifier) {
 
 @Composable
 private fun QueueContent(content: RemoteContent) {
-    QueuePanel(
+    val vm = content.vm
+    val queueActions = remember(vm, content.onClearQueue) {
+        QueueActions(vm::refreshQueue, vm::playQueueItem, vm::removeQueueItem, content.onClearQueue)
+    }
+    val seriesActions = remember(vm) {
+        SeriesActions(vm::refreshSeries, vm::selectSeason, vm::playEntry) { entry, next -> vm.enqueue(entry, next) }
+    }
+    QueueTabPanel(
+        features = content.features,
         queue = content.state.queue,
-        onRefresh = content.vm::refreshQueue,
-        onPlay = content.vm::playQueueItem,
-        onRemove = content.vm::removeQueueItem,
-        onClear = content.onClearQueue,
+        series = content.state.series,
+        playback = content.state.playback,
+        queueActions = queueActions,
+        seriesActions = seriesActions,
     )
 }
 
@@ -677,5 +710,8 @@ private fun LibraryContent(content: RemoteContent) {
         onBack = { content.vm.libraryBack() },
         onLoadMore = content.vm::loadMoreLibrary,
         onRetry = content.vm::openLibrary,
+        onSearch = if (content.features.search) content.vm::openSearch else null,
+        images = content.features.images,
+        onPlay = content.vm::playEntry,
     )
 }
