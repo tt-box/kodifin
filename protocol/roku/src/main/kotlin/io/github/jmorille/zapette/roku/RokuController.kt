@@ -4,15 +4,16 @@ import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.EMPTY_BODY
+import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.MediaTypes
 import io.github.jmorille.zapette.model.RemoteController
+import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.fetchString
 import io.github.jmorille.zapette.model.requireKey
 import io.github.jmorille.zapette.upnp.Ssdp
 import io.github.jmorille.zapette.upnp.SsdpResponse
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,6 +21,13 @@ import okhttp3.Request
 /**
  * Roku External Control Protocol (ECP), HTTP sur le port 8060.
  * Référence : https://developer.roku.com/docs/developer-program/dev-tools/external-control-api.md
+ *
+ * Volume : l'ECP n'expose que les touches `VolumeUp`, `VolumeDown` et `VolumeMute` (effectives
+ * sur les téléviseurs Roku TV, ou via HDMI-CEC / la barre de son selon le modèle) ; aucun volume
+ * absolu n'est lisible ni réglable, d'où l'absence de [Capability.VOLUME].
+ *
+ * Depuis Roku OS 13, les commandes sont refusées (HTTP 403) tant que le « Contrôle par
+ * applications mobiles » n'autorise pas l'accès réseau : voir [RokuAccessDeniedException].
  */
 class RokuController(
     override val device: Device,
@@ -27,24 +35,34 @@ class RokuController(
 ) : RemoteController {
 
     override val capabilities = setOf(
-        Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.PLAY_URL, Capability.TEXT_INPUT,
+        Capability.NAVIGATION, Capability.PLAYBACK, Capability.PLAY_URL, Capability.TEXT_INPUT,
     )
     override val supportedKeys = KEYS.keys
 
-    private val base: HttpUrl = device.baseUrl.toHttpUrl()
+    /** `null` si l'hôte ou le port saisis ne forment pas une URL valide (erreur levée à l'usage). */
+    private val base: HttpUrl? = device.baseUrl.toHttpUrlOrNull()
+
+    private fun base(): HttpUrl = base ?: throw RemoteException("Adresse du Roku invalide : ${device.host}:${device.port}")
 
     /** [segments] sont déjà encodés (voir [encodeSegment]) : aucun « / », « . » ou « .. » brut. */
     private suspend fun post(segments: List<String>, query: Map<String, String> = emptyMap()) {
-        val url = base.newBuilder().apply {
+        val url = base().newBuilder().apply {
             segments.forEach { addEncodedPathSegment(it) }
             query.forEach { (k, v) -> addQueryParameter(k, v) }
         }.build()
-        http.fetchString(Request.Builder().url(url).post(EMPTY_BODY).build())
+        call(Request.Builder().url(url).post(EMPTY_BODY).build())
+    }
+
+    /** Traduit le refus d'accès (HTTP 403) en message indiquant le réglage à modifier sur le Roku. */
+    private suspend fun call(request: Request): String = try {
+        http.fetchString(request)
+    } catch (e: HttpStatusException) {
+        if (e.code == 403) throw RokuAccessDeniedException(e) else throw e
     }
 
     override suspend fun connect() {
-        val url = base.newBuilder().addPathSegment("query").addPathSegment("device-info").build()
-        http.fetchString(Request.Builder().url(url).build())
+        val url = base().newBuilder().addPathSegment("query").addPathSegment("device-info").build()
+        call(Request.Builder().url(url).build())
     }
 
     override suspend fun send(key: RemoteKey) {
@@ -83,8 +101,14 @@ class RokuController(
         post(listOf("launch", appId))
     }
 
+    /** Commandes ECP refusées par le Roku (réglage « Contrôle par applications mobiles »). */
+    class RokuAccessDeniedException(cause: Throwable? = null) : RemoteException(ACCESS_DENIED_MESSAGE, cause)
+
     companion object {
         const val PLAY_ON_ROKU = "15985"
+
+        const val ACCESS_DENIED_MESSAGE = "Le Roku refuse les commandes : Paramètres › Système › " +
+            "Paramètres système avancés › Contrôle par applications mobiles › Accès réseau = Activé (ou Permissif)"
 
         val KEYS: Map<RemoteKey, String> = mapOf(
             RemoteKey.UP to "Up",
@@ -94,7 +118,8 @@ class RokuController(
             RemoteKey.SELECT to "Select",
             RemoteKey.BACK to "Back",
             RemoteKey.HOME to "Home",
-            RemoteKey.INFO to "Info",
+            // « Info » est la touche « * » (menu d'options) de la télécommande Roku. L'ECP n'a pas
+            // d'équivalent distinct à une touche d'informations : INFO n'est pas prise en charge.
             RemoteKey.MENU to "Info",
             RemoteKey.PLAY_PAUSE to "Play",
             RemoteKey.REWIND to "Rev",

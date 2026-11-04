@@ -59,19 +59,53 @@ class UpnpRendererController(
         }
     }
 
+    /** Plage de volume lue dans le SCPD de RenderingControl ; `null` tant qu'elle n'est pas connue. */
+    @Volatile
+    private var volumeRange: VolumeRange? = null
+
+    /**
+     * Choix d'instance : toutes les actions visent `InstanceID` = 0. UPnP AV réserve 0 à
+     * l'instance par défaut, toujours présente ; d'autres instances n'existent que si un
+     * ConnectionManager les crée via `PrepareForConnection`, ce que les renderers grand public
+     * n'exposent pratiquement jamais et que l'application n'utilise pas.
+     */
     private suspend fun avTransport(action: String, vararg args: Pair<String, String>): Map<String, String> {
         val service = describe().service(UpnpXml.AV_TRANSPORT) ?: throw RemoteException("AVTransport absent")
-        return soap.invoke(service.controlUrl, service.serviceType, action, listOf("InstanceID" to "0") + args)
+        return soap.invoke(service.controlUrl, service.serviceType, action, listOf("InstanceID" to INSTANCE_ID) + args)
     }
 
+    /** Actions RenderingControl sur l'instance 0 (voir [avTransport]) et le canal `Master`. */
     private suspend fun rendering(action: String, vararg args: Pair<String, String>): Map<String, String> {
         val service = describe().service(UpnpXml.RENDERING_CONTROL) ?: throw RemoteException("RenderingControl absent")
         return soap.invoke(
             service.controlUrl,
             service.serviceType,
             action,
-            listOf("InstanceID" to "0", "Channel" to "Master") + args,
+            listOf("InstanceID" to INSTANCE_ID, "Channel" to "Master") + args,
         )
+    }
+
+    /**
+     * Plage de `Volume` annoncée par le SCPD de RenderingControl, lue une fois. SCPD absent,
+     * plage absente ou incohérente : 0–100 (mémorisé). Erreur de transport : 0–100 pour cette
+     * fois, nouvelle lecture à l'appel suivant.
+     */
+    private suspend fun volumeRange(): VolumeRange {
+        volumeRange?.let { return it }
+        val scpdUrl = describe().service(UpnpXml.RENDERING_CONTROL)?.scpdUrl
+        val range = if (scpdUrl == null) {
+            VolumeRange.DEFAULT
+        } else {
+            val xml = try {
+                val request = runCatching { Request.Builder().url(scpdUrl).build() }.getOrNull()
+                request?.let { http.fetchString(it) }
+            } catch (_: RemoteException) {
+                return VolumeRange.DEFAULT
+            }
+            xml?.let { runCatching { UpnpXml.parseVolumeRange(it) }.getOrNull() } ?: VolumeRange.DEFAULT
+        }
+        volumeRange = range
+        return range
     }
 
     override suspend fun connect() {
@@ -88,8 +122,8 @@ class UpnpRendererController(
             RemoteKey.STOP -> avTransport("Stop")
             RemoteKey.NEXT -> avTransport("Next")
             RemoteKey.PREVIOUS -> avTransport("Previous")
-            RemoteKey.VOLUME_UP -> setVolume(currentVolume() + VOLUME_STEP)
-            RemoteKey.VOLUME_DOWN -> setVolume(currentVolume() - VOLUME_STEP)
+            RemoteKey.VOLUME_UP -> setRawVolume(volumeRange().adjust(currentRawVolume(), VOLUME_STEP))
+            RemoteKey.VOLUME_DOWN -> setRawVolume(volumeRange().adjust(currentRawVolume(), -VOLUME_STEP))
             RemoteKey.MUTE -> {
                 val muted = currentMute() ?: throw RemoteException("État de sourdine illisible")
                 rendering("SetMute", "DesiredMute" to if (muted) "0" else "1")
@@ -98,14 +132,22 @@ class UpnpRendererController(
         }
     }
 
-    /** Volume courant ; une valeur illisible lève une erreur plutôt que de repartir de 0. */
-    private suspend fun currentVolume(): Int = rendering("GetVolume")["CurrentVolume"]?.trim()?.toIntOrNull()
+    /** Volume brut (unités du renderer) ; une valeur illisible lève une erreur plutôt que de repartir de 0. */
+    private suspend fun currentRawVolume(): Int = rendering("GetVolume")["CurrentVolume"]?.trim()?.toIntOrNull()
         ?: throw RemoteException("Volume courant illisible")
+
+    /** Volume courant en pourcentage de la plage annoncée. */
+    private suspend fun currentVolume(): Int = volumeRange().toPercent(currentRawVolume())
 
     private suspend fun currentMute(): Boolean? = parseUpnpBoolean(rendering("GetMute")["CurrentMute"])
 
+    private suspend fun setRawVolume(raw: Int) {
+        rendering("SetVolume", "DesiredVolume" to raw.toString())
+    }
+
+    /** [percent] (0–100) est converti dans la plage `Volume` du renderer (voir [VolumeRange]). */
     override suspend fun setVolume(percent: Int) {
-        rendering("SetVolume", "DesiredVolume" to percent.coerceIn(0, 100).toString())
+        setRawVolume(volumeRange().fromPercent(percent))
     }
 
     override suspend fun seekTo(positionMs: Long) {
@@ -166,7 +208,11 @@ class UpnpRendererController(
 
         /** Extra « DLNA alternatif » (valeur `true`). */
         const val EXTRA_ALT_DIDL = "upnp_alt_didl"
+        /** Pas des touches de volume, en pourcentage de la plage. */
         private const val VOLUME_STEP = 5
+
+        /** Instance par défaut d'AVTransport et de RenderingControl (voir [avTransport]). */
+        private const val INSTANCE_ID = "0"
 
         /** Métadonnées DIDL-Lite minimales ; le résultat est échappé une seconde fois dans l'enveloppe SOAP. */
         fun didlMetadata(url: String, title: String?): String {

@@ -12,6 +12,9 @@ import io.github.jmorille.zapette.model.UdpDestination
 import io.github.jmorille.zapette.model.UdpOptions
 import io.github.jmorille.zapette.model.UdpSocketFactory
 import io.github.jmorille.zapette.model.discover
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -32,6 +35,11 @@ class PlexController(
     override val device: Device,
     private val http: OkHttpClient,
     private val identity: PlexIdentity,
+    /**
+     * Résolution des noms courts (sans domaine) pour décider de l'envoi du jeton ; par défaut
+     * le résolveur du client [http], celui-là même qui servira à la connexion.
+     */
+    private val dns: Dns = http.dns,
 ) : RemoteController {
 
     override val capabilities = setOf(Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK)
@@ -55,12 +63,16 @@ class PlexController(
     /**
      * Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local, en HTTP comme en
      * HTTPS : un certificat auto-signé accepté par l'appelant n'authentifie pas l'hôte, et
-     * l'envoyer à un hôte public l'exposerait.
+     * l'envoyer à un hôte public l'exposerait. Un nom court n'est jugé local qu'après résolution
+     * (bloquante, donc hors du fil principal) vers des adresses toutes privées.
      */
-    private fun request(url: HttpUrl): Request.Builder {
+    private suspend fun request(url: HttpUrl): Request.Builder {
         val builder = identity.apply(Request.Builder().url(url))
         targetClientId?.let { builder.header("X-Plex-Target-Client-Identifier", it) }
-        token?.takeIf { isLocalHost(url.host) }?.let { builder.header("X-Plex-Token", it) }
+        if (token != null) {
+            val local = withContext(Dispatchers.IO) { isLocalHost(url.host, dns::lookup) }
+            if (local) builder.header("X-Plex-Token", token)
+        }
         return builder.get()
     }
 
@@ -180,14 +192,19 @@ class PlexController(
         private val LABEL = Regex("[a-z0-9]([a-z0-9-]*[a-z0-9])?")
 
         /**
-         * Hôte du réseau local : adresse privée, de lien local, de boucle ou IPv6 ULA,
-         * ou nom sans domaine / en `.local`, `.lan`, `.home.arpa`. Aucune résolution DNS.
+         * Hôte du réseau local :
+         * - adresse littérale privée (RFC 1918), de lien local, de boucle ou IPv6 ULA (`fc00::/7`) ;
+         * - `localhost`, ou nom en `.local` (mDNS), `.lan` ou `.home.arpa` (RFC 8375) ;
+         * - nom court (sans domaine) UNIQUEMENT s'il résout, via [resolve], vers des adresses
+         *   toutes locales : un suffixe de recherche DNS (`htpc` → `htpc.exemple.com`) peut sinon
+         *   désigner un hôte public. Échec ou absence de résolution : non local.
          *
          * Les formes numériques ambiguës (`134744072`, `0x08080808`, `8.8.2056`, zéros de tête
          * interprétés en octal) sont refusées : un résolveur les traduirait en adresse publique.
          * Le point final (`nom.local.`) et l'adresse joker `0.0.0.0` sont refusés.
+         * [resolve] peut bloquer (DNS) : appeler hors du fil principal.
          */
-        internal fun isLocalHost(host: String): Boolean {
+        internal fun isLocalHost(host: String, resolve: (String) -> List<InetAddress> = { emptyList() }): Boolean {
             val h = host.removePrefix("[").removeSuffix("]").lowercase()
             if (h.isEmpty()) return false
             if (':' in h) return isLocalAddress(h)
@@ -197,13 +214,23 @@ class PlexController(
             if (labels.all { it.isNotEmpty() && (it.all(Char::isDigit) || HEX.matches(it)) }) return false
             if (labels.any { !LABEL.matches(it) }) return false // vide (point final) ou caractère invalide
             if (labels.last().all(Char::isDigit)) return false
-            return h == "localhost" || labels.size == 1 ||
-                h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")
+            if (h == "localhost" || h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")) return true
+            if (labels.size != 1) return false
+            val addresses = try {
+                resolve(h)
+            } catch (_: Exception) {
+                return false
+            }
+            return addresses.isNotEmpty() && addresses.all(::isLocalAddress)
         }
 
         /** Adresse littérale (IPv4 canonique ou IPv6) du réseau local ; IPv4 mappée évaluée en IPv4. */
         private fun isLocalAddress(literal: String): Boolean {
             val address = runCatching { InetAddress.getByName(literal) }.getOrNull() ?: return false
+            return isLocalAddress(address)
+        }
+
+        private fun isLocalAddress(address: InetAddress): Boolean {
             val bytes = address.address
             // ::ffff:a.b.c.d : certaines JVM la renvoient en Inet6Address, on évalue l'IPv4 incluse.
             if (address is Inet6Address && bytes.size == 16 &&

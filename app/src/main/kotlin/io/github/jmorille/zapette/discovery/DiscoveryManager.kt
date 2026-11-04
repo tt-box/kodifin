@@ -19,8 +19,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /**
- * Agrège toutes les sources de découverte locales : mDNS (Kodi, AirPlay, Fire TV),
- * SSDP (renderers UPnP, Roku), UDP 7359 (Jellyfin/Emby), GDM (Plex) et MediaRouter (Cast).
+ * Agrège toutes les sources de découverte locales : mDNS (Kodi HTTP et TCP/WebSocket, AirPlay,
+ * Fire TV, Android TV Remote, débogage ADB sans fil),
+ * SSDP IPv4 et IPv6 (renderers UPnP, Roku), UDP 7359 (Jellyfin/Emby), GDM (Plex) et MediaRouter (Cast).
  *
  * La logique (fusion, périodicité, état NSD) est dans [mergeSources], [periodic] et
  * [NsdSource], testés sans Android ; cette classe ne fait que le câblage.
@@ -61,7 +62,7 @@ class DiscoveryManager internal constructor(
             return nsdSources + listOf(
                 DiscoverySource { castDevices(context) },
                 periodicSource(periodMs) { upnpRenderers(http) },
-                periodicSource(periodMs) { Ssdp.search(Ssdp.ST_ROKU).mapNotNull(RokuController::deviceFrom) },
+                periodicSource(periodMs) { Ssdp.search(Ssdp.ST_ROKU, ipv6 = true).mapNotNull(RokuController::deviceFrom) },
                 periodicSource(periodMs) { MediaServerDiscovery.discover(MediaServerFlavor.JELLYFIN) },
                 periodicSource(periodMs) { MediaServerDiscovery.discover(MediaServerFlavor.EMBY) },
                 periodicSource(periodMs) { PlexController.discover() },
@@ -69,7 +70,7 @@ class DiscoveryManager internal constructor(
         }
 
         private suspend fun upnpRenderers(http: OkHttpClient): List<Device> =
-            Ssdp.search(Ssdp.ST_MEDIA_RENDERER).mapNotNull { response ->
+            Ssdp.search(Ssdp.ST_MEDIA_RENDERER, ipv6 = true).mapNotNull { response ->
                 val location = response.location ?: return@mapNotNull null
                 attempt {
                     val xml = http.fetchString(Request.Builder().url(location).build())

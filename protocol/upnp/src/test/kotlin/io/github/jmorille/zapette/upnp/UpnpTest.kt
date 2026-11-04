@@ -5,7 +5,11 @@ import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
+import io.github.jmorille.zapette.model.UdpDatagram
 import io.github.jmorille.zapette.model.UdpDestination
+import io.github.jmorille.zapette.model.UdpOptions
+import io.github.jmorille.zapette.model.UdpSocket
+import io.github.jmorille.zapette.model.UdpSocketFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
@@ -28,9 +32,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.xml.sax.SAXException
+import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TestTimeSource
 
 class SsdpTest {
@@ -130,6 +136,69 @@ class SsdpTest {
         assertEquals(1, found.size)
         assertEquals(20, socket.receives)
     }
+
+    /** Fabrique rendant un socket par famille d'adresses, scénarisé selon sa première destination. */
+    private class FamilySockets(
+        private val time: TestTimeSource,
+        private val v4: List<UdpDatagram?>,
+        private val v6: List<UdpDatagram?>,
+        private val v6Fails: Boolean = false,
+    ) : UdpSocketFactory {
+        val sent = CopyOnWriteArrayList<Pair<UdpDestination, String>>()
+
+        override fun open(options: UdpOptions): UdpSocket = object : UdpSocket {
+            private var script: ArrayDeque<UdpDatagram?>? = null
+
+            override fun send(data: ByteArray, destination: UdpDestination) {
+                val v6Destination = ':' in destination.host
+                if (v6Destination && v6Fails) throw IOException("réseau IPv6 injoignable")
+                sent += destination to String(data, Charsets.UTF_8)
+                if (script == null) script = ArrayDeque(if (v6Destination) v6 else v4)
+            }
+
+            override fun receive(timeoutMs: Int): UdpDatagram? {
+                val next = script?.removeFirstOrNull()
+                synchronized(time) { time += if (next != null) 10.milliseconds else timeoutMs.milliseconds }
+                return next
+            }
+
+            override fun close() = Unit
+        }
+    }
+
+    @Test
+    fun `ipv6 search uses the link-local group, prefers ipv4 and skips link-local locations`() = runTest {
+        val time = TestTimeSource()
+        val sockets = FamilySockets(
+            time,
+            v4 = listOf(datagram(reply("uuid:tv", "http://10.0.0.9:1400/a.xml"), "10.0.0.9")),
+            v6 = listOf(
+                datagram(reply("uuid:tv", "http://[fd00::9]:1400/a.xml"), "fd00::9"),
+                datagram(reply("uuid:v6", "http://[fd00::5]:1400/d.xml"), "fd00:0:0:0:0:0:0:5"),
+                datagram(reply("uuid:ll", "http://[fe80::7]:1400/d.xml"), "fe80::7%wlan0"),
+            ),
+        )
+        val found = Ssdp.search(Ssdp.ST_MEDIA_RENDERER, timeoutMs = 2_000, sockets = sockets, timeSource = time, ipv6 = true)
+        assertEquals(listOf("http://10.0.0.9:1400/a.xml", "http://[fd00::5]:1400/d.xml"), found.map { it.location })
+        val v6Messages = sockets.sent.filter { it.first.host == Ssdp.MULTICAST_ADDRESS_V6 }
+        assertEquals(2, v6Messages.size)
+        assertTrue(v6Messages.all { it.second.contains("HOST: [FF02::C]:1900\r\n") })
+        assertTrue(sockets.sent.filter { it.first.host == Ssdp.MULTICAST_ADDRESS }.all { it.second.contains("HOST: 239.255.255.250:1900\r\n") })
+    }
+
+    @Test
+    fun `ipv6 failure does not hide ipv4 results`() = runTest {
+        val time = TestTimeSource()
+        val sockets = FamilySockets(
+            time,
+            v4 = listOf(datagram(reply("uuid:tv", "http://10.0.0.9:1400/a.xml"), "10.0.0.9")),
+            v6 = emptyList(),
+            v6Fails = true,
+        )
+        val found = Ssdp.search(Ssdp.ST_MEDIA_RENDERER, timeoutMs = 2_000, sockets = sockets, timeSource = time, ipv6 = true)
+        assertEquals(listOf("uuid:tv"), found.map { it.usn })
+        assertTrue(sockets.sent.none { ':' in it.first.host })
+    }
 }
 
 class UpnpXmlTest {
@@ -139,12 +208,80 @@ class UpnpXmlTest {
     }
 
     @Test
-    fun `doctype is refused whatever its spelling or position`() {
+    fun `doctype declaring entities is refused whatever its spelling or position`() {
         val xxe = """<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/hostname">]><root>&x;</root>"""
         assertRefused(xxe, "DOCTYPE")
         assertRefused("""<!doctype r [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;">]><root>&b;</root>""", "DOCTYPE")
-        assertRefused("  \n\t<!DocType r SYSTEM \"http://evil/x.dtd\">  \n<root/>", "DOCTYPE")
+        assertRefused("""<!DOCTYPE r [<!ELEMENT r ANY> %ext;]><r/>""", "DOCTYPE")
+        assertRefused("""<!DOCTYPE r [ <! ENTITY x "y"> ]><r/>""", "DOCTYPE")
+        assertRefused("""<!DOCTYPE a><!DOCTYPE b><a/>""", "DOCTYPE")
+        assertRefused("""<root/><!DOCTYPE root>""", "DOCTYPE")
+        assertRefused("""<!DOCTYPE root [<!ELEMENT root ANY>""", "DOCTYPE")
         assertRefused("﻿<!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><root>&x;</root>", "DOCTYPE")
+    }
+
+    @Test
+    fun `doctype without entity declaration is tolerated and never loaded`() {
+        assertEquals("root", UpnpXml.parseDocument("""<?xml version="1.0"?><!DOCTYPE root><root><a>1</a></root>""").nodeName)
+        // Identifiant externe : la DTD n'est jamais chargée (déclaration retirée avant l'analyse).
+        val external = "  \n\t<!DocType root SYSTEM \"http://evil.invalid/x.dtd\">  \n<root/>"
+        assertEquals("root", UpnpXml.parseDocument(external).nodeName)
+        val plist = """<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist/>"""
+        assertEquals("plist", UpnpXml.parseDocument(plist).nodeName)
+        // Sous-ensemble interne sans entité : accepté ; une référence d'entité non déclarée reste une erreur.
+        assertEquals("r", UpnpXml.parseDocument("""<!DOCTYPE r [<!ELEMENT r ANY><!ATTLIST r a CDATA "x">]><r/>""").nodeName)
+        assertThrows(SAXException::class.java) { UpnpXml.parseDocument("""<!DOCTYPE r><r>&x;</r>""") }
+    }
+
+    @Test
+    fun `volume range is read from the rendering control scpd`() {
+        fun scpd(range: String) = """<?xml version="1.0"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><serviceStateTable>
+            <stateVariable sendEvents="no"><name>Mute</name><dataType>boolean</dataType></stateVariable>
+            <stateVariable sendEvents="no"><name>Volume</name><dataType>ui2</dataType>$range</stateVariable>
+            </serviceStateTable></scpd>"""
+        assertEquals(
+            VolumeRange(0, 30, 1),
+            UpnpXml.parseVolumeRange(scpd("<allowedValueRange><minimum>0</minimum><maximum>30</maximum></allowedValueRange>")),
+        )
+        assertEquals(
+            VolumeRange(10, 60, 5),
+            UpnpXml.parseVolumeRange(scpd("<allowedValueRange><minimum>10</minimum><maximum>60</maximum><step>5</step></allowedValueRange>")),
+        )
+        assertNull(UpnpXml.parseVolumeRange(scpd("")))
+        assertNull(UpnpXml.parseVolumeRange(scpd("<allowedValueRange><minimum>5</minimum><maximum>5</maximum></allowedValueRange>")))
+        assertNull(UpnpXml.parseVolumeRange(scpd("<allowedValueRange><minimum>0</minimum><maximum>9</maximum><step>0</step></allowedValueRange>")))
+        assertNull(UpnpXml.parseVolumeRange(scpd("<allowedValueRange><minimum>a</minimum><maximum>9</maximum></allowedValueRange>")))
+    }
+
+    @Test
+    fun `volume range converts percentages both ways`() {
+        val small = VolumeRange(0, 30, 1)
+        assertEquals(30, small.fromPercent(100))
+        assertEquals(15, small.fromPercent(50))
+        assertEquals(0, small.fromPercent(-4))
+        assertEquals(50, small.toPercent(15))
+        assertEquals(100, small.toPercent(99))
+        val stepped = VolumeRange(10, 60, 5)
+        assertEquals(30, stepped.fromPercent(42)) // 31 aligné sur le pas de 5
+        assertEquals(40, stepped.toPercent(30))
+        // Un pas de touche avance d'au moins un cran, même sur une plage étroite.
+        val narrow = VolumeRange(0, 4, 1)
+        assertEquals(3, narrow.adjust(2, 5))
+        assertEquals(1, narrow.adjust(2, -5))
+        assertEquals(4, narrow.adjust(4, 5))
+        assertEquals(17, small.adjust(15, 5))
+        assertEquals(VolumeRange(0, 100, 1), VolumeRange.DEFAULT)
+    }
+
+    @Test
+    fun `scpd url is resolved on the described host only`() {
+        val xml = """<root><device><serviceList>
+            <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>/rc</controlURL><SCPDURL>rc.xml</SCPDURL></service>
+            <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/avt</controlURL><SCPDURL>http://203.0.113.9/avt.xml</SCPDURL></service>
+            </serviceList></device></root>"""
+        val d = UpnpXml.parseDescription(xml, "http://10.0.0.5:1400/xml/desc.xml")
+        assertEquals("http://10.0.0.5:1400/xml/rc.xml", d.service(UpnpXml.RENDERING_CONTROL)!!.scpdUrl)
+        assertNull(d.service(UpnpXml.AV_TRANSPORT)!!.scpdUrl)
     }
 
     @Test
@@ -268,6 +405,11 @@ class UpnpRendererTest {
     /** Simule un renderer qui refuse toute métadonnée DIDL non vide (faute UPnP 714). */
     @Volatile private var rejectMetadata = false
 
+    /** SCPD de RenderingControl servi sur /RC/scpd.xml (et annoncé) s'il n'est pas nul. */
+    @Volatile private var rcScpd: String? = null
+
+    @Volatile private var scpdFetches = 0
+
     private fun description() = """<?xml version="1.0"?>
         <root xmlns="urn:schemas-upnp-org:device-1-0">
           <device>
@@ -276,7 +418,7 @@ class UpnpRendererTest {
             <UDN>uuid:1234</UDN>
             <serviceList>
               <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>$avtControl</controlURL></service>
-              <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>RC/control</controlURL></service>
+              <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>RC/control</controlURL>${if (rcScpd != null) "<SCPDURL>/RC/scpd.xml</SCPDURL>" else ""}</service>
             </serviceList>
           </device>
         </root>"""
@@ -295,6 +437,10 @@ class UpnpRendererTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 if (request.url.encodedPath == "/desc.xml") return MockResponse.Builder().body(description()).build()
                 if (request.url.encodedPath == "/bad.xml") return MockResponse.Builder().body("<root><!-- tronqué").build()
+                if (request.url.encodedPath == "/RC/scpd.xml") {
+                    scpdFetches++
+                    return MockResponse.Builder().body(rcScpd.orEmpty()).build()
+                }
                 soapRequests += request
                 val action = request.headers["SOAPACTION"]!!.substringAfter('#').trim('"')
                 return when (action) {
@@ -407,6 +553,43 @@ class UpnpRendererTest {
         assertEquals(listOf("GetVolume", "SetVolume", "GetVolume", "SetVolume", "SetVolume"), actions())
         assertTrue(soapRequests.last().body!!.utf8().contains("<Channel>Master</Channel>"))
         assertEquals("/RC/control", soapRequests.last().url.encodedPath)
+    }
+
+    @Test
+    fun `volume percentages are converted to the range announced by the scpd`() = runTest {
+        rcScpd = """<?xml version="1.0"?><scpd xmlns="urn:schemas-upnp-org:service-1-0"><serviceStateTable>
+            <stateVariable sendEvents="no"><name>Volume</name><dataType>ui2</dataType>
+            <allowedValueRange><minimum>0</minimum><maximum>30</maximum><step>1</step></allowedValueRange></stateVariable>
+            </serviceStateTable></scpd>"""
+        volumeBody = "<CurrentVolume>15</CurrentVolume>"
+        val c = controller()
+        c.setVolume(100)
+        assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>30</DesiredVolume>"))
+        c.setVolume(50)
+        assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>15</DesiredVolume>"))
+        c.send(RemoteKey.VOLUME_UP)
+        assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>17</DesiredVolume>"))
+        // L'état publié est exprimé en pourcentage de la plage.
+        assertEquals(50, c.playbackState().first().volumePercent)
+        assertEquals(1, scpdFetches)
+    }
+
+    @Test
+    fun `unreadable scpd falls back to a 0-100 range`() = runTest {
+        rcScpd = "<scpd><pas-fermé>"
+        val c = controller()
+        c.setVolume(70)
+        assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>70</DesiredVolume>"))
+        c.setVolume(20)
+        assertEquals(1, scpdFetches)
+    }
+
+    @Test
+    fun `all actions target the default instance 0`() = runTest {
+        val c = controller()
+        c.send(RemoteKey.STOP)
+        c.setVolume(10)
+        assertTrue(soapRequests.all { "<InstanceID>0</InstanceID>" in it.body!!.utf8() })
     }
 
     @Test
