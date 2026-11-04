@@ -15,6 +15,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -34,7 +35,8 @@ class PlexLinkViewModelTest {
     private val store = ViewModelStore()
 
     private class Deps : PlexLinkDependencies {
-        override val plexToken = MutableStateFlow<String?>(null)
+        val plexToken = MutableStateFlow<String?>(null)
+        override val plexLinked get() = plexToken.map { it != null }
         val tokenWrites = mutableListOf<String?>()
         var pins = 0
         var checks = 0

@@ -79,14 +79,30 @@ class DeviceExportTest {
 
     @Test
     fun `liste blanche des options`() {
-        listOf("scheme", "tls_insecure", "timeout_s", "base_path", "kodi_ws", "kodi_ws_port", "kodi_eventserver_port",
+        listOf("scheme", "tls_insecure", "tls_pin", "timeout_s", "base_path", "kodi_ws", "kodi_ws_port", "kodi_eventserver_port",
             "wol_mac", "wol_auto", "wifi_ssid", "upnp_alt_didl", "location", "username").forEach {
             assertTrue(it, DeviceExport.isExportableOption(it))
         }
-        listOf("password", "password_enc", "token", "userId", "sessionId", "clientId", "clientIdentifier",
+        listOf("password", "password_enc", "token", "token_enc", "userId", "sessionId", "clientId", "clientIdentifier",
             "wifi_password", "wol_secret", "kodi_ws_token", "type", "inconnu").forEach {
             assertFalse(it, DeviceExport.isExportableOption(it))
         }
+    }
+
+    @Test
+    fun `l'empreinte du certificat de confiance est exportée et validée à l'import`() {
+        val pin = List(32) { "AB" }.joinToString(":")
+        val kodi = Device("k", "K", DeviceKind.KODI, "10.0.0.2", 8080,
+            mapOf("scheme" to "https", "tls_insecure" to "true", "tls_pin" to pin, "token_enc" to "enc:x"))
+        val decoded = DeviceExport.decode(DeviceExport.encode(listOf(kodi))).devices.single()
+        assertEquals(kodi.extras - "token_enc", decoded.extras)
+        val bad = doc("""{"id":"k","name":"K","type":"KODI","host":"10.0.0.2","port":8080,"options":{"tls_pin":"pas une empreinte"}}""")
+        assertEquals(emptyMap<String, String>(), DeviceExport.decode(bad).devices.single().extras)
+        // Remplacement par un fichier sans empreinte : l'empreinte locale est conservée (même cible).
+        val incoming = DecodedExport(listOf(kodi.copy(name = "Salon", extras = mapOf("scheme" to "https", "tls_insecure" to "true"))), 0)
+        val merged = DeviceExport.merge(listOf(kodi), incoming, ImportPolicy.REPLACE_EXISTING).toSave.single()
+        assertEquals(pin, merged.extras["tls_pin"])
+        assertEquals("enc:x", merged.extras["token_enc"])
     }
 
     @Test

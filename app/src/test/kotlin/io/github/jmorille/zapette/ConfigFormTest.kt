@@ -4,7 +4,9 @@ import io.github.jmorille.zapette.data.DeviceSecrets
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.ui.config.ConfigValidation
+import io.github.jmorille.zapette.connection.DeviceOptions
 import io.github.jmorille.zapette.ui.config.buildDevice
+import io.github.jmorille.zapette.ui.config.quickConnectDevice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -74,6 +76,44 @@ class BuildDeviceTest {
         assertEquals(emptyMap<String, String>(), draft.device.extras)
         assertEquals(Device.manualId(DeviceKind.KODI, "10.0.0.2", 8080), draft.device.id)
         assertEquals(DeviceKind.KODI, draft.device.kind)
+    }
+}
+
+class SecretsInFormTest {
+    private val jelly = Device(
+        "j", "Jelly", DeviceKind.JELLYFIN, "10.0.0.2", 8096,
+        mapOf("username" to "u", "userId" to "42", "token_enc" to "enc:x", "sessionId" to "s"),
+    )
+
+    @Test
+    fun `quick connect keeps the pinned session when host, port and account are unchanged`() {
+        val draft = buildDevice(jelly, DeviceKind.JELLYFIN, "", "10.0.0.2", "8096", "", "u", "").device
+        val saved = quickConnectDevice(jelly, draft, "NOUVEAU", "42", "u")
+        assertEquals("s", saved.extras["sessionId"])
+        assertEquals("NOUVEAU", saved.extras["token"])
+        assertNull(saved.extras["token_enc"])
+    }
+
+    @Test
+    fun `quick connect drops the pinned session when the target or the account changes`() {
+        val draft = buildDevice(jelly, DeviceKind.JELLYFIN, "", "10.0.0.2", "8096", "", "u", "").device
+        assertNull(quickConnectDevice(jelly, draft, "T", "99", "autre").extras["sessionId"])
+        val moved = buildDevice(jelly, DeviceKind.JELLYFIN, "", "10.0.0.9", "8096", "", "u", "").device
+        assertNull(quickConnectDevice(jelly, moved, "T", "42", "u").extras["sessionId"])
+        assertNull(quickConnectDevice(null, draft, "T", "42", "u").extras["sessionId"])
+        assertEquals(mapOf("token" to "T", "userId" to "42", "username" to "u"), quickConnectDevice(null, draft.copy(extras = emptyMap()), "T", "42", "u").extras)
+    }
+
+    @Test
+    fun `plex device token can be set, kept or cleared from the form`() {
+        val plex = Device("p", "Plex", DeviceKind.PLEX, "10.0.0.2", 32500, mapOf("token_enc" to "enc:x", "clientIdentifier" to "c"))
+        fun form(token: String?) = buildDevice(plex, DeviceKind.PLEX, "", "10.0.0.2", "32500", "", "", "", DeviceOptions.read(plex), token)
+        assertEquals(plex.extras, form(null).device.extras)
+        assertEquals(mapOf("clientIdentifier" to "c"), form("").device.extras)
+        val replaced = form(" JETON-PLEX ")
+        assertEquals(mapOf("clientIdentifier" to "c", "token" to "JETON-PLEX"), replaced.device.extras)
+        // Le brouillon ne divulgue pas le jeton dans les journaux.
+        assertFalse(replaced.toString().contains("JETON-PLEX"))
     }
 }
 

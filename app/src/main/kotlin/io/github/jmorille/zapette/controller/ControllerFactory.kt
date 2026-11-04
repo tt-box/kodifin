@@ -54,13 +54,15 @@ class ControllerFactory(
      * utilisé en mémoire uniquement à la place du mot de passe stocké.
      */
     suspend fun create(device: Device, password: String? = null): RemoteController {
-        val effective = if (password != null) withPassword(device, password) else device
+        val withInput = if (password != null) withPassword(device, password) else device
         // Client propre à l'appareil : délai de connexion et, si demandé pour CET appareil,
-        // certificat non vérifié. Le client global n'est jamais modifié.
-        val http = httpFor(effective)
+        // certificat non vérifié (épinglé s'il a reçu la confiance). Le client global n'est jamais modifié.
+        val http = httpFor(withInput)
+        // Mot de passe Kodi et jetons (Jellyfin/Emby, Plex) déchiffrés ici seulement, le temps de
+        // construire le contrôleur ; les extras qu'il renvoie à enregistrer sont rechiffrés par le dépôt.
+        val effective = DeviceSecrets.reveal(withInput, secrets)
         return when (effective.kind) {
-            // Mot de passe Kodi déchiffré ici seulement, le temps de construire le transport.
-            DeviceKind.KODI -> kodi(DeviceSecrets.reveal(effective, secrets), http)
+            DeviceKind.KODI -> kodi(effective, http)
             DeviceKind.JELLYFIN, DeviceKind.EMBY ->
                 MediaServerController.create(effective, http, repository.installationId())
             else -> createOther(effective, http)
@@ -84,7 +86,7 @@ class ControllerFactory(
     private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {
         DeviceKind.KODI, DeviceKind.JELLYFIN, DeviceKind.EMBY -> error("traité par create()")
         DeviceKind.PLEX ->
-            PlexController(withPlexToken(device, repository.plexToken.first()), http, PlexIdentity(repository.installationId()))
+            PlexController(withPlexToken(device, plexAccountToken()), http, PlexIdentity(repository.installationId()))
         DeviceKind.UPNP_RENDERER -> UpnpRendererController(device, http)
         DeviceKind.ROKU -> RokuController(device, http)
         DeviceKind.AIRPLAY -> AirPlayController(device, http)
@@ -92,22 +94,26 @@ class ControllerFactory(
         DeviceKind.CHROMECAST -> platform.cast(device)
     }
 
+    /** Jeton du compte Plex lié, déchiffré pour ce seul contrôleur (`null` : aucun ou illisible). */
+    private suspend fun plexAccountToken(): String? = repository.sealedPlexToken()?.let(secrets::decrypt)
+
     companion object {
         /** Types qui demandent une saisie (identifiants) avant la première utilisation. */
         fun needsSetup(device: Device): Boolean = when (device.kind) {
             DeviceKind.JELLYFIN, DeviceKind.EMBY ->
-                device.extras[MediaServerController.EXTRA_TOKEN] == null &&
-                    device.extras[MediaServerController.EXTRA_USERNAME] == null
+                !DeviceSecrets.hasToken(device) && device.extras[MediaServerController.EXTRA_USERNAME] == null
             else -> false
         }
 
-        /**
-         * Jeton Plex à utiliser : celui de l'appareil est prioritaire ; à défaut, le jeton du
-         * compte lié ([stored]) est ajouté ; sans aucun jeton, l'appareil est inchangé.
-         */
+        /** Mot de passe saisi (non enregistré) à la place du mot de passe chiffré. */
         fun withPassword(device: Device, password: String): Device =
             device.copy(extras = device.extras - DeviceSecrets.ENCRYPTED_PASSWORD + (DeviceSecrets.PASSWORD to password))
 
+        /**
+         * Jeton Plex à utiliser (appareil déjà déchiffré) : celui de l'appareil est prioritaire ;
+         * à défaut, le jeton du compte lié ([stored]) est ajouté ; sans aucun jeton, l'appareil
+         * est inchangé.
+         */
         fun withPlexToken(device: Device, stored: String?): Device {
             if (device.extras[PlexController.EXTRA_TOKEN] != null || stored == null) return device
             return device.copy(extras = device.extras + (PlexController.EXTRA_TOKEN to stored))

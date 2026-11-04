@@ -4,8 +4,10 @@ import io.github.jmorille.zapette.mediaserver.MediaServerController
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.DEFAULT_CONNECT_TIMEOUT_S
+import io.github.jmorille.zapette.model.InsecureTls
 import io.github.jmorille.zapette.model.MAX_CONNECT_TIMEOUT_S
 import io.github.jmorille.zapette.model.MIN_CONNECT_TIMEOUT_S
+import io.github.jmorille.zapette.plex.PlexController
 
 /** Mode de connexion HTTP d'un appareil. */
 enum class ConnectionMode(val label: String) {
@@ -48,6 +50,13 @@ data class AdvancedOptions(
     val wolAuto: Boolean = false,
     /** Jellyfin/Emby : chemin de base de l'API (« URL de base » du serveur), ex. `/jellyfin`. */
     val basePath: String = "",
+    /**
+     * Mode non vérifié : empreinte SHA-256 du certificat auquel l'utilisateur a fait confiance
+     * (« Faire confiance à ce certificat »), vide si aucune. Ce n'est pas un secret.
+     */
+    val tlsPin: String = "",
+    /** Plex : identifiant du lecteur ciblé (`clientIdentifier`), vide = résolu à la connexion. */
+    val plexClientId: String = "",
 ) {
     /** Compatibilité avec l'ancien interrupteur « HTTPS ». */
     val https: Boolean get() = mode.secure
@@ -67,6 +76,15 @@ object DeviceOptions {
     const val SCHEME = "scheme"
     /** `"true"` : certificat TLS non vérifié (avec [SCHEME] = `https`). */
     const val TLS_INSECURE = "tls_insecure"
+
+    /**
+     * Empreinte SHA-256 (`AB:CD:…`) du certificat FEUILLE accepté en mode non vérifié
+     * (confiance au premier usage). Choix du certificat plutôt que de la clé publique (SPKI) :
+     * c'est l'empreinte qu'affichent le test de connexion, `openssl x509 -fingerprint -sha256`
+     * et les navigateurs, donc celle que l'utilisateur peut comparer ; en contrepartie, un
+     * certificat régénéré impose de refaire confiance. Exportée (ce n'est pas un secret).
+     */
+    const val TLS_PIN = "tls_pin"
     const val TIMEOUT = "timeout_s"
     const val WIFI_ONLY = "wifi_only"
     /** SSID autorisés, séparés par des retours à la ligne. */
@@ -82,6 +100,8 @@ object DeviceOptions {
     const val WOL_AUTO = "wol_auto"
     /** Même clé que `MediaServerController.EXTRA_BASE_PATH`. */
     const val BASE_PATH = MediaServerController.EXTRA_BASE_PATH
+    /** Même clé que `PlexController.EXTRA_CLIENT_ID` (identifiant du lecteur ciblé). */
+    const val PLEX_CLIENT_ID = PlexController.EXTRA_CLIENT_ID
 
     const val DEFAULT_KODI_WS_PORT = 9090
     const val DEFAULT_KODI_EVENTSERVER_PORT = 9777
@@ -92,12 +112,28 @@ object DeviceOptions {
 
     private val KEYS = setOf(
         SCHEME, TLS_INSECURE, TIMEOUT, WIFI_ONLY, WIFI_SSIDS, KODI_EVENTSERVER, KODI_EVENTSERVER_PORT, UPNP_ALT_DIDL,
-        KODI_WEBSOCKET, KODI_WEBSOCKET_PORT, WOL_MAC, WOL_BROADCAST, WOL_PORT, WOL_AUTO, BASE_PATH,
+        KODI_WEBSOCKET, KODI_WEBSOCKET_PORT, WOL_MAC, WOL_BROADCAST, WOL_PORT, WOL_AUTO, BASE_PATH, TLS_PIN,
+        PLEX_CLIENT_ID,
     )
     private val IPV4 = Regex("""^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$""")
 
+    /**
+     * Types pour lesquels le formulaire propose HTTPS. Plex en est retiré : l'API de contrôle du
+     * lecteur (port 32500) ne parle pas HTTPS en pratique. Un ancien appareil Plex enregistré
+     * avec `scheme=https` reste lu et reconduit tel quel ([readsHttps]).
+     */
     fun supportsHttps(kind: DeviceKind) =
-        kind == DeviceKind.KODI || kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY || kind == DeviceKind.PLEX
+        kind == DeviceKind.KODI || kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY
+
+    /** Types dont un `scheme=https` enregistré est honoré (rétrocompatibilité Plex). */
+    fun readsHttps(kind: DeviceKind) = supportsHttps(kind) || kind == DeviceKind.PLEX
+
+    /** HTTPS hérité d'une version antérieure, que le formulaire ne propose plus pour ce type. */
+    fun legacyHttps(device: Device?): Boolean =
+        device != null && !supportsHttps(device.kind) && connectionMode(device).secure
+
+    /** Plex : identifiant client et jeton propres à l'appareil (options avancées). */
+    fun supportsPlexOptions(kind: DeviceKind) = kind == DeviceKind.PLEX
 
     /** Chromecast passe par le SDK Cast : ni délai ni restriction réseau propres. */
     fun supportsTimeout(kind: DeviceKind) = kind != DeviceKind.CHROMECAST
@@ -128,6 +164,8 @@ object DeviceOptions {
             wolPort = e[WOL_PORT] ?: DEFAULT_WOL_PORT.toString(),
             wolAuto = e[WOL_AUTO] == "true",
             basePath = e[BASE_PATH].orEmpty(),
+            tlsPin = e[TLS_PIN].orEmpty(),
+            plexClientId = e[PLEX_CLIENT_ID].orEmpty(),
         )
     }
 
@@ -143,6 +181,10 @@ object DeviceOptions {
             "Port WebSocket invalide"
         supportsBasePath(kind) && o.basePath.isNotBlank() && MediaServerController.normalizeBasePath(o.basePath) == null ->
             "Chemin de base invalide (ex. /jellyfin)"
+        o.mode == ConnectionMode.HTTPS_INSECURE && o.tlsPin.isNotBlank() && InsecureTls.normalizeFingerprint(o.tlsPin) == null ->
+            "Empreinte du certificat invalide (SHA-256, 32 octets)"
+        supportsPlexOptions(kind) && o.plexClientId.trim().any { it.isWhitespace() || it.isISOControl() } ->
+            "Identifiant client Plex invalide (sans espace)"
         !supportsWakeOnLan(kind) -> null
         o.wolMac.isBlank() && o.wolAuto -> "Adresse MAC requise pour le réveil automatique"
         o.wolMac.isBlank() -> null
@@ -158,9 +200,13 @@ object DeviceOptions {
      */
     fun apply(extras: Map<String, String>, kind: DeviceKind, o: AdvancedOptions): Map<String, String> = buildMap {
         putAll(extras - KEYS)
-        if (supportsHttps(kind) && o.mode.secure) {
+        // Plex : le formulaire ne propose plus HTTPS, seul un réglage hérité est reconduit.
+        if (readsHttps(kind) && o.mode.secure) {
             put(SCHEME, "https")
-            if (o.mode == ConnectionMode.HTTPS_INSECURE) put(TLS_INSECURE, "true")
+            if (o.mode == ConnectionMode.HTTPS_INSECURE) {
+                put(TLS_INSECURE, "true")
+                InsecureTls.normalizeFingerprint(o.tlsPin)?.let { put(TLS_PIN, it) }
+            }
         }
         if (supportsTimeout(kind)) {
             o.timeoutS.trim().toIntOrNull()
@@ -177,6 +223,7 @@ object DeviceOptions {
         }
         if (supportsAltDidl(kind) && o.upnpAltDidl) put(UPNP_ALT_DIDL, "true")
         if (supportsBasePath(kind)) MediaServerController.normalizeBasePath(o.basePath)?.let { put(BASE_PATH, it) }
+        if (supportsPlexOptions(kind)) o.plexClientId.trim().takeIf { it.isNotEmpty() }?.let { put(PLEX_CLIENT_ID, it) }
         if (supportsWebSocket(kind) && o.kodiWebSocket) {
             put(KODI_WEBSOCKET, "true")
             put(KODI_WEBSOCKET_PORT, o.kodiWebSocketPort.trim())
@@ -192,13 +239,20 @@ object DeviceOptions {
 
     /** Mode de connexion enregistré ; un ancien `scheme=https` seul donne [ConnectionMode.HTTPS]. */
     fun connectionMode(device: Device): ConnectionMode = when {
-        !supportsHttps(device.kind) || device.extras[SCHEME] != "https" -> ConnectionMode.HTTP
+        !readsHttps(device.kind) || device.extras[SCHEME] != "https" -> ConnectionMode.HTTP
         device.extras[TLS_INSECURE] == "true" -> ConnectionMode.HTTPS_INSECURE
         else -> ConnectionMode.HTTPS
     }
 
     /** Certificat non vérifié demandé pour cet appareil (jamais pour les autres). */
     fun insecureTls(device: Device): Boolean = connectionMode(device) == ConnectionMode.HTTPS_INSECURE
+
+    /**
+     * Empreinte imposée aux connexions de l'appareil (mode non vérifié uniquement), ou `null` :
+     * appareil configuré avant l'épinglage, qui accepte encore tout certificat (avec avertissement).
+     */
+    fun tlsPin(device: Device): String? =
+        device.extras[TLS_PIN]?.takeIf { it.isNotBlank() && insecureTls(device) }
 
     /** Délai de connexion de l'appareil en secondes (défaut si absent ou invalide). */
     fun timeoutSeconds(device: Device?): Int = device?.extras?.get(TIMEOUT)?.toIntOrNull()
@@ -230,13 +284,17 @@ object DeviceOptions {
     fun httpBaseUrl(device: Device): String =
         if (device.extras[SCHEME] == "https") "https" + device.baseUrl.removePrefix("http") else device.baseUrl
 
-    /** URL WebSocket JSON-RPC de Kodi si l'option est activée, sinon `null`. */
+    /**
+     * URL WebSocket JSON-RPC de Kodi si l'option est activée, sinon `null`. Toujours `ws://` :
+     * le serveur JSON-RPC TCP/WebSocket de Kodi (port 9090) ne fait jamais de TLS, même quand
+     * l'interface web est en HTTPS ; il n'a pas non plus d'authentification (le mot de passe
+     * HTTP n'y sert pas) et le flux circule en clair sur le réseau local.
+     */
     fun kodiWebSocketUrl(device: Device): String? {
         if (device.kind != DeviceKind.KODI || device.extras[KODI_WEBSOCKET] != "true") return null
         val port = device.extras[KODI_WEBSOCKET_PORT]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: DEFAULT_KODI_WS_PORT
-        val scheme = if (device.extras[SCHEME] == "https") "wss" else "ws"
         val host = if (':' in device.host && !device.host.startsWith("[")) "[${device.host}]" else device.host
-        return "$scheme://$host:$port/jsonrpc"
+        return "ws://$host:$port/jsonrpc"
     }
 
     /** Cible Wake-on-LAN de l'appareil, ou `null` si aucune adresse MAC valide n'est configurée. */

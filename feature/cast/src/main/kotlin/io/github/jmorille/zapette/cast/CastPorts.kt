@@ -44,10 +44,18 @@ interface CastSessionPort {
     val media: CastMediaPort?
 }
 
-/** Événements du SessionManager utiles à l'ouverture d'une session. */
+/**
+ * Événements du SessionManager. Le SDK les diffuse pour TOUTES les sessions (un autre écran peut
+ * piloter un autre Chromecast) : chacun porte l'appareil concerné, `null` s'il est inconnu.
+ */
 interface CastSessionEvents {
     fun started(session: CastSessionPort)
-    fun failed(message: String)
+
+    /** Échec d'ouverture ou de reprise de la session de l'appareil [deviceId]. */
+    fun failed(deviceId: String?, message: String)
+
+    /** Fin de la session de l'appareil [deviceId] (arrêt, coupure réseau, autre émetteur…). */
+    fun ended(deviceId: String?) {}
 }
 
 /** Accès au SessionManager et au MediaRouter (thread principal). */

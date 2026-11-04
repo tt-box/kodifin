@@ -2,6 +2,7 @@ package io.github.jmorille.zapette.data
 
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.InsecureTls
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -58,8 +59,11 @@ object DeviceExport {
     private const val MAX_HOST = 253
     private const val MAX_OPTION_VALUE = 1024
 
+    /** `tls_pin` : empreinte SHA-256 du certificat auquel on a fait confiance (publique, pas un secret). */
+    private const val TLS_PIN = "tls_pin"
+
     private val EXACT_OPTIONS = setOf(
-        "scheme", "tls_insecure", "timeout_s", "base_path", "upnp_alt_didl", "location", "username",
+        "scheme", "tls_insecure", TLS_PIN, "timeout_s", "base_path", "upnp_alt_didl", "location", "username",
     )
     private val OPTION_PREFIXES = listOf("kodi_ws", "kodi_eventserver", "wol_", "wifi_")
 
@@ -175,6 +179,11 @@ object DeviceExport {
             if (text.length > MAX_OPTION_VALUE || !text.isPrintable()) return null
             if (!OPTION_KEY.matches(key) || !isExportableOption(key)) continue
             if (key == "location" && !(text.startsWith("http://") || text.startsWith("https://"))) return null
+            if (key == TLS_PIN) {
+                // Empreinte illisible : écartée (l'appareil retombe sur « faire de nouveau confiance »).
+                InsecureTls.normalizeFingerprint(text)?.let { out[key] = it }
+                continue
+            }
             out[key] = text
         }
         return out
@@ -254,7 +263,10 @@ object DeviceExport {
     private fun preservedSecrets(current: Device, incoming: Device): Map<String, String> {
         val sameTarget = current.kind == incoming.kind && current.host == incoming.host && current.port == incoming.port &&
             current.extras["scheme"] == incoming.extras["scheme"]
-        return if (sameTarget) current.extras.filterKeys { !isExportableOption(it) } else emptyMap()
+        if (!sameTarget) return emptyMap()
+        // Empreinte de confiance locale conservée si le fichier n'en apporte pas.
+        val pin = current.extras[TLS_PIN]?.takeIf { TLS_PIN !in incoming.extras }?.let { mapOf(TLS_PIN to it) }.orEmpty()
+        return current.extras.filterKeys { !isExportableOption(it) } + pin
     }
 }
 

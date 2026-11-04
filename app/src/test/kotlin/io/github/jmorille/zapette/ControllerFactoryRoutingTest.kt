@@ -11,6 +11,8 @@ import io.github.jmorille.zapette.kodi.KodiController
 import io.github.jmorille.zapette.mediaserver.MediaServerController
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.InsecureTls
+import io.github.jmorille.zapette.model.PinnedTrustManager
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.plex.PlexController
@@ -109,6 +111,44 @@ class ControllerFactoryRoutingTest {
         repo.setPlexToken("account")
         val controller = factory.create(device(DeviceKind.PLEX))
         assertEquals("account", controller.device.extras["token"])
+    }
+
+    @Test
+    fun `media server token is decrypted only when creating the controller`() = runBlocking {
+        val (factory, _) = factory()
+        val stored = DeviceSecrets.forStorage(device(DeviceKind.JELLYFIN, mapOf("token" to "JETON", "userId" to "U")), null, secrets)
+        assertTrue(secrets.decrypted.isEmpty())
+        val controller = factory.create(stored)
+        assertEquals("JETON", controller.device.extras["token"])
+        assertEquals(null, controller.device.extras[DeviceSecrets.ENCRYPTED_TOKEN])
+        // Les extras renvoyés par le contrôleur contiennent le jeton en clair : le dépôt le rechiffre.
+        val persistable = (controller as MediaServerController).persistableExtras()
+        assertEquals("JETON", persistable["token"])
+        assertEquals("enc:NOTEJ", DeviceSecrets.forStorage(stored.copy(extras = persistable), null, secrets).extras["token_enc"])
+    }
+
+    @Test
+    fun `plex device token wins over the account token, both stored encrypted`() = runBlocking {
+        val (factory, repo) = factory()
+        repo.setPlexToken("account")
+        val own = DeviceSecrets.forStorage(device(DeviceKind.PLEX, mapOf("token" to "own")), null, secrets)
+        assertEquals("own", factory.create(own).device.extras["token"])
+    }
+
+    @Test
+    fun `a pinned certificate is enforced by the device client`() {
+        val (factory, _) = factory()
+        val pin = List(32) { "AB" }.joinToString(":")
+        val pinned = device(DeviceKind.KODI, mapOf("scheme" to "https", "tls_insecure" to "true", "tls_pin" to pin))
+        val tm = factory.httpFor(pinned).x509TrustManager
+        assertTrue(tm is PinnedTrustManager)
+        assertEquals(pin, (tm as PinnedTrustManager).pin)
+        // Sans empreinte (appareil ancien) : comportement inchangé, tout certificat accepté.
+        val legacy = device(DeviceKind.KODI, mapOf("scheme" to "https", "tls_insecure" to "true"))
+        assertSame(InsecureTls.trustAll, factory.httpFor(legacy).x509TrustManager)
+        // Empreinte ignorée hors mode non vérifié.
+        val verified = device(DeviceKind.KODI, mapOf("scheme" to "https", "tls_pin" to pin))
+        assertTrue(factory.httpFor(verified).x509TrustManager !is PinnedTrustManager)
     }
 
     @Test
