@@ -10,6 +10,15 @@ plugins {
     alias(libs.plugins.cyclonedx)
 }
 
+// Inventaire CycloneDX (scan CVE) : uniquement les bibliothèques réellement embarquées
+// dans l'application, pas l'outillage de build (lint, compilateur, plugins).
+allprojects {
+    tasks.withType<org.cyclonedx.gradle.CyclonedxDirectTask>().configureEach {
+        includeConfigs.set(listOf("runtimeClasspath", "releaseRuntimeClasspath"))
+        includeBuildEnvironment.set(false)
+    }
+}
+
 // Modules protocole : bibliothèques Kotlin/JVM pures, testables sans Android.
 subprojects {
     plugins.withId("org.jetbrains.kotlin.jvm") {

@@ -166,11 +166,17 @@ class KodiWebSocketTransportTest {
                 }
 
                 override fun onOpen(webSocket: WebSocket, response: Response) = Unit
+
+                // Répond à la fermeture du client pour que le serveur puisse s'arrêter proprement.
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(1000, null)
+                }
             }).build(),
         )
         server.start()
         val url = server.url("/jsonrpc").toString().replaceFirst("http", "ws")
-        val transport = KodiWebSocketTransport(OkHttpClient(), url)
+        val client = OkHttpClient()
+        val transport = KodiWebSocketTransport(client, url)
         try {
             transport.notifications.test {
                 assertEquals("pong", transport.call(KodiMethod.PING).jsonPrimitive.contentOrNull)
@@ -179,6 +185,8 @@ class KodiWebSocketTransportTest {
             }
         } finally {
             transport.close()
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
             server.close()
         }
     }
