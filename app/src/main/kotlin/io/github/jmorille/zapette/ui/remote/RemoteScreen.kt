@@ -47,6 +47,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -366,7 +367,13 @@ private fun MoreSheet(
     onScan: () -> Unit,
     onEdit: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // Contenu figé à l'ouverture : l'état (position, commandes de la session) change chaque
+    // seconde ; sans cela la hauteur de la feuille varie et elle saute de haut en bas.
+    val frozen = remember { state }
+    @Suppress("NAME_SHADOWING") val state = frozen
+    // Ouverte en entier d'emblée : pas d'état « à moitié déplié » qui se recale à chaque mesure.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
             if (Capability.TEXT_INPUT in state.capabilities) {
                 SheetItem(Icons.Filled.Keyboard, "Saisir du texte") { onDialog(RemoteDialog.Text) }
