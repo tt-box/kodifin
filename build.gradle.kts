@@ -91,7 +91,7 @@ kover {
         }
         verify {
             rule("Couverture globale (lignes)") {
-                minBound(68)
+                minBound(80)
             }
         }
         total {

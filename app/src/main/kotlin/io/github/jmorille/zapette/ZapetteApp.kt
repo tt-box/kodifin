@@ -9,11 +9,11 @@ import io.github.jmorille.zapette.data.DeviceRepository
 import io.github.jmorille.zapette.data.KeystoreSecretStore
 import io.github.jmorille.zapette.data.SecretStore
 import io.github.jmorille.zapette.discovery.DiscoveryManager
+import io.github.jmorille.zapette.model.zapetteHttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
 
 /**
  * Conteneur d'injection manuel : pas de framework DI, pas de SDK d'analyse,
@@ -23,11 +23,8 @@ import java.util.concurrent.TimeUnit
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
-    val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(30, TimeUnit.SECONDS)
-        .build()
+    /** Redirections suivies uniquement vers le même hôte : jetons et mots de passe ne fuient pas. */
+    val http: OkHttpClient = zapetteHttpClient()
 
     /**
      * Portée liée au processus, pour les travaux qui doivent survivre à un écran
