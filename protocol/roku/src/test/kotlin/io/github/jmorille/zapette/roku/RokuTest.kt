@@ -1,8 +1,11 @@
 package io.github.jmorille.zapette.roku
 
+import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
+import io.github.jmorille.zapette.model.UnsupportedActionException
 import io.github.jmorille.zapette.upnp.SsdpResponse
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.MockResponse
@@ -10,6 +13,8 @@ import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.fail
 import org.junit.Before
@@ -104,5 +109,93 @@ class RokuTest {
         assertEquals(8060, device.port)
         assertNull(RokuController.deviceFrom(ok.copy(headers = ok.headers + ("ST" to "upnp:rootdevice"))))
         assertNull(RokuController.deviceFrom(ok.copy(headers = ok.headers + ("LOCATION" to "http//cassé"))))
+    }
+
+    @Test
+    fun `http 403 explains the mobile apps control setting`() = runTest {
+        val denied = MockWebServer()
+        repeat(2) { denied.enqueue(MockResponse.Builder().code(403).build()) }
+        denied.start()
+        try {
+            val c = RokuController(Device("r", "Roku", DeviceKind.ROKU, denied.hostName, denied.port), OkHttpClient())
+            for (action in listOf<suspend () -> Unit>({ c.send(RemoteKey.HOME) }, { c.connect() })) {
+                try {
+                    action()
+                    fail("403 non signalé")
+                } catch (e: RokuController.RokuAccessDeniedException) {
+                    assertTrue(e.message!!.contains("Contrôle par applications mobiles"))
+                    assertTrue(e.message!!.contains("Accès réseau"))
+                }
+            }
+        } finally {
+            denied.close()
+        }
+    }
+
+    @Test
+    fun `other http errors are not reported as access denied`() = runTest {
+        val failing = MockWebServer()
+        failing.enqueue(MockResponse.Builder().code(500).build())
+        failing.start()
+        try {
+            RokuController(Device("r", "Roku", DeviceKind.ROKU, failing.hostName, failing.port), OkHttpClient()).send(RemoteKey.HOME)
+            fail("erreur 500 non signalée")
+        } catch (e: RemoteException) {
+            assertFalse(e is RokuController.RokuAccessDeniedException)
+        } finally {
+            failing.close()
+        }
+    }
+
+    @Test
+    fun `volume uses keys only and no absolute volume capability`() = runTest {
+        val c = controller()
+        assertFalse(Capability.VOLUME in c.capabilities)
+        c.send(RemoteKey.VOLUME_UP)
+        c.send(RemoteKey.VOLUME_DOWN)
+        c.send(RemoteKey.MUTE)
+        assertEquals("/keypress/VolumeUp", server.takeRequest().url.encodedPath)
+        assertEquals("/keypress/VolumeDown", server.takeRequest().url.encodedPath)
+        assertEquals("/keypress/VolumeMute", server.takeRequest().url.encodedPath)
+        try {
+            c.setVolume(50)
+            fail("volume absolu accepté")
+        } catch (_: UnsupportedActionException) {
+        }
+    }
+
+    @Test
+    fun `menu is the options key and info is not supported`() = runTest {
+        val c = controller()
+        c.send(RemoteKey.MENU)
+        assertEquals("/keypress/Info", server.takeRequest().url.encodedPath)
+        assertFalse(RemoteKey.INFO in c.supportedKeys)
+        try {
+            c.send(RemoteKey.INFO)
+            fail("INFO acceptée")
+        } catch (_: UnsupportedActionException) {
+        }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `invalid address is reported as remote exception without crashing construction`() = runTest {
+        val c = RokuController(Device("r", "Roku", DeviceKind.ROKU, "hôte invalide", 8060), OkHttpClient())
+        for (action in listOf<suspend () -> Unit>({ c.send(RemoteKey.HOME) }, { c.connect() }, { c.sendText("a") })) {
+            try {
+                action()
+                fail("adresse invalide acceptée")
+            } catch (e: RemoteException) {
+                assertTrue(e.message!!.contains("Adresse du Roku invalide"))
+            }
+        }
+    }
+
+    @Test
+    fun `literal keypress keeps percent encoding of reserved and percent characters`() = runTest {
+        controller().sendText("%&=")
+        assertEquals("/keypress/Lit_%25", server.takeRequest().url.encodedPath)
+        assertEquals("/keypress/Lit_%26", server.takeRequest().url.encodedPath)
+        assertEquals("/keypress/Lit_%3D", server.takeRequest().url.encodedPath)
     }
 }

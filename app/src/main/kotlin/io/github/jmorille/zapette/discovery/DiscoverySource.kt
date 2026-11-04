@@ -36,7 +36,7 @@ interface MulticastLockPort {
 }
 
 /**
- * Fusionne les sources : dédoublonnage par identifiant, tri insensible à la casse. Une source
+ * Fusionne les sources : dédoublonnage par identifiant (voir [NsdMapping.consolidate]), tri insensible à la casse. Une source
  * en échec ne publie plus rien mais n'efface pas les appareils des autres. Le verrou multicast
  * est tenu pendant toute la collecte et libéré même en cas d'échec ou d'annulation.
  */
@@ -44,12 +44,13 @@ internal fun mergeSources(
     sources: List<DiscoverySource>,
     multicastLock: () -> MulticastLockPort?,
 ): Flow<List<Device>> = channelFlow {
-    val bySource = HashMap<Int, List<Device>>()
+    // Trié par indice de source : à identifiant égal, la source déclarée en premier donne le nom.
+    val bySource = java.util.TreeMap<Int, List<Device>>()
     // Les sources publient en parallèle : sans verrou, un instantané périmé pourrait être émis en dernier.
     val mutex = Mutex()
     suspend fun update(index: Int, devices: List<Device>) = mutex.withLock {
         bySource[index] = devices
-        send(bySource.values.flatten().distinctBy { it.id }.sortedBy { it.name.lowercase() })
+        send(NsdMapping.consolidate(bySource.values.flatten()).sortedBy { it.name.lowercase() })
     }
 
     val lock = runCatching { multicastLock() }.getOrNull()

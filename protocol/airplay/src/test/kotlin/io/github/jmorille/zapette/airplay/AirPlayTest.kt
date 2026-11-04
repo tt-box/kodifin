@@ -14,6 +14,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -166,29 +168,59 @@ class AirPlayTest {
 
     @Test
     fun `playback state survives transport errors`() = runBlocking {
-        // Coupure de connexion, puis erreur HTTP, puis réponse valide : la boucle continue.
+        // Coupure de connexion puis erreur HTTP (repli /scrub en échec), puis plist valide : la boucle continue.
         server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.ShutdownConnection).build())
         server.enqueue(MockResponse.Builder().code(500).build())
-        server.enqueue(MockResponse.Builder().body("duration: 120.0\nposition: 30.5\n").build())
+        server.enqueue(MockResponse.Builder().body(PLAYING_PLIST).build())
         val state = withTimeout(5_000) { controller(pollIntervalMs = 0).playbackState().first() }
-        assertEquals(PlaybackState(isPlaying = false, positionMs = 30_500, durationMs = 120_000), state)
+        assertEquals(PlaybackState(isPlaying = true, positionMs = 30_500, durationMs = 120_000), state)
         assertEquals(3, server.requestCount)
-        repeat(3) { assertEquals("/scrub", server.awaitRequest().url.encodedPath) }
+        assertEquals("/playback-info", server.awaitRequest().url.encodedPath)
+        assertEquals("/scrub", server.awaitRequest().url.encodedPath)
+        assertEquals("/playback-info", server.awaitRequest().url.encodedPath)
     }
 
     @Test
-    fun `playback state reflects the last command`() = runBlocking {
+    fun `playback state reads the real rate rather than the last command`() = runBlocking {
         ok()
-        server.enqueue(MockResponse.Builder().body("duration: 10\nposition: 1\n").build())
+        // Lecture lancée puis mise en pause depuis un autre appareil : le récepteur fait foi.
+        server.enqueue(MockResponse.Builder().body(PLAYING_PLIST.replace("<real>1.000000</real>", "<real>0.000000</real>")).build())
         val c = controller()
         c.playUrl("http://nas/film.mp4")
-        assertTrue(withTimeout(5_000) { c.playbackState().first() }.isPlaying)
+        val state = withTimeout(5_000) { c.playbackState().first() }
+        assertEquals(PlaybackState(isPlaying = false, positionMs = 30_500, durationMs = 120_000), state)
+    }
+
+    @Test
+    fun `playback state falls back to scrub when playback-info is not implemented`() = runBlocking {
+        ok()
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(MockResponse.Builder().body("duration: 10\nposition: 1\n").build())
+        server.enqueue(MockResponse.Builder().body("duration: 10\nposition: 2\n").build())
+        val c = controller()
+        c.playUrl("http://nas/film.mp4")
+        val states = withTimeout(5_000) { c.playbackState().take(2).toList() }
+        assertEquals(PlaybackState(isPlaying = true, positionMs = 1_000, durationMs = 10_000), states[0])
+        assertEquals(2_000, states[1].positionMs)
+        server.awaitRequest()
+        assertEquals("/playback-info", server.awaitRequest().url.encodedPath)
+        // 404 mémorisé : /playback-info n'est plus interrogé.
+        assertEquals("/scrub", server.awaitRequest().url.encodedPath)
+        assertEquals("/scrub", server.awaitRequest().url.encodedPath)
+    }
+
+    @Test
+    fun `nothing loaded is reported as stopped without scrub`() = runBlocking {
+        server.enqueue(MockResponse.Builder().body("<plist><dict><key>readyToPlay</key><false/></dict></plist>").build())
+        val state = withTimeout(5_000) { controller(pollIntervalMs = 0).playbackState().first() }
+        assertEquals(PlaybackState(), state)
+        assertEquals(1, server.requestCount)
     }
 
     @Test
     fun `cancelling the playback flow cancels the pending request`() = runBlocking {
         val first = CompletableDeferred<PlaybackState>()
-        server.enqueue(MockResponse.Builder().body("duration: 10\nposition: 1\n").build())
+        server.enqueue(MockResponse.Builder().body(PLAYING_PLIST).build())
         // Deuxième sondage retenu par le serveur : la collecte est suspendue dans l'appel HTTP.
         server.enqueue(MockResponse.Builder().headersDelay(30, java.util.concurrent.TimeUnit.SECONDS).build())
         val job = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
@@ -218,8 +250,43 @@ class AirPlayTest {
         assertEquals(0L to 0L, AirPlayController.parseScrub("garbage\nduration: inf\n"))
     }
 
+    @Test
+    fun `plist parsing ignores nested time ranges`() {
+        val values = AirPlayController.parsePlist(PLAYING_PLIST)
+        assertEquals("120.0", values["duration"])
+        assertEquals("30.5", values["position"])
+        assertEquals("true", values["readyToPlay"])
+        assertNull(values["start"])
+    }
+
+    @Test
+    fun `device and session headers are sent`() = runTest {
+        ok()
+        AirPlayController(Device("a", "Apple TV", DeviceKind.AIRPLAY, server.hostName, server.port), http, 0, "0x0123456789ab")
+            .send(RemoteKey.STOP)
+        val request = server.awaitRequest()
+        assertEquals("0x0123456789ab", request.headers["X-Apple-Device-ID"])
+        assertTrue(Regex("[0-9a-f-]{36}").matches(request.headers["X-Apple-Session-ID"]!!))
+        assertTrue(Regex("0x[0-9a-f]{12}").matches(AirPlayController.PROCESS_DEVICE_ID))
+    }
+
+    @Test
+    fun `invalid address is a remote exception`() = runTest {
+        val c = AirPlayController(Device("a", "Apple TV", DeviceKind.AIRPLAY, "hôte invalide", 7000), http)
+        assertFailsWithMessage<RemoteException>("Adresse du récepteur AirPlay invalide") { c.send(RemoteKey.STOP) }
+    }
+
     private companion object {
-        const val PLAYING_PLIST = """<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
-            <key>duration</key><real>120.0</real><key>rate</key><real>1.000000</real></dict></plist>"""
+        const val PLAYING_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>duration</key><real>120.0</real>
+            <key>loadedTimeRanges</key><array><dict><key>duration</key><real>5.0</real><key>start</key><real>1.0</real></dict></array>
+            <key>playbackBufferEmpty</key><true/>
+            <key>position</key><real>30.5</real>
+            <key>rate</key><real>1.000000</real>
+            <key>readyToPlay</key><true/>
+            <key>seekableTimeRanges</key><array><dict><key>duration</key><real>120.0</real><key>start</key><real>0.0</real></dict></array>
+            </dict></plist>"""
     }
 }

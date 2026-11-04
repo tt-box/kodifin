@@ -10,7 +10,48 @@ import javax.xml.parsers.DocumentBuilderFactory
 import org.xml.sax.InputSource
 import org.xml.sax.SAXException
 
-data class UpnpService(val serviceType: String, val controlUrl: String)
+/** Service UPnP : [scpdUrl] (description des actions et variables d'état) est facultative. */
+data class UpnpService(val serviceType: String, val controlUrl: String, val scpdUrl: String? = null)
+
+/**
+ * Plage de la variable d'état `Volume` de RenderingControl (`allowedValueRange` du SCPD).
+ * UPnP n'impose pas 0–100 : certains renderers annoncent 0–30, 0–60, un pas de 5… Les
+ * pourcentages de l'application sont convertis vers cette plage, et inversement.
+ */
+data class VolumeRange(val minimum: Int = 0, val maximum: Int = 100, val step: Int = 1) {
+    init {
+        require(maximum > minimum && step > 0) { "Plage de volume invalide : $minimum..$maximum pas $step" }
+    }
+
+    private val span get() = maximum - minimum
+
+    /** Valeur brute → pourcentage (0–100), valeur hors plage ramenée aux bornes. */
+    fun toPercent(raw: Int): Int =
+        Math.round((raw.coerceIn(minimum, maximum) - minimum) * 100.0 / span).toInt()
+
+    /** Pourcentage → valeur brute alignée sur le pas, dans la plage. */
+    fun fromPercent(percent: Int): Int {
+        val raw = minimum + percent.coerceIn(0, 100) * span / 100.0
+        val snapped = minimum + Math.round((raw - minimum) / step).toInt() * step
+        return snapped.coerceIn(minimum, maximum)
+    }
+
+    /**
+     * Valeur brute après un pas de [deltaPercent] depuis [raw] ; au moins un pas de la plage
+     * (sinon une plage étroite, 0–10 par exemple, ne bougerait jamais).
+     */
+    fun adjust(raw: Int, deltaPercent: Int): Int {
+        val current = raw.coerceIn(minimum, maximum)
+        val target = fromPercent(toPercent(current) + deltaPercent)
+        if (target != current || deltaPercent == 0) return target
+        return (current + if (deltaPercent > 0) step else -step).coerceIn(minimum, maximum)
+    }
+
+    companion object {
+        /** Plage supposée quand le SCPD est absent, illisible ou muet : 0–100, pas de 1. */
+        val DEFAULT = VolumeRange()
+    }
+}
 
 data class UpnpDeviceDescription(
     val friendlyName: String,
@@ -28,8 +69,49 @@ object UpnpXml {
     const val AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:"
     const val RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:"
 
-    /** Motif de détection d'une déclaration de type de document (DTD), interdite ici. */
+    /** Début d'une déclaration de type de document (DTD). */
     private val DOCTYPE = Regex("<!DOCTYPE", RegexOption.IGNORE_CASE)
+
+    /** Déclaration d'entité, interdite partout (XXE, expansion exponentielle). */
+    private val ENTITY = Regex("<!\\s*ENTITY", RegexOption.IGNORE_CASE)
+
+    /** Début d'élément (ni `<?`, ni `<!`) : un DOCTYPE doit le précéder. */
+    private val ELEMENT_START = Regex("<[^?!]")
+
+    /**
+     * Retire l'éventuelle déclaration DOCTYPE, tolérée si elle ne déclare aucune entité :
+     * `<!DOCTYPE racine>`, identifiant externe (jamais chargé, puisque retiré avant l'analyse)
+     * ou sous-ensemble interne sans `<!ENTITY` ni entité paramètre (`%`). Toute déclaration
+     * d'entité (où qu'elle soit), un DOCTYPE multiple, mal placé ou non terminé est refusé.
+     */
+    private fun stripDoctype(xml: String): String {
+        if (ENTITY.containsMatchIn(xml)) throw SAXException("DOCTYPE avec déclaration d'entité interdit (XXE)")
+        val matches = DOCTYPE.findAll(xml).toList()
+        if (matches.isEmpty()) return xml
+        if (matches.size > 1) throw SAXException("DOCTYPE multiple interdit")
+        val start = matches.single().range.first
+        if (ELEMENT_START.containsMatchIn(xml.substring(0, start))) throw SAXException("DOCTYPE après l'élément racine interdit")
+        var i = matches.single().range.last + 1
+        var quote: Char? = null
+        var subset = false
+        while (i < xml.length) {
+            val c = xml[i]
+            when {
+                quote != null -> if (c == quote) quote = null
+                c == '"' || c == '\'' -> quote = c
+                c == '[' -> subset = true
+                c == ']' -> subset = false
+                c == '>' && !subset -> break
+            }
+            i++
+        }
+        if (i >= xml.length) throw SAXException("DOCTYPE non terminé")
+        val declaration = xml.substring(start, i + 1)
+        if ('[' in declaration && '%' in declaration.substringAfter('[')) {
+            throw SAXException("DOCTYPE avec entité paramètre interdit (XXE)")
+        }
+        return xml.substring(0, start) + xml.substring(i + 1)
+    }
 
     /** Taille maximale d'un document (description, réponse SOAP) : largement au-delà des cas réels. */
     const val MAX_DOCUMENT_CHARS = 512 * 1024
@@ -62,15 +144,16 @@ object UpnpXml {
     }
 
     /**
-     * Analyse un document XML sans DTD. Les DOCTYPE sont refusés avant l'analyse : sur Android,
-     * le DocumentBuilderFactory ne prend pas en charge les fonctionnalités Xerces
+     * Analyse un document XML sans DTD. Le DOCTYPE éventuel est retiré AVANT l'analyse s'il ne
+     * déclare aucune entité, refusé sinon (voir [stripDoctype]) : sur Android, le
+     * DocumentBuilderFactory ne prend pas en charge les fonctionnalités Xerces
      * (`disallow-doctype-decl`, traitement sécurisé…) et leur activation échoue silencieusement.
      * Le résolveur d'entités vide reste une seconde barrière contre les entités externes.
      */
     internal fun parseDocument(xml: String): Element {
         if (xml.length > MAX_DOCUMENT_CHARS) throw SAXException("Document UPnP trop volumineux (${xml.length} caractères)")
-        if (DOCTYPE.containsMatchIn(xml)) throw SAXException("DOCTYPE interdit dans un document UPnP")
-        checkDepth(xml)
+        val withoutDoctype = stripDoctype(xml)
+        checkDepth(withoutDoctype)
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
             isValidating = false
@@ -85,7 +168,7 @@ object UpnpXml {
         val builder = factory.newDocumentBuilder().apply {
             setEntityResolver { _, _ -> InputSource(StringReader("")) }
         }
-        return builder.parse(InputSource(StringReader(xml))).documentElement
+        return builder.parse(InputSource(StringReader(withoutDoctype))).documentElement
     }
 
     internal fun Element.children(localName: String): List<Element> {
@@ -132,7 +215,9 @@ object UpnpXml {
                 val control = s.text("controlURL") ?: return@forEach
                 // resolve() n'aboutit que pour http/https : file:, javascript:… sont écartés.
                 val url = base.resolve(control)?.takeIf { it.host == locationUrl.host } ?: return@forEach
-                services += UpnpService(type, url.toString())
+                // Même contrainte d'hôte pour le SCPD ; absent ou étranger, il est simplement ignoré.
+                val scpd = s.text("SCPDURL")?.let { base.resolve(it) }?.takeIf { it.host == locationUrl.host }
+                services += UpnpService(type, url.toString(), scpd?.toString())
             }
             d.child("deviceList")?.children("device")?.forEach(::collect)
         }
@@ -145,5 +230,25 @@ object UpnpXml {
             modelName = device.text("modelName"),
             services = services,
         )
+    }
+
+    /**
+     * Plage de la variable d'état `Volume` dans un SCPD RenderingControl
+     * (`stateVariable/allowedValueRange` : `minimum`, `maximum`, `step` facultatif) ;
+     * `null` si elle est absente ou incohérente (maximum ≤ minimum, pas ≤ 0).
+     */
+    fun parseVolumeRange(scpd: String): VolumeRange? {
+        val root = parseDocument(scpd)
+        val variables = root.getElementsByTagNameNS("*", "stateVariable")
+        for (i in 0 until variables.length) {
+            val variable = variables.item(i) as Element
+            if (variable.text("name") != "Volume") continue
+            val range = variable.child("allowedValueRange") ?: return null
+            val min = range.text("minimum")?.toIntOrNull() ?: return null
+            val max = range.text("maximum")?.toIntOrNull() ?: return null
+            val step = range.text("step")?.let { it.toIntOrNull() ?: return null } ?: 1
+            return if (max > min && step > 0) VolumeRange(min, max, step) else null
+        }
+        return null
     }
 }

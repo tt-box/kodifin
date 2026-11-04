@@ -65,14 +65,54 @@ private data class PlexSwitchDto(val authToken: String? = null, val authenticati
 /** Code PIN du profil Plex Home refusé par plex.tv. */
 class PlexPinRefusedException : RemoteException("Code PIN refusé")
 
-/** En-têtes d'identification exigés par toutes les API Plex. */
-data class PlexIdentity(val clientIdentifier: String, val product: String = "Zapette", val version: String = "1.0") {
+/**
+ * En-têtes d'identification `X-Plex-*` envoyés à toutes les API Plex (plex.tv et lecteurs).
+ *
+ * [deviceName] est le nom de l'appareil Android tel que l'utilisateur le connaît (affiché par
+ * Plex dans « Appareils autorisés » et par certains lecteurs) ; [device] le modèle, [platformVersion]
+ * la version d'Android. Ils sont fournis par l'appelant (aucune lecture d'API Android ici) ; les
+ * valeurs absentes ou vides ne sont pas envoyées. Les caractères hors ASCII imprimable (refusés
+ * par OkHttp dans un en-tête) sont translittérés (« Téléphone » → « Telephone ») ou remplacés.
+ */
+data class PlexIdentity(
+    val clientIdentifier: String,
+    val product: String = "Zapette",
+    val version: String = "1.0",
+    val deviceName: String? = null,
+    val device: String? = null,
+    val platformVersion: String? = null,
+) {
     fun apply(builder: Request.Builder): Request.Builder = builder
-        .header("X-Plex-Client-Identifier", clientIdentifier)
-        .header("X-Plex-Product", product)
-        .header("X-Plex-Version", version)
+        .header("X-Plex-Client-Identifier", headerValue(clientIdentifier))
+        .header("X-Plex-Product", headerValue(product))
+        .header("X-Plex-Version", headerValue(version))
         .header("X-Plex-Platform", "Android")
+        .header("X-Plex-Provides", "controller")
+        .apply {
+            optional("X-Plex-Platform-Version", platformVersion)
+            optional("X-Plex-Device", device)
+            optional("X-Plex-Model", device)
+            optional("X-Plex-Device-Name", deviceName)
+        }
         .header("Accept", "application/json")
+
+    private fun Request.Builder.optional(name: String, value: String?) {
+        value?.let(::headerValue)?.ifBlank { null }?.let { header(name, it) }
+    }
+
+    companion object {
+        private const val MAX_HEADER_CHARS = 128
+        private val DIACRITICS = Regex("""\p{M}+""")
+
+        /** Valeur d'en-tête sûre : ASCII imprimable, diacritiques retirés, longueur bornée. */
+        internal fun headerValue(value: String): String =
+            java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+                .replace(DIACRITICS, "")
+                .map { if (it in ' '..'~') it else '_' }
+                .joinToString("")
+                .trim()
+                .take(MAX_HEADER_CHARS)
+    }
 }
 
 /**
