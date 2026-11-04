@@ -160,7 +160,7 @@ private fun TextAction(label: String, onClick: () -> Unit, enabled: Boolean = tr
         },
         enabled = enabled,
         modifier = Modifier.heightIn(min = 48.dp),
-    ) { Text(label) }
+    ) { Text(label, maxLines = 1, softWrap = false) }
 }
 
 @OptIn(ExperimentalLayoutApi::class)

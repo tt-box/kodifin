@@ -19,7 +19,7 @@ enum class RemoteTab(val short: String, val label: String) {
     REMOTE("Télécommande", "Télécommande"),
     NOW_PLAYING("Lecture", "Lecture en cours"),
     QUEUE("File", "File d'attente"),
-    LIBRARY("Bibliothèque", "Bibliothèque"),
+    LIBRARY("Médias", "Bibliothèque"),
     ;
 
     /** Volet de contenu à charger quand la page est affichée. */

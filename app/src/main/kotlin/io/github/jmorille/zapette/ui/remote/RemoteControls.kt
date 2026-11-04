@@ -370,7 +370,7 @@ private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifie
             valueRange = 0f..100f,
             modifier = Modifier.weight(1f).semantics { contentDescription = "Volume ${shown.roundToInt()} %" },
         )
-        Text("${shown.roundToInt()} %", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 8.dp).width(40.dp))
+        Text("${shown.roundToInt()} %", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false, modifier = Modifier.padding(start = 8.dp).width(52.dp))
     }
 }
 

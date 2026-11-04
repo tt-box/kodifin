@@ -564,8 +564,8 @@ private fun SidePane(
                         Tab(
                             selected = tab == selected,
                             onClick = { onSelect(tab) },
-                            text = { Text(tab.label, maxLines = 1) },
-                            icon = { Icon(tab.icon, contentDescription = null) },
+                            text = { Text(tab.short, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            icon = { Icon(tab.icon, contentDescription = tab.label) },
                         )
                     }
                 }
