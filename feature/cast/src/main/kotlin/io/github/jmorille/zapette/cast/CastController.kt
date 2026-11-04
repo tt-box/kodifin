@@ -1,23 +1,8 @@
 package io.github.jmorille.zapette.cast
 
-import android.annotation.SuppressLint
 import android.content.Context
-import androidx.mediarouter.media.MediaRouteSelector
-import androidx.mediarouter.media.MediaRouter
-import com.google.android.gms.cast.CastDevice
-import com.google.android.gms.cast.CastMediaControlIntent
-import com.google.android.gms.cast.MediaInfo
-import com.google.android.gms.cast.MediaLoadRequestData
-import com.google.android.gms.cast.MediaMetadata
-import com.google.android.gms.cast.MediaSeekOptions
-import com.google.android.gms.cast.framework.CastContext
-import com.google.android.gms.cast.framework.CastSession
-import com.google.android.gms.cast.framework.SessionManagerListener
-import com.google.android.gms.cast.framework.media.RemoteMediaClient
-import com.google.android.gms.common.api.PendingResult
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
-import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.PlaybackState
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteException
@@ -26,119 +11,29 @@ import io.github.jmorille.zapette.model.requireKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-
-/** Un seul thread d'initialisation pour tout le processus (auparavant : un nouveau thread, jamais arrêté, par appel). */
-private val castInitExecutor: Executor by lazy {
-    Executors.newSingleThreadExecutor { Thread(it, "zapette-cast-init").apply { isDaemon = true } }
-}
-
-/** Singleton du SDK, lié au contexte applicatif : aucune activité n'est retenue. */
-@SuppressLint("StaticFieldLeak")
-@Volatile
-private var sharedCastContext: CastContext? = null
+import kotlin.coroutines.CoroutineContext
 
 /**
- * Initialisation asynchrone du SDK Cast (API `getSharedInstance(Context, Executor)`), sur le
- * thread principal exigé par le SDK. Le contexte obtenu est mémorisé. Lève [RemoteException]
- * si les services Google Play sont absents ou trop anciens.
+ * Chromecast / Google TV via le récepteur multimédia par défaut. Tous les appels SDK passent par
+ * [main] (le thread principal en production) ; le SDK est atteint via [CastPlatform].
  */
-suspend fun castContext(context: Context): CastContext {
-    sharedCastContext?.let { return it }
-    return withContext(Dispatchers.Main.immediate) {
-        sharedCastContext ?: suspendCancellableCoroutine { cont ->
-            val task = try {
-                CastContext.getSharedInstance(context.applicationContext, castInitExecutor)
-            } catch (e: RuntimeException) {
-                // Services Google Play absents : certaines versions lèvent au lieu d'échouer la tâche.
-                cont.resumeWithException(RemoteException("Google Cast indisponible (services Google Play absents ?)", e))
-                return@suspendCancellableCoroutine
-            }
-            task.addOnSuccessListener {
-                sharedCastContext = it
-                if (cont.isActive) cont.resume(it)
-            }.addOnFailureListener {
-                if (cont.isActive) cont.resumeWithException(RemoteException("Google Cast indisponible", it))
-            }
-        }
-    }
-}
-
-private val castSelector: MediaRouteSelector = MediaRouteSelector.Builder()
-    .addControlCategory(CastMediaControlIntent.categoryForCast(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID))
-    .build()
-
-private fun MediaRouter.RouteInfo.castHost(): String? =
-    CastDevice.getFromBundle(extras)?.inetAddress?.hostAddress
-
-/** Découverte des appareils Cast via MediaRouter (scan actif tant que le flux est collecté). */
-fun castDevices(context: Context): Flow<List<Device>> = callbackFlow {
-    castContext(context)
-    val router = MediaRouter.getInstance(context.applicationContext)
-    fun publish() {
-        val devices = router.routes
-            .filter { !it.isDefault && !it.isBluetooth && it.matchesSelector(castSelector) }
-            .map { route ->
-                val cast = CastDevice.getFromBundle(route.extras)
-                Device(
-                    id = route.id,
-                    name = route.name,
-                    kind = DeviceKind.CHROMECAST,
-                    host = cast?.inetAddress?.hostAddress.orEmpty(),
-                    port = cast?.servicePort ?: DeviceKind.CHROMECAST.defaultPort,
-                )
-            }
-        trySend(devices)
-    }
-    val callback = object : MediaRouter.Callback() {
-        override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) = publish()
-        override fun onRouteRemoved(router: MediaRouter, route: MediaRouter.RouteInfo) = publish()
-        override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) = publish()
-    }
-    router.addCallback(
-        castSelector,
-        callback,
-        MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY or MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN,
-    )
-    publish()
-    // awaitClose s'exécute sur le thread principal (flowOn) : retrait du callback autorisé.
-    awaitClose { router.removeCallback(callback) }
-}.flowOn(Dispatchers.Main)
-
-/** Attend le résultat d'une commande média, borné dans le temps. */
-private suspend fun PendingResult<RemoteMediaClient.MediaChannelResult>.awaitResult(what: String) {
-    val status = suspendCancellableCoroutine { cont ->
-        cont.invokeOnCancellation { runCatching { cancel() } }
-        setResultCallback({ if (cont.isActive) cont.resume(it.status) }, RESULT_TIMEOUT_S, TimeUnit.SECONDS)
-    }
-    if (!status.isSuccess) {
-        throw RemoteException("$what refusé par le Chromecast (${status.statusCode}${status.statusMessage?.let { " : $it" }.orEmpty()})")
-    }
-}
-
-private const val RESULT_TIMEOUT_S = 15L
-
-/** Chromecast / Google TV via le récepteur multimédia par défaut. Tous les appels SDK passent par le thread principal. */
-class CastController(
+class CastController internal constructor(
     override val device: Device,
-    private val context: Context,
+    private val platform: CastPlatform,
+    private val main: CoroutineContext,
+    private val sessionTimeoutMs: Long = SESSION_TIMEOUT_MS,
 ) : RemoteController {
+
+    constructor(device: Device, context: Context) : this(device, SdkCastPlatform(context), Dispatchers.Main)
 
     override val capabilities = setOf(
         Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK, Capability.PLAY_URL, Capability.NOW_PLAYING,
@@ -151,79 +46,76 @@ class CastController(
     /** Évite que deux appels simultanés (état de lecture + touche) sélectionnent la route deux fois. */
     private val sessionLock = Mutex()
 
-    private val router: MediaRouter get() = MediaRouter.getInstance(context.applicationContext)
-
     /** Route de l'appareil : par identifiant (découverte) ou, pour un appareil saisi à la main, par adresse IP. */
-    private fun route(): MediaRouter.RouteInfo? = router.routes
-        .filter { !it.isDefault && it.matchesSelector(castSelector) }
-        .let { routes ->
-            routes.firstOrNull { it.id == device.id }
-                ?: routes.firstOrNull { CastMedia.sameHost(it.castHost(), device.host) }
-        }
-
-    private fun isOurs(session: CastSession?): Boolean {
-        val id = session?.castDevice?.deviceId ?: return false
-        return id == route()?.let { CastDevice.getFromBundle(it.extras)?.deviceId }
+    internal fun route(): CastRoute? = platform.routes().let { routes ->
+        routes.firstOrNull { it.id == device.id }
+            ?: routes.firstOrNull { CastMedia.sameHost(it.host, device.host) }
     }
 
-    private suspend fun session(): CastSession = sessionLock.withLock {
-        withContext(Dispatchers.Main) {
-            val manager = castContext(context).sessionManager
-            manager.currentCastSession?.takeIf { it.isConnected && isOurs(it) }?.let { return@withContext it }
+    /** La session vise-t-elle cet appareil (et non un autre Chromecast) ? */
+    internal fun isOurs(session: CastSessionPort?): Boolean {
+        val id = session?.deviceId ?: return false
+        return id == route()?.deviceId
+    }
 
-            val started = CompletableDeferred<CastSession>()
-            val listener = object : SessionManagerListener<CastSession> {
-                override fun onSessionStarted(session: CastSession, sessionId: String) { started.complete(session) }
-                override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) { started.complete(session) }
-                override fun onSessionStartFailed(session: CastSession, error: Int) {
-                    started.completeExceptionally(RemoteException("Échec de la session Cast ($error)"))
-                }
-                override fun onSessionResumeFailed(session: CastSession, error: Int) {
-                    started.completeExceptionally(RemoteException("Reprise de la session Cast impossible ($error)"))
-                }
-                // Fin de l'éventuelle session précédente (autre appareil) : sans effet sur l'attente.
-                override fun onSessionEnded(session: CastSession, error: Int) = Unit
-                override fun onSessionStarting(session: CastSession) = Unit
-                override fun onSessionEnding(session: CastSession) = Unit
-                override fun onSessionResuming(session: CastSession, sessionId: String) = Unit
-                override fun onSessionSuspended(session: CastSession, reason: Int) = Unit
-            }
-            manager.addSessionManagerListener(listener, CastSession::class.java)
-            try {
-                val current = manager.currentCastSession
-                // Une session vers cet appareil déjà en cours d'ouverture : on l'attend sans resélectionner.
-                if (current == null || !current.isConnecting || !isOurs(current)) {
-                    val route = route() ?: throw RemoteException("${device.name} n'est plus visible sur le réseau")
-                    router.selectRoute(route)
-                }
-                try {
-                    withTimeout(SESSION_TIMEOUT_MS) { started.await() }
-                } catch (e: TimeoutCancellationException) {
-                    runCatching { manager.endCurrentSession(true) }
-                    throw RemoteException("${device.name} ne répond pas (délai de connexion Cast dépassé)", e)
-                }
-            } finally {
-                manager.removeSessionManagerListener(listener, CastSession::class.java)
+    private suspend fun session(): CastSessionPort = sessionLock.withLock {
+        withContext(main) {
+            translating {
+                platform.ready()
+                platform.currentSession()?.takeIf { it.isConnected && isOurs(it) }?.let { return@translating it }
+                openSession()
             }
         }
+    }
+
+    private suspend fun openSession(): CastSessionPort {
+        val current = platform.currentSession()
+        // Une session vers cet appareil déjà en cours d'ouverture : on l'attend sans resélectionner.
+        val waitCurrent = current != null && current.isConnecting && isOurs(current)
+        val target = if (waitCurrent) null else route() ?: throw RemoteException("${device.name} n'est plus visible sur le réseau")
+        val expectedId = target?.deviceId ?: current?.deviceId
+
+        val started = CompletableDeferred<CastSessionPort>()
+        val listening = platform.listen(object : CastSessionEvents {
+            override fun started(session: CastSessionPort) {
+                // Une session ouverte entre-temps vers un autre appareil ne doit pas recevoir nos commandes.
+                if (expectedId == null || session.deviceId == null || session.deviceId == expectedId) started.complete(session)
+            }
+
+            override fun failed(message: String) {
+                started.completeExceptionally(RemoteException(message))
+            }
+        })
+        try {
+            target?.let(platform::selectRoute)
+            try {
+                return withTimeout(sessionTimeoutMs) { started.await() }
+            } catch (e: TimeoutCancellationException) {
+                runCatching { platform.endCurrentSession() }
+                throw RemoteException("${device.name} ne répond pas (délai de connexion Cast dépassé)", e)
+            }
+        } finally {
+            runCatching { listening.close() }
+        }
+    }
+
+    /** Traduit les erreurs du SDK en [RemoteException]. */
+    private inline fun <T> translating(block: () -> T): T = try {
+        block()
+    } catch (e: IOException) {
+        throw RemoteException("Commande Cast impossible", e)
+    } catch (e: IllegalStateException) {
+        throw RemoteException("Session Cast interrompue", e)
     }
 
     /** Exécute [block] sur le thread principal et traduit les erreurs du SDK en [RemoteException]. */
-    private suspend fun <T> onMain(block: suspend (CastSession) -> T): T {
+    private suspend fun <T> onMain(block: suspend (CastSessionPort) -> T): T {
         val s = session()
-        return withContext(Dispatchers.Main) {
-            try {
-                block(s)
-            } catch (e: IOException) {
-                throw RemoteException("Commande Cast impossible", e)
-            } catch (e: IllegalStateException) {
-                throw RemoteException("Session Cast interrompue", e)
-            }
-        }
+        return withContext(main) { translating { block(s) } }
     }
 
-    private fun CastSession.media(): RemoteMediaClient =
-        remoteMediaClient ?: throw RemoteException("Aucun lecteur actif sur ${device.name}")
+    private fun CastSessionPort.media(): CastMediaPort =
+        media ?: throw RemoteException("Aucun lecteur actif sur ${device.name}")
 
     override suspend fun connect() {
         session()
@@ -235,12 +127,11 @@ class CastController(
             when (key) {
                 RemoteKey.PLAY_PAUSE -> s.media().togglePlayback()
                 RemoteKey.STOP -> s.media().stop()
-                RemoteKey.NEXT -> s.media().queueNext(null)
-                RemoteKey.PREVIOUS -> s.media().queuePrev(null)
+                RemoteKey.NEXT -> s.media().next()
+                RemoteKey.PREVIOUS -> s.media().previous()
                 RemoteKey.REWIND, RemoteKey.FAST_FORWARD -> s.media().let {
                     val delta = if (key == RemoteKey.REWIND) -SEEK_STEP_MS else SEEK_STEP_MS
-                    val target = CastMedia.clampSeek(it.approximateStreamPosition + delta, it.streamDuration)
-                    it.seek(MediaSeekOptions.Builder().setPosition(target).build())
+                    it.seek(CastMedia.clampSeek(it.positionMs + delta, it.durationMs))
                 }
                 RemoteKey.VOLUME_UP -> s.volume = CastMedia.stepVolume(s.volume, VOLUME_STEP)
                 RemoteKey.VOLUME_DOWN -> s.volume = CastMedia.stepVolume(s.volume, -VOLUME_STEP)
@@ -251,20 +142,7 @@ class CastController(
     }
 
     override suspend fun playUrl(url: String, title: String?) {
-        onMain { s ->
-            val type = CastMedia.contentType(url)
-            val metadata = MediaMetadata(
-                if (CastMedia.isAudio(type)) MediaMetadata.MEDIA_TYPE_MUSIC_TRACK else MediaMetadata.MEDIA_TYPE_MOVIE,
-            ).apply { putString(MediaMetadata.KEY_TITLE, title ?: url.substringAfterLast('/')) }
-            val info = MediaInfo.Builder(url)
-                .setContentType(type)
-                .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-                .setMetadata(metadata)
-                .build()
-            // Format non pris en charge, URL injoignable… : l'échec est remonté au lieu d'être ignoré.
-            s.media().load(MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true).build())
-                .awaitResult("Chargement du média")
-        }
+        onMain { s -> s.media().load(url, CastMedia.contentType(url), title ?: url.substringAfterLast('/')) }
     }
 
     override suspend fun setVolume(percent: Int) {
@@ -274,7 +152,7 @@ class CastController(
     override suspend fun seekTo(positionMs: Long) {
         onMain { s ->
             val media = s.media()
-            media.seek(MediaSeekOptions.Builder().setPosition(CastMedia.clampSeek(positionMs, media.streamDuration)).build())
+            media.seek(CastMedia.clampSeek(positionMs, media.durationMs))
         }
     }
 
@@ -283,27 +161,29 @@ class CastController(
         while (true) {
             // Le SDK lève IllegalStateException sur volume/isMute une fois la session fermée.
             if (!s.isConnected) throw RemoteException("Session Cast terminée")
-            val media = s.remoteMediaClient
+            val media = s.media
             emit(
-                PlaybackState(
-                    title = media?.mediaInfo?.metadata?.getString(MediaMetadata.KEY_TITLE),
-                    isPlaying = media?.isPlaying == true,
-                    positionMs = media?.approximateStreamPosition ?: 0,
-                    durationMs = media?.streamDuration ?: 0,
-                    volumePercent = (s.volume * 100).toInt(),
-                    muted = s.isMute,
-                ),
+                translating {
+                    PlaybackState(
+                        title = media?.title,
+                        isPlaying = media?.isPlaying == true,
+                        positionMs = media?.positionMs ?: 0,
+                        durationMs = media?.durationMs ?: 0,
+                        volumePercent = (s.volume * 100).toInt(),
+                        muted = s.isMute,
+                    )
+                },
             )
             delay(1_000)
         }
-    }.flowOn(Dispatchers.Main)
+    }.flowOn(main)
 
     /** Ne ferme que la session de cet appareil (pas celle qu'un autre écran aurait ouverte). */
     override suspend fun disconnect() {
-        withContext(Dispatchers.Main) {
+        withContext(main) {
             runCatching {
-                val manager = castContext(context).sessionManager
-                if (isOurs(manager.currentCastSession)) manager.endCurrentSession(true)
+                platform.ready()
+                if (isOurs(platform.currentSession())) platform.endCurrentSession()
             }
         }
     }

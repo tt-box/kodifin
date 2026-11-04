@@ -49,6 +49,8 @@ dependencies {
     ).forEach { kover(project(it)) }
 }
 
+// Vérification (non branchée sur `check`) : `./gradlew koverVerify` échoue si la couverture
+// globale en lignes passe sous le seuil (ajusté à la fusion, quelques points sous la valeur réelle).
 kover {
     reports {
         filters {
@@ -57,8 +59,44 @@ kover {
                 classes(
                     "*.BuildConfig", "*.R", "*.R\$*", "*.ComposableSingletons*",
                     "*\$\$serializer", "*.Companion\$serializer",
+                    // Routes de navigation @Serializable (constructeur et compagnon générés).
+                    "io.github.jmorille.zapette.ui.*Route", "io.github.jmorille.zapette.ui.*Route\$Companion",
                 )
                 annotatedBy("androidx.compose.ui.tooling.preview.Preview")
+
+                // UI Compose pure : les fonctions @Composable (et leurs lambdas compilées en classes)
+                // sont exclues, mais pas les fichiers *ScreenKt entiers : leur logique non composable
+                // (devicesUiState, buildDevice…) reste mesurée. Navigation et thème : sans logique.
+                annotatedBy("androidx.compose.runtime.Composable")
+                classes("io.github.jmorille.zapette.ui.NavigationKt*", "io.github.jmorille.zapette.ui.theme.ThemeKt")
+
+                // Câblage Android / SDK sans logique propre, non testable unitairement.
+                classes(
+                    "io.github.jmorille.zapette.MainActivity*",
+                    "io.github.jmorille.zapette.ZapetteApp",
+                    "io.github.jmorille.zapette.ZapetteAppKt",
+                    "io.github.jmorille.zapette.AppContainer*",
+                    // Google Cast : options du SDK, castContext/castDevices, adaptateurs SDK.
+                    "io.github.jmorille.zapette.cast.CastOptionsProvider",
+                    "io.github.jmorille.zapette.cast.CastSdkKt*",
+                    "io.github.jmorille.zapette.cast.SdkCast*",
+                    // Découverte : adaptateurs NsdManager / MulticastLock et fabrique des sources réelles.
+                    "io.github.jmorille.zapette.discovery.AndroidNsdBackend*",
+                    "io.github.jmorille.zapette.discovery.AndroidMulticastLock",
+                    "io.github.jmorille.zapette.discovery.DiscoveryManager\$Companion*",
+                    // Lien ADB réel (dadb, connexion TCP) ; DadbShell lui-même reste mesuré.
+                    "io.github.jmorille.zapette.firetv.DadbShell\$Companion\$dadbLink\$1",
+                )
+            }
+        }
+        verify {
+            rule("Couverture globale (lignes)") {
+                minBound(68)
+            }
+        }
+        total {
+            verify {
+                onCheck.set(false)
             }
         }
     }
