@@ -10,6 +10,7 @@ import com.google.android.gms.cast.MediaInfo
 import com.google.android.gms.cast.MediaLoadRequestData
 import com.google.android.gms.cast.MediaMetadata
 import com.google.android.gms.cast.MediaSeekOptions
+import com.google.android.gms.cast.TextTrackStyle
 import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -121,6 +123,22 @@ private suspend fun PendingResult<RemoteMediaClient.MediaChannelResult>.awaitRes
 
 private const val RESULT_TIMEOUT_S = 15L
 
+/** Clé des données personnalisées portant le plafond de débit (bit/s). */
+private const val CUSTOM_MAX_BITRATE = "maxBitrate"
+
+/** Conversion vers le TextTrackStyle du SDK (couleurs ARGB, échelle de police). */
+private fun CastSubtitleStyle.toSdk(): TextTrackStyle = TextTrackStyle().apply {
+    fontScale = size.fontScale
+    foregroundColor = textColor.argb
+    backgroundColor = background.argb
+    if (outlined) {
+        edgeType = TextTrackStyle.EDGE_TYPE_OUTLINE
+        edgeColor = 0xFF000000.toInt()
+    } else {
+        edgeType = TextTrackStyle.EDGE_TYPE_NONE
+    }
+}
+
 /** [CastPlatform] réel : SessionManager + MediaRouter. Appelé sur le thread principal. */
 internal class SdkCastPlatform(private val context: Context) : CastPlatform {
     private var cast: CastContext? = null
@@ -212,7 +230,11 @@ private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPor
         client.seek(MediaSeekOptions.Builder().setPosition(positionMs).build())
     }
 
-    override suspend fun load(url: String, contentType: String, title: String) {
+    override fun setTextTrackStyle(style: CastSubtitleStyle) {
+        client.setTextTrackStyle(style.toSdk())
+    }
+
+    override suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions) {
         val metadata = MediaMetadata(
             if (CastMedia.isAudio(contentType)) MediaMetadata.MEDIA_TYPE_MUSIC_TRACK else MediaMetadata.MEDIA_TYPE_MOVIE,
         ).apply { putString(MediaMetadata.KEY_TITLE, title) }
@@ -220,9 +242,13 @@ private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPor
             .setContentType(contentType)
             .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
             .setMetadata(metadata)
+            .setTextTrackStyle(options.subtitles.toSdk())
             .build()
+        val request = MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
+        // Plafond de débit : aucune API du récepteur par défaut ; transmis en données
+        // personnalisées pour un récepteur qui sait l'exploiter (ignoré sinon).
+        options.maxBitrate?.let { request.setCustomData(JSONObject().put(CUSTOM_MAX_BITRATE, it)) }
         // Format non pris en charge, URL injoignable… : l'échec est remonté au lieu d'être ignoré.
-        client.load(MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true).build())
-            .awaitResult("Chargement du média")
+        client.load(request.build()).awaitResult("Chargement du média")
     }
 }

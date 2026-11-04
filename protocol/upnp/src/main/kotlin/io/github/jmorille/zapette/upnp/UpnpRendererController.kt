@@ -112,9 +112,27 @@ class UpnpRendererController(
         avTransport("Seek", "Unit" to "REL_TIME", "Target" to formatHms(positionMs))
     }
 
+    /** Option « DLNA alternatif » : métadonnées minimales pour les renderers capricieux. */
+    private val alternativeDidl: Boolean
+        get() = device.extras[EXTRA_ALT_DIDL]?.trim().equals("true", ignoreCase = true)
+
     override suspend fun playUrl(url: String, title: String?) {
-        avTransport("SetAVTransportURI", "CurrentURI" to url, "CurrentURIMetaData" to didlMetadata(url, title))
+        if (alternativeDidl) {
+            try {
+                setUri(url, didlMetadataAlternative(url, title))
+            } catch (_: UpnpSoapFault) {
+                // Certains renderers refusent toute métadonnée qu'ils ne savent pas analyser :
+                // nouvel essai avec CurrentURIMetaData vide (autorisé par UPnP AV).
+                setUri(url, "")
+            }
+        } else {
+            setUri(url, didlMetadata(url, title))
+        }
         avTransport("Play", "Speed" to "1")
+    }
+
+    private suspend fun setUri(url: String, metadata: String) {
+        avTransport("SetAVTransportURI", "CurrentURI" to url, "CurrentURIMetaData" to metadata)
     }
 
     /**
@@ -145,6 +163,9 @@ class UpnpRendererController(
 
     companion object {
         const val EXTRA_LOCATION = "location"
+
+        /** Extra « DLNA alternatif » (valeur `true`). */
+        const val EXTRA_ALT_DIDL = "upnp_alt_didl"
         private const val VOLUME_STEP = 5
 
         /** Métadonnées DIDL-Lite minimales ; le résultat est échappé une seconde fois dans l'enveloppe SOAP. */
@@ -162,6 +183,28 @@ class UpnpRendererController(
                 "<dc:title>${xmlEscape(title ?: url.substringAfterLast('/'))}</dc:title>" +
                 "<upnp:class>$upnpClass</upnp:class>" +
                 "<res protocolInfo=\"http-get:*:$mime:*\">${xmlEscape(url)}</res>" +
+                "</item></DIDL-Lite>"
+        }
+
+        /**
+         * Variante tolérante : protocolInfo générique `http-get:*:*:*` (aucun type MIME imposé,
+         * aucun paramètre `DLNA.ORG_*`), identifiants d'objet neutres ; la classe UPnP reste
+         * déduite de l'extension pour que le renderer choisisse le bon lecteur.
+         */
+        fun didlMetadataAlternative(url: String, title: String?): String {
+            val mime = guessMime(url)
+            val upnpClass = when {
+                mime.startsWith("audio") -> "object.item.audioItem"
+                mime.startsWith("image") -> "object.item.imageItem"
+                else -> "object.item.videoItem"
+            }
+            return "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" " +
+                "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" " +
+                "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +
+                "<item id=\"1\" parentID=\"0\" restricted=\"1\">" +
+                "<dc:title>${xmlEscape(title ?: url.substringAfterLast('/'))}</dc:title>" +
+                "<upnp:class>$upnpClass</upnp:class>" +
+                "<res protocolInfo=\"http-get:*:*:*\">${xmlEscape(url)}</res>" +
                 "</item></DIDL-Lite>"
         }
 

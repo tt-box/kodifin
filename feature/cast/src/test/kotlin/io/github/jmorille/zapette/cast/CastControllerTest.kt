@@ -41,7 +41,18 @@ private class FakeMedia(
     override fun next() = record("next")
     override fun previous() = record("previous")
     override fun seek(positionMs: Long) = record("seek:$positionMs")
-    override suspend fun load(url: String, contentType: String, title: String) = record("load:$url|$contentType|$title")
+    val loadOptions = mutableListOf<CastLoadOptions>()
+    val styles = mutableListOf<CastSubtitleStyle>()
+
+    override suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions) {
+        record("load:$url|$contentType|$title")
+        loadOptions += options
+    }
+
+    override fun setTextTrackStyle(style: CastSubtitleStyle) {
+        failure?.let { throw it }
+        styles += style
+    }
 }
 
 private class FakeSession(
@@ -338,5 +349,107 @@ class CastControllerTest {
         session.isConnected = false
         advanceTimeBy(1_001)
         assertTrue(states.await().exceptionOrNull() is RemoteException)
+    }
+}
+
+/** Application des réglages Chromecast (sous-titres, débit, déconnexion automatique). */
+class CastSettingsControllerTest {
+    private val platform = FakePlatform()
+    private var settings = CastSettings()
+
+    private fun controller() = CastController(chromecast(), platform, EmptyCoroutineContext, settings = { settings })
+
+    private val style = CastSubtitleStyle(SubtitleSize.LARGE, SubtitleColor.YELLOW, SubtitleBackground.NONE)
+
+    @Test
+    fun `playUrl passes bitrate cap and subtitle style to the load`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        settings = CastSettings(maxBitrate = CastMaxBitrate.P720, subtitles = style)
+        controller().playUrl("http://nas/film.mp4", "Film")
+        assertEquals(listOf(CastLoadOptions(4_000_000, style)), media.loadOptions)
+    }
+
+    @Test
+    fun `automatic bitrate sends no cap`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        controller().playUrl("http://nas/film.mp4", null)
+        assertNull(media.loadOptions.single().maxBitrate)
+    }
+
+    @Test
+    fun `settings are read at each use`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val c = controller()
+        c.playUrl("http://nas/a.mp4", null)
+        settings = CastSettings(maxBitrate = CastMaxBitrate.P1080)
+        c.playUrl("http://nas/b.mp4", null)
+        assertEquals(listOf(null, 8_000_000L), media.loadOptions.map { it.maxBitrate })
+    }
+
+    @Test
+    fun `subtitle style is applied on connect and on demand`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        settings = CastSettings(subtitles = style)
+        val c = controller()
+        c.connect()
+        assertEquals(listOf(style), media.styles)
+        settings = CastSettings()
+        c.applySubtitleStyle()
+        assertEquals(listOf(style, CastSubtitleStyle()), media.styles)
+    }
+
+    @Test
+    fun `connect succeeds without media or when the style is refused`() = runTest {
+        platform.current = FakeSession("cast-salon", media = null)
+        controller().connect()
+        val media = FakeMedia().apply { failure = IOException("refus") }
+        platform.current = FakeSession("cast-salon", media = media)
+        controller().connect()
+        assertTrue(media.styles.isEmpty())
+    }
+
+    @Test
+    fun `leaving the remote ends the session only with auto disconnect`() = runTest {
+        platform.current = FakeSession("cast-salon")
+        settings = CastSettings(autoDisconnect = false)
+        controller().disconnect()
+        assertEquals(0, platform.ended)
+        settings = CastSettings(autoDisconnect = true)
+        controller().disconnect()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `endSession always ends our session but never another device's`() = runTest {
+        settings = CastSettings(autoDisconnect = false)
+        platform.current = FakeSession("cast-chambre")
+        controller().endSession()
+        assertEquals(0, platform.ended)
+        platform.current = FakeSession("cast-salon")
+        controller().endSession()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `unreadable settings fall back to defaults`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val c = CastController(chromecast(), platform, EmptyCoroutineContext, settings = { throw IOException("disque") })
+        c.playUrl("http://nas/a.mp4", null)
+        assertEquals(CastLoadOptions(), media.loadOptions.single())
+        c.disconnect()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `subtitle style outline only without background`() {
+        assertTrue(style.outlined)
+        assertFalse(CastSubtitleStyle().outlined)
+        assertEquals(0xFFFFFF00.toInt(), SubtitleColor.YELLOW.argb)
+        assertEquals(0x80000000.toInt(), SubtitleBackground.TRANSLUCENT.argb)
     }
 }

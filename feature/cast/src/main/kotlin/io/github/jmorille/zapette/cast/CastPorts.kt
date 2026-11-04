@@ -21,8 +21,14 @@ interface CastMediaPort {
     fun previous()
     fun seek(positionMs: Long)
 
-    /** Charge et lance un média ; lève [io.github.jmorille.zapette.model.RemoteException] si refusé. */
-    suspend fun load(url: String, contentType: String, title: String)
+    /**
+     * Charge et lance un média avec les [options] (style des sous-titres, plafond de débit) ;
+     * lève [io.github.jmorille.zapette.model.RemoteException] si refusé.
+     */
+    suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions)
+
+    /** Applique le style des sous-titres au média en cours (RemoteMediaClient.setTextTrackStyle). */
+    fun setTextTrackStyle(style: CastSubtitleStyle)
 }
 
 /** Session Cast (CastSession). */
