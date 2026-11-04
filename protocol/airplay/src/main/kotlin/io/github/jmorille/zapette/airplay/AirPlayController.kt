@@ -37,15 +37,20 @@ class AirPlayController(
 
     private val base: HttpUrl = device.baseUrl.toHttpUrl()
     private val sessionId = UUID.randomUUID().toString()
+
+    /** Dernier état connu ; écrit par les commandes, lu par le flux de suivi (autre thread). */
+    @Volatile
     private var playing = false
 
     private fun request(path: String) = Request.Builder()
-        .url(base.resolve(path)!!)
+        .url(base.resolve(path) ?: throw IllegalArgumentException("Chemin AirPlay invalide : $path"))
         .header("User-Agent", "MediaControl/1.0")
         .header("X-Apple-Session-ID", sessionId)
 
     override suspend fun playUrl(url: String, title: String?) {
-        val body = "Content-Location: $url\nStart-Position: 0\n"
+        // Le corps text/parameters est analysé ligne à ligne : un retour à la ligne injecterait un paramètre.
+        require(url.none { it == '\r' || it == '\n' }) { "URL invalide : retour à la ligne interdit" }
+        val body = "Content-Location: $url\nStart-Position: 0.000000\n"
         http.fetchString(request("/play").post(body.toRequestBody(TEXT_PARAMETERS)).build())
         playing = true
     }
@@ -53,7 +58,7 @@ class AirPlayController(
     override suspend fun send(key: RemoteKey) {
         requireKey(key)
         when (key) {
-            RemoteKey.PLAY_PAUSE -> setRate(if (playing) 0 else 1)
+            RemoteKey.PLAY_PAUSE -> setRate(if (currentlyPlaying()) 0 else 1)
             RemoteKey.STOP -> {
                 http.fetchString(request("/stop").post(EMPTY_BODY).build())
                 playing = false
@@ -62,19 +67,37 @@ class AirPlayController(
         }
     }
 
+    /**
+     * Interroge `/playback-info` pour connaître la vitesse réelle (la lecture a pu être lancée
+     * ou mise en pause depuis un autre appareil) ; à défaut, dernier état connu.
+     */
+    private suspend fun currentlyPlaying(): Boolean {
+        val info = try {
+            http.fetchString(request("/playback-info").get().build())
+        } catch (_: RemoteException) {
+            return playing
+        }
+        return parsePlaybackRate(info)?.let { it != 0.0 } ?: playing
+    }
+
     private suspend fun setRate(rate: Int) {
         http.fetchString(request("/rate?value=$rate.000000").post(EMPTY_BODY).build())
         playing = rate != 0
     }
 
     override suspend fun seekTo(positionMs: Long) {
-        val seconds = String.format(Locale.ROOT, "%.3f", positionMs / 1000.0)
+        val seconds = String.format(Locale.ROOT, "%.3f", positionMs.coerceAtLeast(0) / 1000.0)
         http.fetchString(request("/scrub?position=$seconds").post(EMPTY_BODY).build())
     }
 
     override fun playbackState(): Flow<PlaybackState> = flow {
         while (true) {
-            val text = runCatching { http.fetchString(request("/scrub").get().build()) }.getOrNull()
+            // Seules les erreurs de communication sont ignorées : l'annulation doit se propager.
+            val text = try {
+                http.fetchString(request("/scrub").get().build())
+            } catch (_: RemoteException) {
+                null
+            }
             if (text != null) {
                 val (position, duration) = parseScrub(text)
                 emit(PlaybackState(isPlaying = playing, positionMs = position, durationMs = duration))
@@ -84,20 +107,31 @@ class AirPlayController(
     }
 
     override suspend fun connect() {
-        runCatching { http.fetchString(request("/server-info").get().build()) }
-            .onFailure { throw RemoteException("Récepteur AirPlay injoignable ou AirPlay 2 uniquement", it) }
+        try {
+            http.fetchString(request("/server-info").get().build())
+        } catch (e: RemoteException) {
+            throw RemoteException("Récepteur AirPlay injoignable ou AirPlay 2 uniquement", e)
+        }
     }
 
     companion object {
         private val TEXT_PARAMETERS = "text/parameters".toMediaType()
 
+        private val RATE = Regex("""<key>\s*rate\s*</key>\s*<(?:real|integer)>\s*([-+0-9.eE]+)\s*</""")
+
+        /** Extrait la clé `rate` de la plist XML renvoyée par `/playback-info` ; `null` si absente. */
+        internal fun parsePlaybackRate(plist: String): Double? =
+            RATE.find(plist)?.groupValues?.get(1)?.toDoubleOrNull()
+
         /** Analyse `duration: 123.4\nposition: 12.0` en millisecondes (position, durée). */
         fun parseScrub(text: String): Pair<Long, Long> {
             val values = text.lines().mapNotNull { line ->
                 val idx = line.indexOf(':')
-                if (idx < 0) null else line.substring(0, idx).trim() to line.substring(idx + 1).trim().toDoubleOrNull()
+                if (idx < 0) null else line.substring(0, idx).trim().lowercase() to line.substring(idx + 1).trim().toDoubleOrNull()
             }.toMap()
-            return ((values["position"] ?: 0.0) * 1000).toLong() to ((values["duration"] ?: 0.0) * 1000).toLong()
+            // Valeurs négatives, NaN ou infinies (flux en direct) ramenées à 0.
+            fun ms(key: String): Long = values[key]?.takeIf { it.isFinite() && it > 0 }?.let { (it * 1000).toLong() } ?: 0
+            return ms("position") to ms("duration")
         }
     }
 }
