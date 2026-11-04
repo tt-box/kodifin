@@ -16,6 +16,9 @@ class ModelTest {
         assertEquals(3_723_500, parseHms("1:02:03.5"))
         assertEquals(0, parseHms("NOT_IMPLEMENTED"))
         assertEquals(0, parseHms(null))
+        assertEquals(0, parseHms("-1:00:00"))
+        assertEquals(0, parseHms("0:00:Infinity"))
+        assertEquals(0, parseHms("0:00:NaN"))
     }
 
     @Test

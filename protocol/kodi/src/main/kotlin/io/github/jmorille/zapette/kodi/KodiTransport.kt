@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.fetchString
@@ -9,24 +10,26 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.Credentials
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -56,10 +59,11 @@ internal object KodiJson {
     fun result(body: JsonObject): JsonElement {
         val error = body["error"]
         if (error != null && error != JsonNull) {
-            val obj = error.jsonObject
+            // Un champ `error` mal formé (non objet) reste une erreur, sans faire planter l'analyse.
+            val obj = error as? JsonObject
             throw KodiRpcException(
-                obj["code"]?.jsonPrimitive?.intOrNull ?: -1,
-                obj["message"]?.jsonPrimitive?.contentOrNull ?: "erreur inconnue",
+                (obj?.get("code") as? JsonPrimitive)?.intOrNull ?: -1,
+                (obj?.get("message") as? JsonPrimitive)?.contentOrNull ?: "erreur inconnue",
             )
         }
         return body["result"] ?: JsonNull
@@ -75,16 +79,29 @@ class KodiHttpTransport(
 ) : KodiTransport {
     private val ids = AtomicInteger(1)
 
+    // Adresse validée une fois : un hôte saisi invalide donne une RemoteException, pas un crash.
+    private val endpoint by lazy { (baseUrl.trimEnd('/') + "/jsonrpc").toHttpUrlOrNull() }
+
     override suspend fun call(method: String, params: JsonObject?): JsonElement {
+        val url = endpoint ?: throw RemoteException("Adresse Kodi invalide")
         val payload = KodiJson.request(ids.getAndIncrement(), method, params)
         val request = Request.Builder()
-            .url(baseUrl.trimEnd('/') + "/jsonrpc")
+            .url(url)
             .post(payload.toRequestBody(JSON_MEDIA_TYPE))
             .apply {
-                if (!username.isNullOrEmpty()) header("Authorization", Credentials.basic(username, password.orEmpty()))
+                if (!username.isNullOrEmpty()) {
+                    // Kodi compare les octets UTF-8 : ISO-8859-1 (défaut d'OkHttp) casserait les
+                    // mots de passe accentués.
+                    header("Authorization", Credentials.basic(username, password.orEmpty(), StandardCharsets.UTF_8))
+                }
             }
             .build()
-        val body = client.fetchString(request)
+        val body = try {
+            client.fetchString(request)
+        } catch (e: HttpStatusException) {
+            if (e.code == 401) throw HttpStatusException(401, "Identifiants Kodi refusés (HTTP 401)")
+            throw e
+        }
         val obj = runCatching { KodiJson.json.parseToJsonElement(body).jsonObject }
             .getOrElse { throw RemoteException("Réponse Kodi invalide", it) }
         return KodiJson.result(obj)
@@ -100,6 +117,10 @@ class KodiWebSocketTransport(
     url: String,
     private val timeoutMs: Long = 10_000,
 ) : KodiTransport {
+    /** Erreur définitive une fois la connexion perdue ou fermée ; `null` tant qu'elle est utilisable. */
+    @Volatile
+    private var closedError: RemoteException? = null
+
     private val ids = AtomicInteger(1)
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<JsonObject>>()
     private val _notifications = MutableSharedFlow<KodiNotification>(
@@ -122,6 +143,13 @@ class KodiWebSocketTransport(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) =
                 failAll(RemoteException("WebSocket Kodi fermée", t))
 
+            // Fermeture demandée par Kodi : on répond pour terminer la poignée de main
+            // et on libère tout de suite les appels en attente.
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                failAll(RemoteException("WebSocket Kodi fermée ($code)"))
+                webSocket.close(1000, null)
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) =
                 failAll(RemoteException("WebSocket Kodi fermée ($code)"))
         },
@@ -129,19 +157,20 @@ class KodiWebSocketTransport(
 
     internal fun handle(text: String) {
         val obj = runCatching { KodiJson.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        val id = obj["id"]?.jsonPrimitive?.intOrNull
+        val id = (obj["id"] as? JsonPrimitive)?.intOrNull
         if (id != null) {
             pending.remove(id)?.complete(obj)
             return
         }
-        val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return
+        val method = (obj["method"] as? JsonPrimitive)?.contentOrNull ?: return
         _notifications.tryEmit(KodiNotification(method, obj["params"] ?: JsonNull))
     }
 
-    private fun failAll(error: Throwable) {
+    private fun failAll(error: RemoteException) {
+        if (closedError == null) closedError = error
         opened.completeExceptionally(error)
-        pending.values.forEach { it.completeExceptionally(error) }
-        pending.clear()
+        // Retrait un par un : une entrée ajoutée pendant le parcours n'est pas perdue sans réponse.
+        pending.keys.forEach { id -> pending.remove(id)?.completeExceptionally(error) }
     }
 
     override suspend fun call(method: String, params: JsonObject?): JsonElement {
@@ -149,19 +178,26 @@ class KodiWebSocketTransport(
         val deferred = CompletableDeferred<JsonObject>()
         pending[id] = deferred
         try {
-            return withTimeout(timeoutMs) {
+            // Revérifié après l'enregistrement : couvre une fermeture concurrente de failAll().
+            closedError?.let { throw it }
+            // withTimeoutOrNull plutôt que withTimeout : une TimeoutCancellationException
+            // serait prise pour une annulation et silencieusement ignorée par l'appelant.
+            val response = withTimeoutOrNull(timeoutMs) {
                 opened.await()
                 if (!socket.send(KodiJson.request(id, method, params))) {
-                    throw RemoteException("Envoi WebSocket impossible")
+                    throw closedError ?: RemoteException("Envoi WebSocket impossible")
                 }
-                KodiJson.result(deferred.await())
-            }
+                deferred.await()
+            } ?: throw RemoteException("Kodi n'a pas répondu à $method dans le délai imparti")
+            return KodiJson.result(response)
         } finally {
             pending.remove(id)
         }
     }
 
     override fun close() {
+        failAll(RemoteException("WebSocket Kodi fermée"))
+        // Fermeture propre ; OkHttp coupe de lui-même si Kodi ne répond pas à la trame de fermeture.
         socket.close(1000, null)
     }
 }

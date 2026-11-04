@@ -4,6 +4,7 @@ import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.PlaybackState
 import io.github.jmorille.zapette.model.RemoteController
+import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.requireKey
 import kotlinx.coroutines.delay
@@ -25,7 +26,9 @@ class KodiController(
     override val supportedKeys = RemoteKey.entries.toSet()
 
     override suspend fun connect() {
-        client.ping()
+        // Un serveur qui répond 200 sans être Kodi (ou une réponse inattendue) ne doit
+        // pas être considéré comme connecté.
+        if (!client.ping()) throw RemoteException("L'appareil ne répond pas comme un serveur Kodi")
     }
 
     override suspend fun send(key: RemoteKey) {
@@ -79,8 +82,13 @@ class KodiController(
         val app = client.appProperties()
         val player = client.activePlayers().firstOrNull()
             ?: return PlaybackState(volumePercent = app.volume, muted = app.muted)
-        val props = client.playerProperties(player.id)
-        val item = client.playerItem(player.id)
+        // Le lecteur peut s'arrêter entre deux appels : Kodi répond alors par une erreur
+        // JSON-RPC, que l'on traduit en état « à l'arrêt » plutôt qu'en échec.
+        val (props, item) = try {
+            client.playerProperties(player.id) to client.playerItem(player.id)
+        } catch (_: KodiRpcException) {
+            return PlaybackState(volumePercent = app.volume, muted = app.muted)
+        }
         return PlaybackState(
             title = item.label.ifBlank { null },
             isPlaying = props.speed != 0,
@@ -92,7 +100,9 @@ class KodiController(
     }
 
     override suspend fun disconnect() {
-        // Le transport HTTP est sans état ; rien à fermer.
+        // Sans effet pour HTTP ; ferme la connexion et libère les requêtes en attente
+        // pour un transport WebSocket.
+        client.close()
     }
 
     private suspend fun withPlayer(action: suspend (Int) -> Unit) {

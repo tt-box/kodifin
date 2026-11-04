@@ -84,7 +84,10 @@ fun formatHms(positionMs: Long): String {
     return "%02d:%02d:%02d".format(h, m, s)
 }
 
-/** Analyse `h:mm:ss[.fff]` en millisecondes ; renvoie 0 si le format est invalide. */
+/**
+ * Analyse `h:mm:ss[.fff]` en millisecondes ; renvoie 0 si le format est invalide
+ * (composante négative, non numérique ou non finie comprise).
+ */
 fun parseHms(value: String?): Long {
     if (value.isNullOrBlank()) return 0
     val parts = value.trim().split(":")
@@ -92,5 +95,6 @@ fun parseHms(value: String?): Long {
     val h = parts[0].toLongOrNull() ?: return 0
     val m = parts[1].toLongOrNull() ?: return 0
     val s = parts[2].toDoubleOrNull() ?: return 0
+    if (h < 0 || m < 0 || !s.isFinite() || s < 0) return 0
     return h * 3_600_000 + m * 60_000 + (s * 1000).toLong()
 }
