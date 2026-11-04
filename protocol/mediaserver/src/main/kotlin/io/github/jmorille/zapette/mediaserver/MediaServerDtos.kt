@@ -57,7 +57,18 @@ data class NowPlayingDto(
     @SerialName("RunTimeTicks") val runTimeTicks: Long = 0,
     @SerialName("MediaStreams") val mediaStreams: List<MediaStreamDto>? = null,
     @SerialName("Chapters") val chapters: List<ChapterDto>? = null,
-)
+    /** `Movie`, `Episode`, `Audio`… */
+    @SerialName("Type") val type: String? = null,
+    @SerialName("SeriesName") val seriesName: String? = null,
+    @SerialName("SeriesId") val seriesId: String? = null,
+    @SerialName("SeasonId") val seasonId: String? = null,
+    /** Épisode : numéro de saison. */
+    @SerialName("ParentIndexNumber") val parentIndexNumber: Int? = null,
+    /** Épisode : numéro dans la saison. */
+    @SerialName("IndexNumber") val indexNumber: Int? = null,
+) {
+    val isEpisode: Boolean get() = type.equals("Episode", ignoreCase = true)
+}
 
 @Serializable
 data class PlayStateDto(
@@ -112,7 +123,20 @@ data class ItemDto(
     @SerialName("MediaSources") val mediaSources: List<MediaSourceDto>? = null,
     @SerialName("MediaStreams") val mediaStreams: List<MediaStreamDto>? = null,
     @SerialName("Chapters") val chapters: List<ChapterDto>? = null,
+    @SerialName("SeriesId") val seriesId: String? = null,
+    @SerialName("SeasonId") val seasonId: String? = null,
+    @SerialName("RunTimeTicks") val runTimeTicks: Long? = null,
+    /** Étiquettes d'image par type (`Primary`, `Thumb`, `Logo`…) : la présence vaut disponibilité. */
+    @SerialName("ImageTags") val imageTags: Map<String, String>? = null,
+    @SerialName("BackdropImageTags") val backdropImageTags: List<String>? = null,
+    /** Épisode ou saison : affiche de la série, à défaut d'image propre. */
+    @SerialName("SeriesPrimaryImageTag") val seriesPrimaryImageTag: String? = null,
+    @SerialName("UserData") val userData: UserDataDto? = null,
 )
+
+/** Données propres à l'utilisateur (`UserItemDataDto`) : seul l'état « vu » est utilisé. */
+@Serializable
+data class UserDataDto(@SerialName("Played") val played: Boolean? = null)
 
 @Serializable
 data class ItemsResultDto(

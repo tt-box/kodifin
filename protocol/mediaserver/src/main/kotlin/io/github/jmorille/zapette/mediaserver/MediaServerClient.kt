@@ -3,8 +3,11 @@ package io.github.jmorille.zapette.mediaserver
 import io.github.jmorille.zapette.model.EMPTY_BODY
 import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
+import io.github.jmorille.zapette.model.RedirectRefusedException
 import io.github.jmorille.zapette.model.RemoteException
+import io.github.jmorille.zapette.model.await
 import io.github.jmorille.zapette.model.fetchString
+import java.io.IOException
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -328,6 +331,75 @@ class MediaServerClient(
             MediaServerFlavor.EMBY -> url("Users", userId, "Items", itemId)
         }
         return decode(ItemDto.serializer(), http.fetchString(request(target).get().build()))
+    }
+
+    /** Nom du paramètre d'utilisateur des routes `/Shows` et `/Artists` (insensible à la casse côté serveur). */
+    private fun userParam() = if (flavor == MediaServerFlavor.EMBY) "UserId" else "userId"
+
+    /** Saisons d'une série : `GET /Shows/{seriesId}/Seasons?userId=…` (Jellyfin et Emby). */
+    suspend fun seasons(userId: String, seriesId: String, query: Map<String, String> = emptyMap()): ItemsResultDto {
+        val target = url("Shows", seriesId, "Seasons", query = mapOf(userParam() to userId) + query)
+        return decode(ItemsResultDto.serializer(), http.fetchString(request(target).get().build()))
+    }
+
+    /**
+     * Épisodes d'une saison, triés par le serveur dans l'ordre de diffusion :
+     * `GET /Shows/{seriesId}/Episodes?seasonId=…&userId=…` (Jellyfin et Emby).
+     */
+    suspend fun episodes(userId: String, seriesId: String, seasonId: String, query: Map<String, String> = emptyMap()): ItemsResultDto {
+        val params = mapOf(userParam() to userId, "seasonId" to seasonId) + query
+        val target = url("Shows", seriesId, "Episodes", query = params)
+        return decode(ItemsResultDto.serializer(), http.fetchString(request(target).get().build()))
+    }
+
+    /**
+     * Artistes : `GET /Artists?searchTerm=…&userId=…`. Les éléments `MusicArtist` ne sont pas
+     * rattachés aux bibliothèques de l'utilisateur, `/Items` ne les renvoie donc pas toujours.
+     */
+    suspend fun artists(userId: String, query: Map<String, String>): ItemsResultDto {
+        val target = url("Artists", query = mapOf(userParam() to userId) + query)
+        return decode(ItemsResultDto.serializer(), http.fetchString(request(target).get().build()))
+    }
+
+    /**
+     * Image d'un élément : `GET /Items/{id}/Images/{type}?maxWidth=…&quality=…&tag=…`, avec
+     * l'en-tête d'authentification habituel (aucun jeton dans l'URL). La réponse doit venir du
+     * même hôte que l'API (redirection vers un autre hôte refusée) et ne pas dépasser
+     * [maxBytes] octets (lus au plus `maxBytes + 1`). 404 : `null`.
+     */
+    suspend fun image(itemId: String, type: String, tag: String?, maxWidth: Int, quality: Int, maxBytes: Long): ByteArray? {
+        val query = buildMap {
+            put("maxWidth", maxWidth.toString())
+            put("quality", quality.toString())
+            tag?.let { put("tag", it) }
+        }
+        val target = url("Items", itemId, "Images", type, query = query)
+        val request = request(target).header("Accept", "image/*").get().build()
+        val response = try {
+            http.newCall(request).await()
+        } catch (e: RedirectRefusedException) {
+            throw RemoteException(e.message ?: "Redirection refusée", e)
+        } catch (e: IOException) {
+            throw RemoteException("Serveur injoignable (${target.host})", e)
+        }
+        response.use {
+            val final = it.request.url
+            if (final.host != target.host || final.port != target.port) {
+                throw RemoteException("Image servie par un autre hôte que ${target.host} : refusée")
+            }
+            if (it.code == 404) return null
+            if (!it.isSuccessful) throw HttpStatusException(it.code, "HTTP ${it.code} sur ${target.encodedPath}")
+            val tooLarge = { RemoteException("Image trop volumineuse (plus de $maxBytes octets) de ${target.host}") }
+            val body = it.body
+            if (body.contentLength() > maxBytes) throw tooLarge()
+            return try {
+                val source = body.source()
+                if (source.request(maxBytes + 1)) throw tooLarge()
+                source.buffer.readByteArray()
+            } catch (e: IOException) {
+                throw RemoteException("Réponse interrompue (${target.host})", e)
+            }
+        }
     }
 
     /**
