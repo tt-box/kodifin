@@ -1,21 +1,11 @@
 package io.github.jmorille.zapette.cast
 
+import io.github.jmorille.zapette.model.MediaTypes
+
 /** Fonctions pures (testables sans Android) pour préparer un média Cast. */
 object CastMedia {
-    fun contentType(url: String): String =
-        when (url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()) {
-            "mp3" -> "audio/mpeg"
-            "aac", "m4a" -> "audio/mp4"
-            "flac" -> "audio/flac"
-            "ogg", "opus" -> "audio/ogg"
-            "webm" -> "video/webm"
-            "mkv" -> "video/x-matroska"
-            "m3u8" -> "application/x-mpegURL"
-            "mpd" -> "application/dash+xml"
-            "jpg", "jpeg" -> "image/jpeg"
-            "png" -> "image/png"
-            else -> "video/mp4"
-        }
+    /** Type MIME annoncé au récepteur ; `video/mp4` si l'extension est inconnue. */
+    fun contentType(url: String): String = MediaTypes.forUrl(url) ?: "video/mp4"
 
     fun isAudio(contentType: String) = contentType.startsWith("audio/")
 

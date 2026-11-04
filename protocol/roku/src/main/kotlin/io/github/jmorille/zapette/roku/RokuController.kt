@@ -4,6 +4,7 @@ import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.EMPTY_BODY
+import io.github.jmorille.zapette.model.MediaTypes
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.fetchString
@@ -68,7 +69,7 @@ class RokuController(
     override suspend fun playUrl(url: String, title: String?) {
         val ext = extension(url)
         val query = buildMap {
-            put("t", if (ext in AUDIO_EXTENSIONS) "a" else "v")
+            put("t", if (MediaTypes.isAudio(MediaTypes.forExtension(ext))) "a" else "v")
             put("u", url)
             title?.let { put("videoName", it) }
             VIDEO_FORMATS[ext]?.let { put("videoFormat", it) }
@@ -106,8 +107,6 @@ class RokuController(
 
         private val APP_ID = Regex("[A-Za-z0-9_]{1,64}")
 
-        private val AUDIO_EXTENSIONS = setOf("mp3", "aac", "m4a", "flac", "wma", "wav", "ogg")
-
         /** Extension du chemin → valeur `videoFormat` attendue par « Play on Roku ». */
         private val VIDEO_FORMATS = mapOf(
             "mp4" to "mp4", "m4v" to "mp4", "mov" to "mp4", "mkv" to "mkv",
@@ -115,11 +114,7 @@ class RokuController(
         )
 
         /** Extension du dernier segment de chemin de l'URL (hors requête et fragment), en minuscules. */
-        internal fun extension(url: String): String {
-            val path = url.toHttpUrlOrNull()?.encodedPath ?: url.substringBefore('#').substringBefore('?')
-            val last = path.substringAfterLast('/')
-            return if ('.' in last) last.substringAfterLast('.').lowercase() else ""
-        }
+        internal fun extension(url: String): String = MediaTypes.extension(url).orEmpty()
 
         /** Encodage en pourcentage (UTF-8) de tout sauf les caractères non réservés RFC 3986. */
         internal fun encodeSegment(value: String): String = buildString {

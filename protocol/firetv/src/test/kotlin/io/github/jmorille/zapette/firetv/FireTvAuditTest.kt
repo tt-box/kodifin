@@ -52,6 +52,10 @@ class FireTvTextTest {
     @Test
     fun `mime type ignores fragments`() {
         assertEquals("audio/*", FireTvController.mimeFor("http://nas/a.mp3#t=10"))
+        assertEquals("audio/*", FireTvController.mimeFor("http://nas/a.OPUS?x=1"))
+        assertEquals("image/*", FireTvController.mimeFor("http://nas/p.webp"))
+        assertEquals("video/*", FireTvController.mimeFor("http://nas/live.m3u8"))
+        assertEquals("video/*", FireTvController.mimeFor("http://nas.local/stream"))
     }
 
     @Test
