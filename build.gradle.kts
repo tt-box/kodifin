@@ -1,6 +1,30 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 
+// Outillage de build (AGP, lint, CycloneDX) : ces bibliothèques transitives ne sont pas
+// livrées dans l'APK, mais leurs CVE remontent dans les alertes Dependabot. Dependabot ne
+// sait pas mettre à jour une dépendance transitive de plugin : on force ici les versions
+// corrigées (à retirer quand les plugins les embarqueront d'eux-mêmes).
+buildscript {
+    dependencies {
+        constraints {
+            listOf(
+                "org.bouncycastle:bcprov-jdk18on:1.85",
+                "org.bouncycastle:bcpkix-jdk18on:1.85",
+                "org.bouncycastle:bcutil-jdk18on:1.85",
+                "com.google.guava:guava:33.7.2-jre",
+                "com.fasterxml.jackson.core:jackson-core:2.22.3",
+                "com.fasterxml.jackson.core:jackson-databind:2.22.3",
+                "org.bitbucket.b_c:jose4j:0.9.6",
+                "org.jdom:jdom2:2.0.6.1",
+                "org.apache.commons:commons-lang3:3.18.0",
+            ).forEach { coordinates ->
+                classpath(coordinates) { because("correctif de sécurité (outillage de build)") }
+            }
+        }
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false
