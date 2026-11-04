@@ -79,10 +79,15 @@ fun PlaybackDetails(
                 if (features.speed) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextAction("Plus lent", actions.slower)
+                        val speedLabel = when (val speed = details?.speed ?: 1) {
+                            0 -> "En pause"
+                            1 -> "Normale"
+                            else -> "×$speed"
+                        }
                         Text(
-                            "×${details?.speed ?: 1}",
+                            speedLabel,
                             style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.semantics { contentDescription = "Vitesse ${details?.speed ?: 1}" },
+                            modifier = Modifier.semantics { contentDescription = "Vitesse : $speedLabel" },
                         )
                         TextAction("Plus rapide", actions.faster)
                     }
