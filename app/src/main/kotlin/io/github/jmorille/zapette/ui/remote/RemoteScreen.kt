@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -54,18 +56,25 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -74,6 +83,8 @@ import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.PlaybackState
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.formatHms
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 private enum class InputDialog { Url, Text }
 
@@ -83,11 +94,16 @@ fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit) {
     val context = LocalContext.current
     val vm: RemoteViewModel = viewModel(
         key = deviceId,
-        factory = viewModelFactory { initializer { RemoteViewModel(context.container, deviceId, sharedUrl) } },
+        factory = viewModelFactory {
+            initializer {
+                RemoteViewModel(context.container.remoteDependencies(), deviceId, sharedUrl, createSavedStateHandle())
+            }
+        },
     )
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    var dialog by remember { mutableStateOf<InputDialog?>(null) }
+    // Survit à la rotation (enum sérialisable dans le Bundle).
+    var dialog by rememberSaveable { mutableStateOf<InputDialog?>(null) }
 
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
 
@@ -158,6 +174,7 @@ fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit) {
         TextInputDialog(
             title = if (kind == InputDialog.Url) "Lire une URL" else "Envoyer du texte",
             label = if (kind == InputDialog.Url) "https://…" else "Texte",
+            keyboardType = if (kind == InputDialog.Url) KeyboardType.Uri else KeyboardType.Text,
             onDismiss = { dialog = null },
             onConfirm = { value ->
                 if (kind == InputDialog.Url) vm.playUrl(value) else vm.sendText(value)
@@ -173,15 +190,19 @@ private fun NowPlaying(playback: PlaybackState, onSeek: (Long) -> Unit, canSeek:
         Column(Modifier.padding(16.dp)) {
             Text(playback.title ?: "Rien en lecture", style = MaterialTheme.typography.titleMedium, maxLines = 2)
             if (playback.durationMs > 0) {
-                var dragging by remember { mutableStateOf(false) }
-                var position by remember { mutableFloatStateOf(0f) }
-                val shown = if (dragging) position else playback.positionMs.toFloat()
+                val slider = remember { RemoteSliderState(tolerance = SEEK_TOLERANCE_MS) }
+                val remote = playback.positionMs.toFloat()
+                LaunchedEffect(remote) { slider.onRemoteValue(remote) }
+                PendingExpiry(slider)
+                val duration = playback.durationMs.toFloat()
+                val shown = slider.displayed(remote).coerceIn(0f, duration)
                 Slider(
-                    value = shown.coerceIn(0f, playback.durationMs.toFloat()),
-                    onValueChange = { dragging = true; position = it },
-                    onValueChangeFinished = { dragging = false; onSeek(position.toLong()) },
-                    valueRange = 0f..playback.durationMs.toFloat(),
+                    value = shown,
+                    onValueChange = slider::onDrag,
+                    onValueChangeFinished = { slider.onDragFinished()?.let { onSeek(it.toLong()) } },
+                    valueRange = 0f..duration,
                     enabled = canSeek,
+                    modifier = Modifier.semantics { contentDescription = "Position de lecture" },
                 )
                 Text("${formatHms(shown.toLong())} / ${formatHms(playback.durationMs)}", style = MaterialTheme.typography.bodySmall)
             }
@@ -191,12 +212,38 @@ private fun NowPlaying(playback: PlaybackState, onSeek: (Long) -> Unit, canSeek:
 
 @Composable
 private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit) {
-    var local by remember(volume) { mutableFloatStateOf(volume.toFloat()) }
+    // Pas de remember(volume) : une valeur reçue pendant le glissement réinitialisait le curseur.
+    val slider = remember { RemoteSliderState(tolerance = 1f) }
+    val remote = volume.toFloat()
+    LaunchedEffect(remote) { slider.onRemoteValue(remote) }
+    PendingExpiry(slider)
+    val shown = slider.displayed(remote).coerceIn(0f, 100f)
     Column(Modifier.fillMaxWidth()) {
-        Text("Volume ${local.toInt()} %", style = MaterialTheme.typography.bodySmall)
-        Slider(value = local, onValueChange = { local = it }, onValueChangeFinished = { onChange(local.toInt()) }, valueRange = 0f..100f)
+        Text("Volume ${shown.roundToInt()} %", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = shown,
+            onValueChange = slider::onDrag,
+            onValueChangeFinished = { slider.onDragFinished()?.let { onChange(it.roundToInt()) } },
+            valueRange = 0f..100f,
+            modifier = Modifier.semantics { contentDescription = "Volume" },
+        )
     }
 }
+
+/** Abandonne la valeur en attente si l'appareil ne la confirme pas à temps. */
+@Composable
+private fun PendingExpiry(slider: RemoteSliderState) {
+    val pending = slider.pending
+    LaunchedEffect(pending) {
+        if (pending != null) {
+            delay(PENDING_TIMEOUT_MS)
+            slider.expirePending()
+        }
+    }
+}
+
+private const val SEEK_TOLERANCE_MS = 3_000f
+private const val PENDING_TIMEOUT_MS = 4_000L
 
 @Composable
 private fun DPad(keys: Set<RemoteKey>, press: (RemoteKey) -> Unit) {
@@ -237,13 +284,31 @@ private fun KeyButton(icon: ImageVector, label: String, key: RemoteKey, keys: Se
 }
 
 @Composable
-private fun TextInputDialog(title: String, label: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var value by remember { mutableStateOf("") }
+private fun TextInputDialog(
+    title: String,
+    label: String,
+    keyboardType: KeyboardType,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var value by rememberSaveable { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val submit = { if (value.isNotBlank()) onConfirm(value) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
-        text = { OutlinedTextField(value, { value = it }, label = { Text(label) }, singleLine = true) },
-        confirmButton = { TextButton(onClick = { onConfirm(value) }, enabled = value.isNotBlank()) { Text("Envoyer") } },
+        text = {
+            OutlinedTextField(
+                value, { value = it },
+                label = { Text(label) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { submit() }),
+                modifier = Modifier.focusRequester(focus),
+            )
+        },
+        confirmButton = { TextButton(onClick = submit, enabled = value.isNotBlank()) { Text("Envoyer") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
     )
 }

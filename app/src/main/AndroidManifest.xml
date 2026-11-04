@@ -6,7 +6,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Verrou multicast : réception des réponses mDNS / SSDP / GDM pendant la découverte. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!--
+      Non demandées volontairement :
+      - NEARBY_WIFI_DEVICES : réservée au Wi-Fi Direct / Aware et au scan Wi-Fi ; NsdManager
+        et les sockets multicast n'en ont pas besoin.
+      - Accès au réseau local (Android 16+) : la restriction n'est appliquée qu'aux
+        applications ciblant une API supérieure à 36. À traiter (permission d'exécution) le
+        jour où targetSdk passera à 37.
+    -->
 
     <application
         android:name=".ZapetteApp"

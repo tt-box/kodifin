@@ -8,6 +8,12 @@ updates:
       interval: daily
       time: "04:00"
       timezone: Europe/Paris
+    # Délai avant de proposer une version tout juste publiée : les PR étant fusionnées
+    # automatiquement, cela laisse le temps de retirer une version compromise ou cassée.
+    # Les mises à jour de sécurité ne sont pas concernées par ce délai.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     open-pull-requests-limit: 10
     labels: [dependencies]
     commit-message:
@@ -25,13 +31,15 @@ updates:
       test:
         patterns: ["junit*", "app.cash.turbine*"]
 
-  # Versions des actions GitHub utilisées par la CI.
+  # Versions des actions GitHub utilisées par la CI (épinglées par SHA).
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
       day: monday
       timezone: Europe/Paris
+    cooldown:
+      default-days: 3
     labels: [dependencies, ci]
     commit-message:
       prefix: "ci"

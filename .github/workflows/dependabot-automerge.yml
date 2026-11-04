@@ -3,14 +3,18 @@ name: Dependabot auto-merge
 # Déclenché à la fin de la CI : fusionne une PR Dependabot uniquement si TOUS les jobs
 # de la CI (build, tests, lint, contrôle anti-pistage, scan CVE) sont verts pour le
 # dernier commit de la PR. Fonctionne sans règle de protection de branche.
+#
+# Sécurité : `workflow_run` s'exécute avec un jeton en écriture, dans le contexte de la
+# branche par défaut. Aucun code de la PR n'est extrait ni exécuté ici ; les données de
+# l'événement (nom de branche, SHA) passent uniquement par des variables d'environnement,
+# jamais interpolées dans le script, et sont revalidées auprès de l'API avant la fusion.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
 
-permissions:
-  contents: write
-  pull-requests: write
+# Aucun droit par défaut ; le job ne reçoit que le strict nécessaire.
+permissions: {}
 
 jobs:
   merge:
@@ -20,6 +24,13 @@ jobs:
       github.event.workflow_run.actor.login == 'dependabot[bot]' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: dependabot-automerge-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
     steps:
       - name: Fusionner la PR Dependabot verte
         env:
@@ -29,12 +40,34 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          # Valeurs issues de l'événement : format strict avant tout usage.
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::SHA de tête invalide"
+            exit 1
+          fi
+          if [[ "$HEAD_BRANCH" != dependabot/* ]]; then
+            echo "Branche hors Dependabot : rien à faire."
+            exit 0
+          fi
           pr="$(gh pr list -R "$REPO" --head "$HEAD_BRANCH" --state open \
                  --json number,author,headRefOid \
                  --jq ".[] | select(.author.login == \"app/dependabot\" and .headRefOid == \"$HEAD_SHA\") | .number")"
           if [[ -z "$pr" ]]; then
-            echo "Aucune PR Dependabot ouverte correspondant à $HEAD_SHA — rien à faire."
+            echo "Aucune PR Dependabot ouverte correspondant à $HEAD_SHA : rien à faire."
             exit 0
           fi
+          if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+            echo "::error::Résultat inattendu (plusieurs PR ?) : $pr"
+            exit 1
+          fi
+          # Refus si quelqu'un d'autre que Dependabot a poussé un commit sur la branche
+          # (l'acteur du run ne reflète que le dernier événement).
+          others="$(gh pr view "$pr" -R "$REPO" --json commits \
+                     --jq '[.commits[].authors[].login | select(. != "dependabot[bot]")] | length')"
+          if [[ "$others" != "0" ]]; then
+            echo "::warning::La PR #$pr contient des commits d'autres auteurs : fusion manuelle requise."
+            exit 0
+          fi
+          # --match-head-commit : échoue si la branche a bougé depuis la CI verte.
           gh pr merge "$pr" -R "$REPO" --squash --delete-branch --match-head-commit "$HEAD_SHA"
           echo "PR #$pr fusionnée."

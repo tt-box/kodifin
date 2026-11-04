@@ -67,7 +67,13 @@ Prérequis : JDK 17+ et SDK Android (plateforme 37 pour la compilation).
   contrôle anti-pistage, scan CVE (inventaire CycloneDX analysé par OSV-Scanner,
   aussi lancé chaque jour), soumission du graphe de dépendances pour les alertes Dependabot.
 - **Dependabot** (`.github/dependabot.yml`) : mises à jour Gradle (quotidiennes) et
-  GitHub Actions (hebdomadaires), plus les mises à jour de sécurité.
+  GitHub Actions (hebdomadaires), plus les mises à jour de sécurité. Une version n'est
+  proposée que quelques jours après sa publication (`cooldown`), ce qui laisse le temps de
+  retirer une version compromise avant la fusion automatique.
+- Les actions GitHub sont épinglées par SHA de commit ; le binaire OSV-Scanner est
+  vérifié par empreinte SHA-256 avant exécution.
 - **Fusion automatique** (`.github/workflows/dependabot-automerge.yml`) : une PR
   Dependabot est fusionnée (squash) dès que tous les jobs de la CI sont verts sur son
-  dernier commit.
+  dernier commit, si tous ses commits sont de Dependabot. La fusion utilisant le
+  `GITHUB_TOKEN`, elle ne relance pas la CI sur `main` : le graphe de dépendances est
+  republié par l'exécution quotidienne.
