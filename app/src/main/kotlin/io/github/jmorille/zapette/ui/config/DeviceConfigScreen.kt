@@ -80,6 +80,8 @@ import androidx.compose.ui.unit.dp
 import io.github.jmorille.zapette.container
 import io.github.jmorille.zapette.data.DeviceSecrets
 import io.github.jmorille.zapette.mediaserver.MediaServerController
+import io.github.jmorille.zapette.ui.config.accounts.MediaServerUserPicker
+import io.github.jmorille.zapette.ui.config.accounts.QuickConnectPanel
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import kotlinx.coroutines.launch
@@ -326,6 +328,39 @@ private fun DeviceConfigForm(
         }
     }
 
+    // Identifiant d'installation (en-tête MediaBrowser DeviceId) pour les appels de compte.
+    var installationId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { installationId = context.container.devices.installationId() }
+
+    /** Quick Connect réussi : enregistre l'appareil avec le jeton, sans aucun mot de passe. */
+    fun saveWithToken(token: String, userId: String, userName: String) {
+        val draft = draftOrNull() ?: return
+        val device = draft.device.copy(
+            extras = draft.device.extras - DeviceSecrets.PASSWORD - DeviceSecrets.ENCRYPTED_PASSWORD -
+                MediaServerController.EXTRA_SESSION_ID +
+                mapOf(
+                    MediaServerController.EXTRA_TOKEN to token,
+                    MediaServerController.EXTRA_USER_ID to userId,
+                    MediaServerController.EXTRA_USERNAME to userName,
+                ),
+        )
+        username = userName
+        password = ""
+        saving = true
+        scope.launch {
+            try {
+                context.container.devices.save(device, null)
+                onSaved(device.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = "Enregistrement impossible : ${e.message.orEmpty()}"
+            } finally {
+                saving = false
+            }
+        }
+    }
+
     fun save() {
         val draft = draftOrNull() ?: return
         // Désactive le bouton : un double appui enregistrait et ouvrait deux télécommandes.
@@ -437,9 +472,26 @@ private fun DeviceConfigForm(
                     },
                 )
                 val portNumber = port.toIntOrNull()
-                if (accountExtras != null && portNumber != null) {
-                    DeviceOptions.formBaseUrl(mode, host, portNumber, if (DeviceOptions.supportsBasePath(kind)) basePath else "")
-                        ?.let { accountExtras(kind, host.trim(), portNumber, it) }
+                val serverUrl = portNumber?.let {
+                    DeviceOptions.formBaseUrl(mode, host, it, if (DeviceOptions.supportsBasePath(kind)) basePath else "")
+                }
+                if (accountExtras != null && portNumber != null && serverUrl != null) {
+                    accountExtras(kind, host.trim(), portNumber, serverUrl)
+                }
+                val id = installationId
+                if ((kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY) && serverUrl != null && id != null &&
+                    DeviceOptions.error(kind, options) == null
+                ) {
+                    // Client de l'appareil : même délai et même mode TLS (auto-signé) que la connexion.
+                    val draftDevice = buildDevice(prefill, kind, name, host, port, location, username, "", options).device
+                    val accountHttp = remember(serverUrl, timeoutS, mode) { context.container.controllers.httpFor(draftDevice) }
+                    MediaServerUserPicker(kind, serverUrl, accountHttp, id, onUserSelected = { n, needsPassword ->
+                        username = n
+                        if (!needsPassword) password = ""
+                    })
+                    if (kind == DeviceKind.JELLYFIN) {
+                        QuickConnectPanel(serverUrl, accountHttp, id, onAuthenticated = ::saveWithToken)
+                    }
                 }
             }
         }

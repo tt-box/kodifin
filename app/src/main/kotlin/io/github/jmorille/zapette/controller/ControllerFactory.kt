@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.controller
 
+import io.github.jmorille.zapette.data.SettingsRepository
+import io.github.jmorille.zapette.kodi.KodiEventServer
 import android.content.Context
 import io.github.jmorille.zapette.airplay.AirPlayController
 import io.github.jmorille.zapette.cast.CastController
@@ -33,11 +35,11 @@ interface PlatformControllers {
 }
 
 /** Implémentation réelle : clés ADB dans le stockage privé, Cast via le SDK Google. */
-class AndroidPlatformControllers(private val context: Context) : PlatformControllers {
+class AndroidPlatformControllers(private val context: Context, private val settings: SettingsRepository) : PlatformControllers {
     override fun fireTv(device: Device): RemoteController =
         FireTvController(device, DadbShell(device.host, device.port, File(context.filesDir, "adb")))
 
-    override fun cast(device: Device): RemoteController = CastController(device, context)
+    override fun cast(device: Device): RemoteController = CastController(device, context) { settings.cast.first() }
 }
 
 /** Instancie la télécommande adaptée au protocole de l'appareil. */
@@ -76,7 +78,7 @@ class ControllerFactory(
                 device.extras[KodiController.EXTRA_USERNAME],
                 device.extras[KodiController.EXTRA_PASSWORD],
             )
-        return KodiController(device, KodiClient(transport))
+        return KodiController(device, KodiClient(transport), eventServer = KodiEventServer.fromDevice(device))
     }
 
     private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {

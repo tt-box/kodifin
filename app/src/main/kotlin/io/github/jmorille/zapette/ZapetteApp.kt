@@ -7,6 +7,7 @@ import io.github.jmorille.zapette.controller.AndroidPlatformControllers
 import io.github.jmorille.zapette.controller.ControllerFactory
 import io.github.jmorille.zapette.data.DeviceRepository
 import io.github.jmorille.zapette.data.KeystoreSecretStore
+import io.github.jmorille.zapette.data.SettingsRepository
 import io.github.jmorille.zapette.data.SecretStore
 import io.github.jmorille.zapette.discovery.DiscoveryManager
 import io.github.jmorille.zapette.model.zapetteHttpClient
@@ -40,8 +41,12 @@ class AppContainer(context: Context) {
         DeviceRepository.createStore { appContext.preferencesDataStoreFile("zapette") },
         secrets,
     )
+    /** Réglages globaux (écran allumé, Chromecast), fichier distinct des appareils. */
+    val settings = SettingsRepository(
+        SettingsRepository.createStore { appContext.preferencesDataStoreFile(SettingsRepository.FILE_NAME) },
+    )
     val discovery = DiscoveryManager(appContext, http)
-    val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext))
+    val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext, settings))
 }
 
 class ZapetteApp : Application() {
