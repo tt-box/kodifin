@@ -38,11 +38,30 @@ if [[ -n "$found" ]]; then
   exit 1
 fi
 
-# Double vérification sur l'APK final : aucune classe de ces familles ne doit y figurer.
-apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+# Double vérification sur l'APK final : aucune classe de ces familles ne doit y être
+# *définie*. (Le SDK Cast garde des références textuelles vers datatransport ; elles sont
+# inertes puisque les classes sont absentes, d'où l'option --defined-only.)
+# APK debug : non obfusqué (R8 renommerait les classes en release), mêmes dépendances.
+apk="app/build/outputs/apk/debug/app-debug.apk"
+analyzer=""
+for candidate in apkanalyzer "${ANDROID_HOME:-}/cmdline-tools/latest/bin/apkanalyzer" "${ANDROID_HOME:-}/cmdline-tools/latest/bin/apkanalyzer.bat"; do
+  if command -v "$candidate" >/dev/null 2>&1 || [[ -f "$candidate" ]]; then analyzer="$candidate"; break; fi
+done
+
 if [[ -f "$apk" ]]; then
-  if unzip -p "$apk" 'classes*.dex' | grep -a -q -E 'Lcom/google/android/datatransport/runtime/TransportRuntime;|Lcom/google/firebase/analytics/|Lio/sentry/|Lcom/appsflyer/'; then
-    echo "::error::Classes de télémétrie trouvées dans $apk"
+  if [[ -z "$analyzer" ]]; then
+    echo "::error::apkanalyzer introuvable : impossible de vérifier l'APK"
+    exit 1
+  fi
+  defined="$("$analyzer" dex packages --defined-only "$apk" | tr -d '\r')"
+  if [[ -z "$defined" ]]; then
+    echo "::error::apkanalyzer n'a rien renvoyé pour $apk"
+    exit 1
+  fi
+  leaks="$(printf '%s\n' "$defined" | awk '$1 == "C"' | grep -E 'com\.google\.android\.datatransport|com\.google\.firebase\.(analytics|crashlytics)|io\.sentry|com\.appsflyer|com\.facebook\.appevents|org\.matomo|org\.piwik' || true)"
+  if [[ -n "$leaks" ]]; then
+    echo "::error::Classes de télémétrie présentes dans $apk :"
+    printf '%s\n' "$leaks" | head -20
     exit 1
   fi
 fi

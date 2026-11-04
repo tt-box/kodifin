@@ -106,4 +106,8 @@ jobs:
 
       # Publie les dépendances transitives résolues par Gradle : Dependabot peut ainsi
       # signaler les CVE de toutes les bibliothèques, pas seulement celles déclarées.
+      # Périmètre : bibliothèques embarquées (les classpaths de plugins/outillage sont exclus,
+      # ils ne sont pas livrés dans l'APK et sont mis à jour via Dependabot de toute façon).
       - uses: gradle/actions/dependency-submission@v6
+        with:
+          dependency-graph-include-configurations: '.*[Rr]untimeClasspath'
