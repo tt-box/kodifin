@@ -97,6 +97,33 @@ class DeviceRepository(
         return checkNotNull(prefs[INSTALLATION_ID])
     }
 
+    /**
+     * Export des appareils enregistrés (tous, ou ceux de [ids]) au format [DeviceExport] :
+     * aucun mot de passe, chiffré ou non, ni jeton.
+     */
+    suspend fun exportDevices(ids: Collection<String>? = null, prettyPrint: Boolean = false): String {
+        val devices = saved.first().filter { ids == null || it.id in ids }
+        return DeviceExport.encode(devices, prettyPrint)
+    }
+
+    /**
+     * Import d'un export [DeviceExport] (JSON brut ou contenu de QR code compressé), fusionné par
+     * identifiant dans une seule transaction. Lève [InvalidExportException] si le document est
+     * refusé en bloc ; rien n'est alors écrit.
+     */
+    suspend fun importDevices(text: String, policy: ImportPolicy): ImportReport {
+        val decoded = DeviceExport.decode(QrPayload.decode(text))
+        var report = ImportReport(invalid = decoded.invalid)
+        store.edit { prefs ->
+            prefs.updateDevices { raw ->
+                val plan = DeviceExport.merge(DeviceCodec.decode(raw), decoded, policy)
+                report = plan.report
+                plan.toSave.fold(raw ?: "[]") { acc, device -> DeviceCodec.upsert(acc, device) }
+            }
+        }
+        return report
+    }
+
     val plexToken: Flow<String?> = data.map { it[PLEX_TOKEN] }
 
     suspend fun setPlexToken(token: String?) {

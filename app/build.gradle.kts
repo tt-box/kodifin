@@ -88,6 +88,10 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    // QR code (export/import d'appareils) : ZXing, Apache 2.0, sans télémétrie ni Play Services.
+    // zxing-android-embedded tire core 3.4.1 : la déclaration explicite impose la version récente.
+    implementation(libs.zxing.core)
+    implementation(libs.zxing.android.embedded)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)

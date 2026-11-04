@@ -1,5 +1,8 @@
 package io.github.jmorille.zapette.ui.devices
 
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -139,6 +142,8 @@ fun DevicesScreen(
     onConfigure: (String?) -> Unit,
     onPlexLink: () -> Unit,
     onEdit: (String) -> Unit = {},
+    onSettings: () -> Unit = {},
+    onTransfer: (String?) -> Unit = {},
 ) {
     val context = LocalContext.current
     val vm: DevicesViewModel = viewModel(factory = viewModelFactory { initializer { DevicesViewModel(context.container.devicesDependencies()) } })
@@ -167,7 +172,11 @@ fun DevicesScreen(
             TopAppBar(
                 title = { Text("Zapette") },
                 actions = {
+                    IconButton(onClick = { onTransfer(null) }) {
+                        Icon(Icons.Filled.ImportExport, contentDescription = "Importer / exporter les appareils")
+                    }
                     IconButton(onClick = onPlexLink) { Icon(Icons.Filled.Link, contentDescription = "Lier un compte Plex") }
+                    IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = "Réglages") }
                 },
             )
         },
@@ -198,7 +207,7 @@ fun DevicesScreen(
                 item { Text("Aucun appareil enregistré.", style = MaterialTheme.typography.bodyMedium) }
             }
             items(state.saved, key = { "s-" + it.id }) { device ->
-                DeviceRow(device, onClick = { onOpen(device.id) }, onEdit = { onEdit(device.id) }, onDelete = { toDelete = device.id })
+                DeviceRow(device, onClick = { onOpen(device.id) }, onEdit = { onEdit(device.id) }, onShare = { onTransfer(device.id) }, onDelete = { toDelete = device.id })
             }
             item {
                 SectionTitle("Sur le réseau")
@@ -221,7 +230,7 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
+private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)? = null, onShare: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         ListItem(
             leadingContent = { Icon(iconFor(device.kind), contentDescription = null) },
@@ -231,6 +240,7 @@ private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)?
                 {
                     Row {
                         onEdit?.let { IconButton(onClick = it) { Icon(Icons.Filled.Edit, contentDescription = "Modifier ${device.name}") } }
+                        onShare?.let { IconButton(onClick = it) { Icon(Icons.Filled.QrCode, contentDescription = "QR code de ${device.name}") } }
                         onDelete?.let { IconButton(onClick = it) { Icon(Icons.Filled.Delete, contentDescription = "Supprimer ${device.name}") } }
                     }
                 }

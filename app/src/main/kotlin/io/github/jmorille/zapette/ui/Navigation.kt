@@ -2,6 +2,9 @@ package io.github.jmorille.zapette.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.jmorille.zapette.container
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -16,6 +19,8 @@ import io.github.jmorille.zapette.ui.config.DeviceConfigScreen
 import io.github.jmorille.zapette.ui.devices.DevicesScreen
 import io.github.jmorille.zapette.ui.plex.PlexLinkScreen
 import io.github.jmorille.zapette.ui.remote.RemoteScreen
+import io.github.jmorille.zapette.ui.settings.SettingsScreen
+import io.github.jmorille.zapette.ui.transfer.TransferScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -38,6 +43,14 @@ data class RemoteRoute(val deviceId: String, val sharedUrl: String? = null)
 
 @Serializable
 object PlexLinkRoute
+
+/** Réglages globaux (écran allumé, Chromecast). */
+@Serializable
+object SettingsRoute
+
+/** Export / import des appareils ; [deviceId] : appareil présélectionné pour le QR code. */
+@Serializable
+data class TransferRoute(val deviceId: String? = null)
 
 /**
  * Vrai si l'écran est au premier plan et stable : ignore les doubles appuis pendant une
@@ -74,6 +87,8 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
                 onConfigure = { json -> if (entry.isResumed) nav.navigate(ConfigRoute(json)) },
                 onEdit = { id -> if (entry.isResumed) nav.navigate(EditRoute(id)) },
                 onPlexLink = { if (entry.isResumed) nav.navigate(PlexLinkRoute) },
+                onSettings = { if (entry.isResumed) nav.navigate(SettingsRoute) },
+                onTransfer = { id -> if (entry.isResumed) nav.navigate(TransferRoute(id)) },
             )
         }
         composable<ConfigRoute> { entry ->
@@ -100,10 +115,21 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
         }
         composable<RemoteRoute> { entry ->
             val route = entry.toRoute<RemoteRoute>()
+            val keepScreenOn by LocalContext.current.container.settings.keepScreenOn.collectAsStateWithLifecycle(false)
             RemoteScreen(
+                keepScreenOn = keepScreenOn,
                 onEdit = { if (entry.isResumed) nav.navigate(EditRoute(route.deviceId)) },
                 deviceId = route.deviceId,
                 sharedUrl = route.sharedUrl,
+                onBack = { if (entry.isResumed) nav.popBackStack() },
+            )
+        }
+        composable<SettingsRoute> { entry ->
+            SettingsScreen(store = LocalContext.current.container.settings, onBack = { if (entry.isResumed) nav.popBackStack() })
+        }
+        composable<TransferRoute> { entry ->
+            TransferScreen(
+                deviceId = entry.toRoute<TransferRoute>().deviceId,
                 onBack = { if (entry.isResumed) nav.popBackStack() },
             )
         }
