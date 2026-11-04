@@ -18,6 +18,8 @@ dadb = "2.0.0"
 junit = "4.13.2"
 turbine = "1.2.1"
 material-icons = "1.7.8"
+zxing = "3.5.3"
+zxing-android-embedded = "4.3.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
@@ -40,6 +42,8 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver3", version.ref = "okhttp" }
 play-services-cast-framework = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "cast" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android-embedded" }
 dadb = { module = "dev.mobile:dadb", version.ref = "dadb" }
 junit = { module = "junit:junit", version.ref = "junit" }
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }

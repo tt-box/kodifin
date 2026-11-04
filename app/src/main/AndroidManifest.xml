@@ -9,6 +9,14 @@
     <!-- Verrou multicast : réception des réponses mDNS / SSDP / GDM pendant la découverte. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!--
+      Caméra : scan d'un QR code d'import d'appareils (scanner ZXing embarqué, hors ligne).
+      Demandée à l'exécution, uniquement au moment du scan. Facultative : l'application reste
+      installable sur les appareils sans caméra (TV, boîtiers), où le scan est masqué.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <!--
       Non demandées volontairement :
       - NEARBY_WIFI_DEVICES : réservée au Wi-Fi Direct / Aware et au scan Wi-Fi ; NsdManager
         et les sockets multicast n'en ont pas besoin.
