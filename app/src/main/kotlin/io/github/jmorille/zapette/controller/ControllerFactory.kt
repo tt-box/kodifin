@@ -37,7 +37,7 @@ interface PlatformControllers {
 /** Implémentation réelle : clés ADB dans le stockage privé, Cast via le SDK Google. */
 class AndroidPlatformControllers(private val context: Context, private val settings: SettingsRepository) : PlatformControllers {
     override fun fireTv(device: Device): RemoteController =
-        FireTvController(device, DadbShell(device.host, device.port, File(context.filesDir, "adb")))
+        FireTvController(device, DadbShell(device.host, device.port, File(context.filesDir, "adb"), DeviceOptions.timeoutSeconds(device) * 1000, device.extras[DadbShell.EXTRA_TLS] == "true"))
 
     override fun cast(device: Device): RemoteController = CastController(device, context) { settings.cast.first() }
 }
