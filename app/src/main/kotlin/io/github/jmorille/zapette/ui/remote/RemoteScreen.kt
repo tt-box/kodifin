@@ -28,7 +28,9 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -78,6 +80,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import io.github.jmorille.zapette.connection.DeviceOptions
 import io.github.jmorille.zapette.container
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.PlaybackState
@@ -90,7 +93,7 @@ private enum class InputDialog { Url, Text }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit) {
+fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit, onEdit: () -> Unit = {}) {
     val context = LocalContext.current
     val vm: RemoteViewModel = viewModel(
         key = deviceId,
@@ -115,6 +118,12 @@ fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
                 },
                 actions = {
+                    IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "Modifier la configuration") }
+                    if (DeviceOptions.wakeTarget(state.device) != null) {
+                        IconButton(onClick = vm::wake) {
+                            Icon(Icons.Filled.PowerSettingsNew, contentDescription = "Allumer (Wake-on-LAN)")
+                        }
+                    }
                     if (Capability.PLAY_URL in state.capabilities) {
                         IconButton(onClick = { dialog = InputDialog.Url }) { Icon(Icons.Filled.Link, contentDescription = "Lire une URL") }
                     }

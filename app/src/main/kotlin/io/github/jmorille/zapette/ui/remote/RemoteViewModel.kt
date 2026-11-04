@@ -4,6 +4,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jmorille.zapette.AppContainer
+import io.github.jmorille.zapette.connection.DeviceOptions
+import io.github.jmorille.zapette.connection.WakeOnLan
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.PersistsCredentials
@@ -42,6 +44,9 @@ interface RemoteDependencies {
     suspend fun createController(device: Device): RemoteController
     suspend fun saveDevice(device: Device)
 
+    /** Envoie le signal Wake-on-LAN de l'appareil (sans effet s'il n'en a pas). */
+    suspend fun wake(device: Device) {}
+
     /** Portée qui survit au ViewModel : sert à fermer la connexion après sa destruction. */
     val backgroundScope: CoroutineScope
 }
@@ -50,6 +55,9 @@ fun AppContainer.remoteDependencies(): RemoteDependencies = object : RemoteDepen
     override suspend fun loadDevice(id: String) = devices.get(id)
     override suspend fun createController(device: Device) = controllers.create(device)
     override suspend fun saveDevice(device: Device) = devices.save(device)
+    override suspend fun wake(device: Device) {
+        DeviceOptions.wakeTarget(device)?.let { WakeOnLan.send(it) }
+    }
     override val backgroundScope: CoroutineScope get() = appScope
 }
 
@@ -63,6 +71,8 @@ class RemoteViewModel(
     private val playbackRetryDelayMs: Long = PLAYBACK_RETRY_DELAY_MS,
     /** Délai au-delà duquel on abandonne une déconnexion qui ne rend pas la main. */
     private val disconnectTimeoutMs: Long = DISCONNECT_TIMEOUT_MS,
+    /** Pause entre deux tentatives de connexion pendant le démarrage d'un appareil réveillé. */
+    private val wakeRetryDelayMs: Long = WAKE_RETRY_DELAY_MS,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(RemoteUiState())
@@ -88,7 +98,33 @@ class RemoteViewModel(
         connect()
     }
 
-    private fun connect() {
+    /**
+     * Envoie le signal Wake-on-LAN puis, si l'appareil n'est pas connecté, relance la connexion
+     * avec plusieurs tentatives le temps qu'il démarre.
+     */
+    fun wake() {
+        val device = _state.value.device ?: return
+        viewModelScope.launch {
+            if (!sendWake(device)) return@launch
+            _messages.trySend("Signal de réveil envoyé à ${device.name}")
+            if (!_state.value.connected) {
+                connectJob?.cancel()
+                connect(afterWake = true)
+            }
+        }
+    }
+
+    private suspend fun sendWake(device: Device): Boolean = try {
+        withContext(io) { deps.wake(device) }
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        _messages.trySend("Réveil impossible : ${e.message.orEmpty()}")
+        false
+    }
+
+    private fun connect(afterWake: Boolean = false) {
         connectJob = viewModelScope.launch {
             // Une seule connexion à la fois : on libère la précédente et sa boucle d'observation.
             playbackJob?.cancel()
@@ -105,6 +141,10 @@ class RemoteViewModel(
                 _messages.trySend("Appareil introuvable")
                 return@launch
             }
+            // Réveil automatique : signal envoyé avant de se connecter, puis tentatives répétées.
+            val autoWake = DeviceOptions.autoWake(device)
+            if (autoWake) sendWake(device)
+            val attempts = if (autoWake || afterWake) WAKE_ATTEMPTS else 1
             try {
                 val c = deps.createController(device)
                 // Création non interruptible terminée après onCleared : personne d'autre ne
@@ -117,7 +157,7 @@ class RemoteViewModel(
                 _state.update {
                     it.copy(device = device, supportedKeys = c.supportedKeys, capabilities = c.capabilities)
                 }
-                withContext(io) { c.connect() }
+                connectWithRetry(c, attempts)
                 _state.update { it.copy(connecting = false, connected = true) }
                 persistCredentials(device, c)
                 consumeSharedUrl()?.let(::playUrl)
@@ -127,6 +167,20 @@ class RemoteViewModel(
             } catch (e: Exception) {
                 _state.update { it.copy(connecting = false, connected = false) }
                 _messages.trySend(e.message ?: "Connexion impossible")
+            }
+        }
+    }
+
+    private suspend fun connectWithRetry(c: RemoteController, attempts: Int) {
+        repeat(attempts) { attempt ->
+            try {
+                withContext(io) { c.connect() }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == attempts - 1) throw e
+                delay(wakeRetryDelayMs)
             }
         }
     }
@@ -209,5 +263,9 @@ class RemoteViewModel(
         const val KEY_URL_SENT = "shared_url_sent"
         const val DISCONNECT_TIMEOUT_MS = 5_000L
         const val PLAYBACK_RETRY_DELAY_MS = 3_000L
+
+        // Réveil : jusqu'à 12 tentatives espacées de 5 s (environ une minute de démarrage).
+        const val WAKE_ATTEMPTS = 12
+        const val WAKE_RETRY_DELAY_MS = 5_000L
     }
 }

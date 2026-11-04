@@ -13,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Tv
@@ -136,6 +138,7 @@ fun DevicesScreen(
     onOpen: (String) -> Unit,
     onConfigure: (String?) -> Unit,
     onPlexLink: () -> Unit,
+    onEdit: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val vm: DevicesViewModel = viewModel(factory = viewModelFactory { initializer { DevicesViewModel(context.container.devicesDependencies()) } })
@@ -195,7 +198,7 @@ fun DevicesScreen(
                 item { Text("Aucun appareil enregistré.", style = MaterialTheme.typography.bodyMedium) }
             }
             items(state.saved, key = { "s-" + it.id }) { device ->
-                DeviceRow(device, onClick = { onOpen(device.id) }, onDelete = { toDelete = device.id })
+                DeviceRow(device, onClick = { onOpen(device.id) }, onEdit = { onEdit(device.id) }, onDelete = { toDelete = device.id })
             }
             item {
                 SectionTitle("Sur le réseau")
@@ -218,14 +221,19 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun DeviceRow(device: Device, onClick: () -> Unit, onDelete: (() -> Unit)? = null) {
+private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         ListItem(
             leadingContent = { Icon(iconFor(device.kind), contentDescription = null) },
             headlineContent = { Text(device.name) },
             supportingContent = { Text("${device.kind.label} · ${device.host}") },
-            trailingContent = onDelete?.let {
-                { IconButton(onClick = it) { Icon(Icons.Filled.Delete, contentDescription = "Supprimer") } }
+            trailingContent = if (onEdit == null && onDelete == null) null else {
+                {
+                    Row {
+                        onEdit?.let { IconButton(onClick = it) { Icon(Icons.Filled.Edit, contentDescription = "Modifier ${device.name}") } }
+                        onDelete?.let { IconButton(onClick = it) { Icon(Icons.Filled.Delete, contentDescription = "Supprimer ${device.name}") } }
+                    }
+                }
             },
         )
     }

@@ -29,6 +29,10 @@ object DevicesRoute
 @Serializable
 data class ConfigRoute(val deviceJson: String? = null)
 
+/** Modification d'un appareil enregistré, chargé par son identifiant (secrets hors de la route). */
+@Serializable
+data class EditRoute(val deviceId: String)
+
 @Serializable
 data class RemoteRoute(val deviceId: String, val sharedUrl: String? = null)
 
@@ -68,6 +72,7 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
                     }
                 },
                 onConfigure = { json -> if (entry.isResumed) nav.navigate(ConfigRoute(json)) },
+                onEdit = { id -> if (entry.isResumed) nav.navigate(EditRoute(id)) },
                 onPlexLink = { if (entry.isResumed) nav.navigate(PlexLinkRoute) },
             )
         }
@@ -84,9 +89,19 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
                 onBack = { if (entry.isResumed) nav.popBackStack() },
             )
         }
+        composable<EditRoute> { entry ->
+            DeviceConfigScreen(
+                prefillJson = null,
+                editDeviceId = entry.toRoute<EditRoute>().deviceId,
+                // Nouvelle télécommande : la connexion repart avec la configuration modifiée.
+                onSaved = { id -> nav.navigate(RemoteRoute(id)) { popUpTo(DevicesRoute) } },
+                onBack = { if (entry.isResumed) nav.popBackStack() },
+            )
+        }
         composable<RemoteRoute> { entry ->
             val route = entry.toRoute<RemoteRoute>()
             RemoteScreen(
+                onEdit = { if (entry.isResumed) nav.navigate(EditRoute(route.deviceId)) },
                 deviceId = route.deviceId,
                 sharedUrl = route.sharedUrl,
                 onBack = { if (entry.isResumed) nav.popBackStack() },
