@@ -540,7 +540,11 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
         Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             NavigationFor(content, Modifier.weight(1f).fillMaxWidth())
             val extra = content.features.uiCommands - setOf(UiCommand.OSD, UiCommand.CONTEXT_MENU)
-            UiCommandChips(extra, content.actions.uiCommand, Modifier.fillMaxWidth())
+            if (extra.isNotEmpty()) {
+                CollapsibleCard("Plus de commandes", summary = "${extra.size} commandes de l'appareil", modifier = Modifier.fillMaxWidth()) {
+                    UiCommandChips(extra, content.actions.uiCommand, Modifier.fillMaxWidth())
+                }
+            }
         }
         if (tabs.isNotEmpty()) {
             SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight())

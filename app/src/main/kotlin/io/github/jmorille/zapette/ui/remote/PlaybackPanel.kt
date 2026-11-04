@@ -1,5 +1,14 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -75,7 +84,12 @@ fun PlaybackDetails(
         }
         val fastKeys = RemoteKey.REWIND in keys || RemoteKey.FAST_FORWARD in keys
         if (features.speed || features.chapters || (features.seekStep && fastKeys)) {
-            Section("Vitesse et chapitres") {
+            val speedSummary = when (val speed = details?.speed ?: 1) {
+                0 -> "En pause"
+                1 -> "Vitesse normale"
+                else -> "Vitesse ×$speed"
+            }
+            Section("Vitesse et chapitres", summary = speedSummary) {
                 if (features.speed) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextAction("Plus lent", actions.slower)
@@ -108,23 +122,33 @@ fun PlaybackDetails(
             }
         }
         if (features.tracks) {
-            Section("Audio") {
+            val audio = details?.audioTracks?.firstOrNull { it.id == details.currentAudio }?.label
+            Section("Audio", summary = audio ?: "—") {
                 TrackChips(details?.audioTracks.orEmpty(), details?.currentAudio, offLabel = null, onSelect = { it?.let(actions.setAudioTrack) })
                 TextAction("Piste audio suivante", actions.nextAudioTrack)
             }
-            Section("Sous-titres") {
+            val subtitle = details?.currentSubtitle?.let { id -> details.subtitles.firstOrNull { it.id == id }?.label } ?: "Désactivés"
+            Section("Sous-titres", summary = subtitle) {
                 TrackChips(details?.subtitles.orEmpty(), details?.currentSubtitle, offLabel = "Désactivés", onSelect = actions.setSubtitle)
                 TextAction("Sous-titres suivants", actions.nextSubtitle)
             }
         }
         if (features.syncOffset) {
-            Section("Synchronisation") {
+            Section("Synchronisation", summary = "Décalage sous-titres et audio") {
                 SyncRow("Sous-titres", actions.subtitleDelay)
                 SyncRow("Audio", actions.audioDelay)
             }
         }
         if (features.playMode) {
-            Section("Modes de lecture") {
+            val modeSummary = listOfNotNull(
+                when (details?.repeat) {
+                    RepeatMode.ONE -> "Répéter le titre"
+                    RepeatMode.ALL -> "Répéter tout"
+                    else -> "Sans répétition"
+                },
+                "aléatoire".takeIf { details?.shuffle == true },
+            ).joinToString(" · ")
+            Section("Modes de lecture", summary = modeSummary) {
                 RepeatSelector(details?.repeat, actions.setRepeat)
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Lecture aléatoire", modifier = Modifier.weight(1f))
@@ -140,12 +164,54 @@ fun PlaybackDetails(
     }
 }
 
+/**
+ * Section repliable, repliée par défaut pour garder l'écran épuré : seul l'en-tête (titre et
+ * résumé de l'état courant, ex. piste choisie) reste visible. L'état ouvert/fermé survit à la
+ * rotation.
+ */
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            content()
+private fun Section(title: String, summary: String? = null, content: @Composable () -> Unit) {
+    CollapsibleCard(title, summary, Modifier.fillMaxWidth(), content = content)
+}
+
+@Composable
+fun CollapsibleCard(
+    title: String,
+    summary: String? = null,
+    modifier: Modifier = Modifier,
+    initiallyExpanded: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
+    OutlinedCard(modifier) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(onClickLabel = if (expanded) "Masquer $title" else "Afficher $title") { expanded = !expanded }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                if (!expanded && summary != null) {
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+            )
+        }
+        AnimatedVisibility(expanded) {
+            Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                content()
+            }
         }
     }
 }
