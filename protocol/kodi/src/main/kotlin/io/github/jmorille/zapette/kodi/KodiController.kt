@@ -6,6 +6,7 @@ import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.MediaDetails
 import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
 import io.github.jmorille.zapette.model.MediaTrack
 import io.github.jmorille.zapette.model.PlaybackState
@@ -14,14 +15,18 @@ import io.github.jmorille.zapette.model.RepeatMode
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
+import io.github.jmorille.zapette.model.SeriesContext
 import io.github.jmorille.zapette.model.SupportsChapters
+import io.github.jmorille.zapette.model.SupportsImages
 import io.github.jmorille.zapette.model.SupportsLibrary
 import io.github.jmorille.zapette.model.SupportsLibraryMaintenance
 import io.github.jmorille.zapette.model.SupportsNotify
 import io.github.jmorille.zapette.model.SupportsPlayMode
 import io.github.jmorille.zapette.model.SupportsPower
 import io.github.jmorille.zapette.model.SupportsQueue
+import io.github.jmorille.zapette.model.SupportsSearch
 import io.github.jmorille.zapette.model.SupportsSeekStep
+import io.github.jmorille.zapette.model.SupportsSeries
 import io.github.jmorille.zapette.model.SupportsSpeed
 import io.github.jmorille.zapette.model.SupportsSyncOffset
 import io.github.jmorille.zapette.model.SupportsTracks
@@ -38,7 +43,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -59,6 +63,10 @@ import kotlin.math.abs
  * Avec un transport qui pousse les notifications (WebSocket), l'état est relu à chaque
  * notification utile ([STATE_NOTIFICATIONS]) et, en secours, toutes les
  * [fallbackPollIntervalMs] (position de lecture) ; sinon il est interrogé toutes les [pollIntervalMs].
+ *
+ * Images ([SupportsImages]) : `imageFetcher` (clé `image://…` → octets), sinon celui du transport
+ * HTTP ([KodiHttpTransport.images]) ; avec le WebSocket, l'appelant fournit un [KodiImageFetcher]
+ * pointant vers le serveur web de l'appareil. Sans source d'images, [image] renvoie `null`.
  */
 class KodiController(
     override val device: Device,
@@ -66,6 +74,7 @@ class KodiController(
     private val pollIntervalMs: Long = 1_000,
     private val eventServer: KodiEventServer? = null,
     private val fallbackPollIntervalMs: Long = 10_000,
+    imageFetcher: (suspend (String) -> ByteArray?)? = null,
 ) : RemoteController,
     DescribesServer,
     SupportsTracks,
@@ -79,9 +88,18 @@ class KodiController(
     SupportsNotify,
     SupportsLibraryMaintenance,
     SupportsLibrary,
-    SupportsQueue {
+    SupportsQueue,
+    SupportsSeries,
+    SupportsSearch,
+    SupportsImages {
 
     private val library = KodiLibrary(client)
+
+    private val images: (suspend (String) -> ByteArray?)? = imageFetcher ?: client.httpImages?.let { it::fetch }
+
+    /** PVR détecté (à la connexion ou à la lecture des rubriques) : ajoute les chaînes à la recherche. */
+    @Volatile
+    private var pvrAvailable = false
 
     override val capabilities = Capability.entries.toSet()
     override val supportedKeys = RemoteKey.entries.toSet()
@@ -97,6 +115,14 @@ class KodiController(
             null
         } catch (_: UnsupportedActionException) {
             null
+        }
+        // Chaînes TV proposées à la recherche seulement si le PVR répond (sans bloquer la connexion).
+        pvrAvailable = try {
+            library.hasPvr()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -218,6 +244,8 @@ class KodiController(
         } catch (_: KodiRpcException) {
             return PlaybackState(volumePercent = app.volume, muted = app.muted)
         }
+        // Épisode : série, saison et numéro lus dans le même Player.GetItem que le titre.
+        val episode = item.type == EPISODE_TYPE
         return PlaybackState(
             title = item.label.ifBlank { null },
             isPlaying = props.speed != 0,
@@ -225,6 +253,9 @@ class KodiController(
             durationMs = props.totalTimeMs,
             volumePercent = app.volume,
             muted = app.muted,
+            seriesTitle = if (episode) item.showTitle else null,
+            season = if (episode) item.season else null,
+            episode = if (episode) item.episode else null,
         )
     }
 
@@ -410,7 +441,8 @@ class KodiController(
 
     // --- Bibliothèque -----------------------------------------------------
 
-    override suspend fun sections(): List<MediaSection> = library.sections()
+    override suspend fun sections(): List<MediaSection> =
+        library.sections().also { list -> pvrAvailable = list.any { it.id == KodiLibrary.SECTION_TV } }
 
     override suspend fun browse(parentId: String, offset: Int, limit: Int): List<MediaEntry> =
         library.browse(parentId, offset, limit)
@@ -452,20 +484,8 @@ class KodiController(
 
     override suspend fun queue(): List<MediaEntry> {
         val playlist = activePlaylist().playlistId
-        return client.playlistItems(playlist, QUEUE_PROPERTIES).mapIndexedNotNull { index, element ->
-            val o = element as? JsonObject ?: return@mapIndexedNotNull null
-            val idKey = KodiLibrary.ITEM_TYPE_KEYS[o["type"].primitive()?.contentOrNull]
-            val itemId = o["id"].primitive()?.intOrNull
-            val file = o["file"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
-            val id = when {
-                idKey != null && itemId != null -> KodiEntryId(idKey, itemId.toString())
-                file != null -> KodiEntryId("file", file)
-                else -> KodiEntryId("position", index.toString())
-            }
-            val artists = (o["artist"] as? JsonArray)?.mapNotNull { it.primitive()?.contentOrNull }?.joinToString(", ")
-            val subtitle = o["showtitle"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
-                ?: artists?.takeIf { it.isNotBlank() }
-            MediaEntry(id.toString(), KodiLibrary.label(o).orEmpty(), subtitle)
+        return client.playlistItems(playlist, KodiLibrary.QUEUE_PROPERTIES).mapIndexedNotNull { index, element ->
+            (element as? JsonObject)?.let { KodiLibrary.queueEntry(it, index) }
         }
     }
 
@@ -486,6 +506,50 @@ class KodiController(
 
     override suspend fun clearQueue() {
         client.playlistClear(activePlaylist().playlistId)
+    }
+
+    // --- Série en cours, recherche, images ---------------------------------
+
+    /**
+     * Série de l'épisode en cours : `Player.GetItem` (type `episode`, `tvshowid`, `season`, `id`)
+     * puis `VideoLibrary.GetSeasons`. Les épisodes d'une saison se lisent par [browse] (`season:<série>:<n>`).
+     */
+    override suspend fun currentSeries(): SeriesContext? {
+        val player = client.activePlayers().firstOrNull { it.type == "video" } ?: return null
+        val item = try {
+            client.playerItem(player.id)
+        } catch (_: KodiRpcException) {
+            return null // lecteur arrêté entre les deux appels
+        }
+        if (item.type != EPISODE_TYPE) return null
+        val show = item.tvShowId ?: return null
+        val seasons = library.seasons(show, 0, MAX_SEASONS)
+        return SeriesContext(
+            seriesId = KodiEntryId("tvshowid", show.toString()).toString(),
+            title = item.showTitle ?: seasons.firstNotNullOfOrNull { it.subtitle } ?: item.label,
+            seasons = seasons,
+            currentSeasonId = item.season?.let { KodiEntryId("season", "$show:$it").toString() },
+            currentEpisodeId = item.id?.let { KodiEntryId("episodeid", it.toString()).toString() },
+        )
+    }
+
+    /** Films, séries, épisodes, artistes, albums, titres ; chaînes TV si le PVR est disponible. */
+    override val searchKinds: Set<MediaKind>
+        get() = if (pvrAvailable) SEARCH_KINDS + MediaKind.CHANNEL else SEARCH_KINDS
+
+    override suspend fun search(query: String, kinds: Set<MediaKind>, limit: Int): List<MediaEntry> {
+        val available = searchKinds
+        return library.search(query, if (kinds.isEmpty()) available else kinds intersect available, limit)
+    }
+
+    /**
+     * [imageKey] : chemin d'image Kodi (`image://…`), téléchargé sur le serveur web de l'appareil.
+     * [maxWidth] est ignoré : `/image/` ne redimensionne pas de façon garantie (l'image est celle
+     * du cache de Kodi) ; la mise à l'échelle se fait à l'affichage.
+     */
+    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? {
+        if (!imageKey.startsWith(KodiImageFetcher.IMAGE_SCHEME)) return null
+        return images?.invoke(imageKey)
     }
 
     private suspend fun withPlayer(action: suspend (Int) -> Unit) {
@@ -515,7 +579,15 @@ class KodiController(
                 .distinctBy { it.startMs }
                 .sortedBy { it.startMs }
         }
-        internal val QUEUE_PROPERTIES = listOf("title", "file", "showtitle", "artist")
+        internal const val EPISODE_TYPE = "episode"
+
+        /** Saisons lues au plus pour [currentSeries]. */
+        internal const val MAX_SEASONS = 500
+
+        /** Natures toujours interrogeables (CHANNEL s'y ajoute si le PVR répond). */
+        internal val SEARCH_KINDS = setOf(
+            MediaKind.MOVIE, MediaKind.SERIES, MediaKind.EPISODE, MediaKind.ARTIST, MediaKind.ALBUM, MediaKind.SONG,
+        )
 
         /** Première version JSON-RPC (Kodi 19) acceptant `Player.Seek {value:{step|seconds|time}}`. */
         internal const val MODERN_SEEK_API = 12

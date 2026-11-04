@@ -4,6 +4,7 @@ import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.MediaDetails
 import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
 import io.github.jmorille.zapette.model.MediaTrack
 import io.github.jmorille.zapette.model.PowerAction
@@ -340,18 +341,18 @@ class KodiControlsTest {
         ],"limits":{"start":0,"end":5,"total":5}}"""
         assertEquals(
             listOf(
-                MediaEntry("movieid:7", "Film A"),
-                MediaEntry("file:http://radio/x", "Flux"),
-                MediaEntry("episodeid:3", "Pilote", "Série"),
-                MediaEntry("songid:9", "Chanson", "A, B"),
-                MediaEntry("position:4", "Inconnu"),
+                MediaEntry("movieid:7", "Film A", kind = MediaKind.MOVIE),
+                MediaEntry("file:http://radio/x", "Flux", kind = MediaKind.OTHER),
+                MediaEntry("episodeid:3", "Pilote", "Série", kind = MediaKind.EPISODE),
+                MediaEntry("songid:9", "Chanson", "A, B", kind = MediaKind.SONG),
+                MediaEntry("position:4", "Inconnu", kind = MediaKind.OTHER),
             ),
             controller.queue(),
         )
         assertEquals(
             listOf(
                 call(KodiMethod.PLAYER_GET_PROPERTIES, """{"playerid":0,"properties":["playlistid","position"]}"""),
-                call(KodiMethod.PLAYLIST_GET_ITEMS, """{"playlistid":0,"properties":["title","file","showtitle","artist"]}"""),
+                call(KodiMethod.PLAYLIST_GET_ITEMS, """{"playlistid":0,"properties":["title","file","showtitle","artist","season","episode","year","playcount","art","thumbnail"]}"""),
             ),
             stub.commands(),
         )
@@ -430,13 +431,16 @@ class KodiControlsTest {
         stub.results[KodiMethod.VIDEO_GET_MOVIES] =
             """{"movies":[{"movieid":12,"label":"Alien","year":1979},{"movieid":13,"label":"Sans année","year":0},{"label":"sans id"}]}"""
         assertEquals(
-            listOf(MediaEntry("movieid:12", "Alien", "1979"), MediaEntry("movieid:13", "Sans année")),
+            listOf(
+                MediaEntry("movieid:12", "Alien", "1979", kind = MediaKind.MOVIE, year = 1979),
+                MediaEntry("movieid:13", "Sans année", kind = MediaKind.MOVIE),
+            ),
             controller.browse("movies", offset = 20, limit = 10),
         )
         assertEquals(
             call(
                 KodiMethod.VIDEO_GET_MOVIES,
-                """{"properties":["year"],"limits":{"start":20,"end":30},"sort":{"method":"label","ignorearticle":true}}""",
+                """{"properties":["year","playcount","art","thumbnail"],"limits":{"start":20,"end":30},"sort":{"method":"label","ignorearticle":true}}""",
             ),
             stub.commands().single(),
         )
@@ -449,24 +453,30 @@ class KodiControlsTest {
             """{"seasons":[{"seasonid":30,"season":1,"label":"Saison 1","showtitle":"Série"},{"season":0,"label":"","showtitle":""}]}"""
         stub.results[KodiMethod.VIDEO_GET_EPISODES] =
             """{"episodes":[{"episodeid":40,"label":"Pilote","season":1,"episode":1}]}"""
-        assertEquals(listOf(MediaEntry("tvshowid:3", "Série", "2010", browsable = true)), controller.browse("tvshows"))
+        assertEquals(
+            listOf(MediaEntry("tvshowid:3", "Série", "2010", browsable = true, kind = MediaKind.SERIES, year = 2010)),
+            controller.browse("tvshows"),
+        )
         assertEquals(
             listOf(
-                MediaEntry("season:3:1", "Saison 1", "Série", browsable = true),
-                MediaEntry("season:3:0", "Saison 0", null, browsable = true),
+                MediaEntry("season:3:1", "Saison 1", "Série", browsable = true, kind = MediaKind.SEASON, season = 1),
+                MediaEntry("season:3:0", "Saison 0", null, browsable = true, kind = MediaKind.SEASON, season = 0),
             ),
             controller.browse("tvshowid:3"),
         )
-        assertEquals(listOf(MediaEntry("episodeid:40", "Pilote", "S01E01")), controller.browse("season:3:1", 0, 50))
+        assertEquals(
+            listOf(MediaEntry("episodeid:40", "Pilote", "S01E01", kind = MediaKind.EPISODE, season = 1, episode = 1)),
+            controller.browse("season:3:1", 0, 50),
+        )
         val calls = stub.commands()
         assertEquals(
-            call(KodiMethod.VIDEO_GET_SEASONS, """{"tvshowid":3,"properties":["season","showtitle"],"limits":{"start":0,"end":100}}"""),
+            call(KodiMethod.VIDEO_GET_SEASONS, """{"tvshowid":3,"properties":["season","showtitle","playcount","art","thumbnail"],"limits":{"start":0,"end":100}}"""),
             calls[1],
         )
         assertEquals(
             call(
                 KodiMethod.VIDEO_GET_EPISODES,
-                """{"tvshowid":3,"season":1,"properties":["season","episode"],"limits":{"start":0,"end":50}}""",
+                """{"tvshowid":3,"season":1,"properties":["season","episode","playcount","runtime","art","thumbnail"],"limits":{"start":0,"end":50}}""",
             ),
             calls[2],
         )
@@ -477,25 +487,34 @@ class KodiControlsTest {
         stub.results[KodiMethod.AUDIO_GET_ARTISTS] = """{"artists":[{"artistid":5,"label":"Daft Punk","artist":"Daft Punk"}]}"""
         stub.results[KodiMethod.AUDIO_GET_ALBUMS] = """{"albums":[{"albumid":7,"label":"Discovery","artist":["Daft Punk"],"year":2001}]}"""
         stub.results[KodiMethod.AUDIO_GET_SONGS] = """{"songs":[{"songid":90,"label":"One More Time","track":1}]}"""
-        assertEquals(listOf(MediaEntry("artistid:5", "Daft Punk", browsable = true)), controller.browse("artists"))
-        assertEquals(listOf(MediaEntry("albumid:7", "Discovery", "Daft Punk", browsable = true)), controller.browse("artistid:5"))
-        assertEquals(listOf(MediaEntry("songid:90", "One More Time", "Piste 1")), controller.browse("albumid:7"))
+        assertEquals(
+            listOf(MediaEntry("artistid:5", "Daft Punk", browsable = true, kind = MediaKind.ARTIST)),
+            controller.browse("artists"),
+        )
+        assertEquals(
+            listOf(MediaEntry("albumid:7", "Discovery", "Daft Punk", browsable = true, kind = MediaKind.ALBUM, year = 2001)),
+            controller.browse("artistid:5"),
+        )
+        assertEquals(
+            listOf(MediaEntry("songid:90", "One More Time", "Piste 1", kind = MediaKind.SONG)),
+            controller.browse("albumid:7"),
+        )
         val calls = stub.commands()
         assertEquals(
             call(
                 KodiMethod.AUDIO_GET_ARTISTS,
-                """{"properties":[],"limits":{"start":0,"end":100},"sort":{"method":"label","ignorearticle":true}}""",
+                """{"properties":["thumbnail","fanart"],"limits":{"start":0,"end":100},"sort":{"method":"label","ignorearticle":true}}""",
             ),
             calls[0],
         )
         assertEquals(
-            call(KodiMethod.AUDIO_GET_ALBUMS, """{"filter":{"artistid":5},"properties":["artist","year"],"limits":{"start":0,"end":100}}"""),
+            call(KodiMethod.AUDIO_GET_ALBUMS, """{"filter":{"artistid":5},"properties":["artist","year","playcount","art","thumbnail"],"limits":{"start":0,"end":100}}"""),
             calls[1],
         )
         assertEquals(
             call(
                 KodiMethod.AUDIO_GET_SONGS,
-                """{"filter":{"albumid":7},"sort":{"method":"track"},"properties":["track"],"limits":{"start":0,"end":100}}""",
+                """{"filter":{"albumid":7},"sort":{"method":"track"},"properties":["track","playcount","thumbnail"],"limits":{"start":0,"end":100}}""",
             ),
             calls[2],
         )
@@ -504,7 +523,7 @@ class KodiControlsTest {
     @Test
     fun `channels, favourites and add-ons are listed`() = runTest {
         stub.results[KodiMethod.PVR_GET_CHANNEL_GROUPS] = """{"channelgroups":[{"channelgroupid":1,"label":"Toutes les chaînes"}]}"""
-        stub.results[KodiMethod.PVR_GET_CHANNELS] = """{"channels":[{"channelid":8,"label":"Arte"}]}"""
+        stub.results[KodiMethod.PVR_GET_CHANNELS] = """{"channels":[{"channelid":8,"label":"Arte","thumbnail":"image://logo%2farte.png/"}]}"""
         stub.results[KodiMethod.FAVOURITES_GET] = """{"favourites":[
             {"title":"Film favori","type":"media","path":"smb://nas/film.mkv"},
             {"title":"Vidéos","type":"window","window":"videos","windowparameter":"sources://video/"},
@@ -513,26 +532,36 @@ class KodiControlsTest {
         ]}"""
         stub.results[KodiMethod.ADDONS_GET_ADDONS] =
             """{"addons":[{"addonid":"plugin.video.arteplussept","type":"xbmc.python.pluginsource","name":"Arte"}]}"""
-        assertEquals(listOf(MediaEntry("channelgroupid:1", "Toutes les chaînes", browsable = true)), controller.browse("tv"))
-        assertEquals(listOf(MediaEntry("channelid:8", "Arte")), controller.browse("channelgroupid:1"))
+        assertEquals(
+            listOf(MediaEntry("channelgroupid:1", "Toutes les chaînes", browsable = true, kind = MediaKind.FOLDER)),
+            controller.browse("tv"),
+        )
+        assertEquals(
+            listOf(MediaEntry("channelid:8", "Arte", kind = MediaKind.CHANNEL, imageKey = "image://logo%2farte.png/")),
+            controller.browse("channelgroupid:1"),
+        )
+        val weather = MediaEntry("window:weather", "Météo", kind = MediaKind.FOLDER)
         assertEquals(
             listOf(
-                MediaEntry("file:smb://nas/film.mkv", "Film favori"),
-                MediaEntry("window:videos|sources://video/", "Vidéos"),
-                MediaEntry("window:weather", "Météo"),
+                MediaEntry("file:smb://nas/film.mkv", "Film favori", kind = MediaKind.OTHER),
+                MediaEntry("window:videos|sources://video/", "Vidéos", kind = MediaKind.FOLDER),
+                weather,
             ),
             controller.browse("favourites"),
         )
-        assertEquals(listOf(MediaEntry("window:weather", "Météo")), controller.browse("favourites", offset = 2, limit = 5))
-        assertEquals(listOf(MediaEntry("addonid:plugin.video.arteplussept", "Arte")), controller.browse("addons"))
+        assertEquals(listOf(weather), controller.browse("favourites", offset = 2, limit = 5))
+        assertEquals(
+            listOf(MediaEntry("addonid:plugin.video.arteplussept", "Arte", kind = MediaKind.OTHER)),
+            controller.browse("addons"),
+        )
         val calls = stub.commands()
         assertEquals(call(KodiMethod.PVR_GET_CHANNEL_GROUPS, """{"channeltype":"tv","limits":{"start":0,"end":100}}"""), calls[0])
-        assertEquals(call(KodiMethod.PVR_GET_CHANNELS, """{"channelgroupid":1,"limits":{"start":0,"end":100}}"""), calls[1])
-        assertEquals(call(KodiMethod.FAVOURITES_GET, """{"properties":["window","windowparameter","path"]}"""), calls[2])
+        assertEquals(call(KodiMethod.PVR_GET_CHANNELS, """{"channelgroupid":1,"properties":["thumbnail"],"limits":{"start":0,"end":100}}"""), calls[1])
+        assertEquals(call(KodiMethod.FAVOURITES_GET, """{"properties":["window","windowparameter","path","thumbnail"]}"""), calls[2])
         assertEquals(
             call(
                 KodiMethod.ADDONS_GET_ADDONS,
-                """{"type":"xbmc.python.pluginsource","content":"video","enabled":true,"properties":["name"],"limits":{"start":0,"end":100}}""",
+                """{"type":"xbmc.python.pluginsource","content":"video","enabled":true,"properties":["name","thumbnail"],"limits":{"start":0,"end":100}}""",
             ),
             calls.last(),
         )
