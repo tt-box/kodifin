@@ -17,8 +17,11 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.xml.sax.SAXException
+import java.io.IOException
 
 /** Renderer UPnP AV / DLNA (téléviseurs, enceintes, Kodi en mode DLNA…). */
 class UpnpRendererController(
@@ -42,8 +45,17 @@ class UpnpRendererController(
     private suspend fun describe(): UpnpDeviceDescription = lock.withLock {
         description ?: run {
             val location = device.extras[EXTRA_LOCATION] ?: throw RemoteException("URL de description UPnP absente")
-            val xml = http.fetchString(Request.Builder().url(location).build())
-            UpnpXml.parseDescription(xml, location).also { description = it }
+            val request = runCatching { Request.Builder().url(location).build() }
+                .getOrElse { throw RemoteException("URL de description UPnP invalide : $location", it) }
+            val xml = http.fetchString(request)
+            val parsed = try {
+                UpnpXml.parseDescription(xml, location)
+            } catch (e: SAXException) {
+                throw RemoteException("Description UPnP invalide", e)
+            } catch (e: IOException) {
+                throw RemoteException("Description UPnP illisible", e)
+            }
+            parsed.also { description = it }
         }
     }
 
@@ -79,14 +91,18 @@ class UpnpRendererController(
             RemoteKey.VOLUME_UP -> setVolume(currentVolume() + VOLUME_STEP)
             RemoteKey.VOLUME_DOWN -> setVolume(currentVolume() - VOLUME_STEP)
             RemoteKey.MUTE -> {
-                val muted = rendering("GetMute")["CurrentMute"] == "1"
+                val muted = currentMute() ?: throw RemoteException("État de sourdine illisible")
                 rendering("SetMute", "DesiredMute" to if (muted) "0" else "1")
             }
             else -> Unit
         }
     }
 
-    private suspend fun currentVolume(): Int = rendering("GetVolume")["CurrentVolume"]?.toIntOrNull() ?: 0
+    /** Volume courant ; une valeur illisible lève une erreur plutôt que de repartir de 0. */
+    private suspend fun currentVolume(): Int = rendering("GetVolume")["CurrentVolume"]?.trim()?.toIntOrNull()
+        ?: throw RemoteException("Volume courant illisible")
+
+    private suspend fun currentMute(): Boolean? = parseUpnpBoolean(rendering("GetMute")["CurrentMute"])
 
     override suspend fun setVolume(percent: Int) {
         rendering("SetVolume", "DesiredVolume" to percent.coerceIn(0, 100).toString())
@@ -105,7 +121,9 @@ class UpnpRendererController(
         while (true) {
             val transport = avTransport("GetTransportInfo")
             val position = avTransport("GetPositionInfo")
-            val volume = runCatching { currentVolume() }.getOrNull()
+            // Volume et sourdine sont facultatifs : un échec ne doit pas interrompre le suivi.
+            val volume = try { currentVolume() } catch (_: RemoteException) { null }
+            val muted = try { currentMute() } catch (_: RemoteException) { null }
             emit(
                 PlaybackState(
                     title = position["TrackMetaData"]?.let(::didlTitle),
@@ -113,6 +131,7 @@ class UpnpRendererController(
                     positionMs = parseHms(position["RelTime"]),
                     durationMs = parseHms(position["TrackDuration"]),
                     volumePercent = volume,
+                    muted = muted ?: false,
                 ),
             )
             delay(pollIntervalMs)
@@ -146,6 +165,7 @@ class UpnpRendererController(
                 .substringAfterLast('.', "").lowercase()
             return when (ext) {
                 "mp3" -> "audio/mpeg"
+                "wav" -> "audio/wav"
                 "flac" -> "audio/flac"
                 "aac", "m4a" -> "audio/mp4"
                 "ogg", "opus" -> "audio/ogg"
@@ -154,9 +174,18 @@ class UpnpRendererController(
                 "mkv" -> "video/x-matroska"
                 "webm" -> "video/webm"
                 "avi" -> "video/x-msvideo"
+                "mov" -> "video/quicktime"
+                "ts" -> "video/mp2t"
                 "m3u8" -> "application/vnd.apple.mpegurl"
                 else -> "video/mp4"
             }
+        }
+
+        /** Booléen UPnP (UDA 1.1 : « 0 », « 1 », « false », « true », « no », « yes »). */
+        internal fun parseUpnpBoolean(value: String?): Boolean? = when (value?.trim()?.lowercase()) {
+            "1", "true", "yes" -> true
+            "0", "false", "no" -> false
+            else -> null
         }
 
         internal fun didlTitle(metadata: String): String? = runCatching {
@@ -164,9 +193,9 @@ class UpnpRendererController(
             with(UpnpXml) { UpnpXml.parseDocument(metadata).find("title")?.textContent?.trim() }
         }.getOrNull()
 
-        /** Construit l'appareil à partir d'une réponse SSDP et de sa description. */
-        fun deviceFrom(response: SsdpResponse, description: UpnpDeviceDescription): Device {
-            val url = response.location!!.toHttpUrl()
+        /** Construit l'appareil à partir d'une réponse SSDP et de sa description ; `null` si LOCATION est invalide. */
+        fun deviceFrom(response: SsdpResponse, description: UpnpDeviceDescription): Device? {
+            val url = response.location?.toHttpUrlOrNull() ?: return null
             return Device(
                 id = "UPNP:${description.udn.ifEmpty { response.usn ?: url.toString() }}",
                 name = description.friendlyName,

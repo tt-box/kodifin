@@ -57,14 +57,21 @@ class SoapClient(private val http: OkHttpClient) {
         }
         val (code, body) = response.use { it.code to it.body.string() }
         if (code !in 200..299 && code != 500) throw HttpStatusException(code, "UPnP $action : HTTP $code")
+        // Certains renderers répondent 200 sans corps aux actions sans argument de sortie.
+        if (code in 200..299 && body.isBlank()) return emptyMap()
         val root = runCatching { UpnpXml.parseDocument(body) }
-            .getOrElse { throw RemoteException("Réponse SOAP invalide pour $action", it) }
+            .getOrElse {
+                if (code == 500) throw HttpStatusException(code, "UPnP $action : HTTP 500")
+                throw RemoteException("Réponse SOAP invalide pour $action", it)
+            }
         root.find("Fault")?.let { fault ->
             throw UpnpSoapFault(
                 fault.find("errorCode")?.textContent?.trim(),
                 fault.find("errorDescription")?.textContent?.trim() ?: "erreur SOAP",
             )
         }
+        // UDA 1.1 : un statut 500 doit porter une faute SOAP ; sans elle, c'est une erreur HTTP.
+        if (code == 500) throw HttpStatusException(code, "UPnP $action : HTTP 500 sans faute SOAP")
         val result = root.find("${action}Response") ?: return emptyMap()
         val out = linkedMapOf<String, String>()
         val nodes = result.childNodes
