@@ -50,6 +50,8 @@ class ControllerFactoryTest {
         val bare = Device("j", "Jelly", DeviceKind.JELLYFIN, "10.0.0.2", 8096)
         assertTrue(ControllerFactory.needsSetup(bare))
         assertFalse(ControllerFactory.needsSetup(bare.copy(extras = mapOf("token" to "t"))))
+        // Jeton enregistré (chiffré) : pas de nouvelle saisie.
+        assertFalse(ControllerFactory.needsSetup(bare.copy(extras = mapOf("token_enc" to "enc:t"))))
         assertFalse(ControllerFactory.needsSetup(bare.copy(kind = DeviceKind.ROKU)))
     }
 }

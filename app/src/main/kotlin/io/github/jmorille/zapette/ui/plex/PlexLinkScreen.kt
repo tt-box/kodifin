@@ -100,7 +100,10 @@ interface PlexPinRequest {
 
 /** Dépendances du ViewModel, isolées pour les tests JVM (ni réseau ni DataStore). */
 interface PlexLinkDependencies {
-    val plexToken: Flow<String?>
+    /** Compte lié ? Le jeton lui-même n'est jamais relu ici (il est conservé chiffré). */
+    val plexLinked: Flow<Boolean>
+
+    /** Lie le compte avec [token] (chiffré par le dépôt avant écriture) ou le délie (`null`). */
     suspend fun setPlexToken(token: String?)
     suspend fun createPin(): PlexPinRequest
 
@@ -112,7 +115,7 @@ interface PlexLinkDependencies {
 }
 
 fun AppContainer.plexLinkDependencies(): PlexLinkDependencies = object : PlexLinkDependencies {
-    override val plexToken: Flow<String?> get() = devices.plexToken
+    override val plexLinked: Flow<Boolean> get() = devices.plexLinked
     override suspend fun setPlexToken(token: String?) = devices.setPlexToken(token)
 
     private suspend fun account() = PlexAccount(http, PlexIdentity(devices.installationId()))
@@ -143,7 +146,7 @@ class PlexLinkViewModel(
 
     init {
         viewModelScope.launch {
-            if (deps.plexToken.first() != null) _state.value = PlexLinkState.Linked
+            if (deps.plexLinked.first()) _state.value = PlexLinkState.Linked
         }
     }
 

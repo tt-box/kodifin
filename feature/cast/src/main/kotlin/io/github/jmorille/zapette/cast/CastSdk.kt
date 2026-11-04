@@ -170,12 +170,13 @@ internal class SdkCastPlatform(private val context: Context) : CastPlatform {
         val listener = object : SessionManagerListener<CastSession> {
             override fun onSessionStarted(session: CastSession, sessionId: String) = events.started(SdkCastSession(session))
             override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) = events.started(SdkCastSession(session))
-            override fun onSessionStartFailed(session: CastSession, error: Int) = events.failed("Échec de la session Cast ($error)")
+            override fun onSessionStartFailed(session: CastSession, error: Int) =
+                events.failed(session.castDevice?.deviceId, "Échec de la session Cast ($error)")
             override fun onSessionResumeFailed(session: CastSession, error: Int) =
-                events.failed("Reprise de la session Cast impossible ($error)")
+                events.failed(session.castDevice?.deviceId, "Reprise de la session Cast impossible ($error)")
 
-            // Fin de l'éventuelle session précédente (autre appareil) : sans effet sur l'attente.
-            override fun onSessionEnded(session: CastSession, error: Int) = Unit
+            // Le contrôleur filtre par appareil : la fin de la session d'un autre Chromecast est ignorée.
+            override fun onSessionEnded(session: CastSession, error: Int) = events.ended(session.castDevice?.deviceId)
             override fun onSessionStarting(session: CastSession) = Unit
             override fun onSessionEnding(session: CastSession) = Unit
             override fun onSessionResuming(session: CastSession, sessionId: String) = Unit

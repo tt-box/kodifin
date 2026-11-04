@@ -89,8 +89,11 @@ import kotlinx.serialization.json.Json
 import java.net.URI
 import kotlin.coroutines.cancellation.CancellationException
 
-/** Types configurables à la main (Chromecast est uniquement découvert via MediaRouter). */
-private val MANUAL_KINDS = DeviceKind.entries.filter { it != DeviceKind.CHROMECAST }
+/**
+ * Types configurables à la main. Chromecast compris : saisi par adresse IP, il est retrouvé
+ * parmi les appareils Cast découverts par cette adresse (CastController.route).
+ */
+private val MANUAL_KINDS = DeviceKind.entries
 
 private fun usesCredentials(kind: DeviceKind) = kind in setOf(DeviceKind.KODI, DeviceKind.JELLYFIN, DeviceKind.EMBY)
 
@@ -126,7 +129,10 @@ object ConfigValidation {
  * chiffré pour Kodi, gardé en mémoire jusqu'à l'obtention du jeton pour Jellyfin/Emby.
  */
 internal data class DeviceDraft(val device: Device, val password: String?) {
-    override fun toString() = "DeviceDraft(device=$device, password=${if (password == null) "null" else "***"})"
+    override fun toString(): String {
+        val masked = device.copy(extras = device.extras.mapValues { (k, v) -> if (k in DeviceSecrets.SECRET_KEYS) "***" else v })
+        return "DeviceDraft(device=$masked, password=${if (password == null) "null" else "***"})"
+    }
 }
 
 /** Extras liés à l'ancien compte, invalides dès que de nouveaux identifiants sont saisis. */
@@ -134,6 +140,7 @@ private val STALE_CREDENTIALS = setOf(
     DeviceSecrets.PASSWORD,
     DeviceSecrets.ENCRYPTED_PASSWORD,
     MediaServerController.EXTRA_TOKEN,
+    DeviceSecrets.ENCRYPTED_TOKEN,
     MediaServerController.EXTRA_USER_ID,
 )
 
@@ -149,6 +156,11 @@ internal fun buildDevice(
     password: String,
     /** Options avancées ; `null` : celles de l'appareil pré-rempli sont conservées telles quelles. */
     options: AdvancedOptions? = null,
+    /**
+     * Plex : jeton propre à l'appareil saisi. `null` : inchangé ; vide : effacé ; sinon remplacé
+     * (en clair dans le brouillon, chiffré par le dépôt à l'enregistrement).
+     */
+    plexToken: String? = null,
 ): DeviceDraft {
     // Changement de type : les extras (jeton Plex/Jellyfin, identifiant de session…) et
     // l'identifiant de l'appareil pré-rempli appartiennent à un autre protocole.
@@ -165,6 +177,7 @@ internal fun buildDevice(
             put("username", username.trim())
         }
     }.let { if (options != null) DeviceOptions.apply(it, kind, options) else it }
+        .let { if (kind == DeviceKind.PLEX && plexToken != null) withPlexDeviceToken(it, plexToken) else it }
     val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
     val effectiveHost = endpoint?.first ?: host.trim()
     val effectivePort = endpoint?.second ?: port.toInt()
@@ -177,6 +190,32 @@ internal fun buildDevice(
         extras = extras,
     )
     return DeviceDraft(device, password.takeIf { newCredentials })
+}
+
+/** Remplace (ou efface si [token] est vide) le jeton Plex propre à l'appareil. */
+private fun withPlexDeviceToken(extras: Map<String, String>, token: String): Map<String, String> {
+    val cleared = extras - DeviceSecrets.TOKEN - DeviceSecrets.ENCRYPTED_TOKEN
+    return if (token.isBlank()) cleared else cleared + (DeviceSecrets.TOKEN to token.trim())
+}
+
+/**
+ * Quick Connect réussi : appareil à enregistrer avec le jeton obtenu, sans aucun mot de passe.
+ * La session imposée (`sessionId`) n'est retirée que si la cible ou le compte change : même
+ * type, hôte, port et utilisateur que l'appareil enregistré, elle reste valable.
+ */
+internal fun quickConnectDevice(prefill: Device?, draft: Device, token: String, userId: String, userName: String): Device {
+    val sameTarget = prefill != null && prefill.kind == draft.kind && prefill.host == draft.host && prefill.port == draft.port
+    val sameAccount = prefill?.extras?.get(MediaServerController.EXTRA_USER_ID)?.let { it == userId }
+        ?: (prefill?.extras?.get(MediaServerController.EXTRA_USERNAME) == userName)
+    val stale = setOf(DeviceSecrets.PASSWORD, DeviceSecrets.ENCRYPTED_PASSWORD, DeviceSecrets.ENCRYPTED_TOKEN) +
+        if (sameTarget && sameAccount) emptySet() else setOf(MediaServerController.EXTRA_SESSION_ID)
+    return draft.copy(
+        extras = draft.extras - stale + mapOf(
+            MediaServerController.EXTRA_TOKEN to token,
+            MediaServerController.EXTRA_USER_ID to userId,
+            MediaServerController.EXTRA_USERNAME to userName,
+        ),
+    )
 }
 
 /**
@@ -261,12 +300,27 @@ private fun DeviceConfigForm(
     var wolPort by rememberSaveable { mutableStateOf(initial.wolPort) }
     var wolAuto by rememberSaveable { mutableStateOf(initial.wolAuto) }
     var basePath by rememberSaveable { mutableStateOf(initial.basePath) }
+    // Empreinte du certificat de confiance (mode non vérifié) et options propres à Plex.
+    var tlsPin by rememberSaveable { mutableStateOf(initial.tlsPin) }
+    var plexClientId by rememberSaveable { mutableStateOf(initial.plexClientId) }
+    var plexTokenInput by rememberSaveable { mutableStateOf("") }
+    var plexTokenCleared by rememberSaveable { mutableStateOf(false) }
+    val hasStoredPlexToken = editing && prefill?.kind == DeviceKind.PLEX && prefill.extras.keys.any {
+        it == DeviceSecrets.TOKEN || it == DeviceSecrets.ENCRYPTED_TOKEN
+    }
     val options = AdvancedOptions(
         mode = mode, timeoutS = timeoutS, wifiOnly = wifiOnly, wifiSsids = wifiSsids,
         kodiEventServer = kodiEventServer, kodiEventServerPort = kodiEventServerPort, upnpAltDidl = upnpAltDidl,
         kodiWebSocket = kodiWebSocket, kodiWebSocketPort = kodiWebSocketPort,
         wolMac = wolMac, wolBroadcast = wolBroadcast, wolPort = wolPort, wolAuto = wolAuto, basePath = basePath,
+        tlsPin = tlsPin, plexClientId = plexClientId,
     )
+    val plexToken: String? = when {
+        kind != DeviceKind.PLEX -> null
+        plexTokenInput.isNotBlank() -> plexTokenInput.trim()
+        plexTokenCleared -> ""
+        else -> null
+    }
 
     // Lecture du SSID : autorisation de localisation demandée seulement quand l'utilisateur
     // restreint l'appareil à des réseaux Wi-Fi précis.
@@ -300,7 +354,7 @@ private fun DeviceConfigForm(
     /** Valide le formulaire et construit l'appareil, ou affiche l'erreur et renvoie `null`. */
     fun draftOrNull(): DeviceDraft? {
         error = ConfigValidation.error(kind, host, port, location) ?: DeviceOptions.error(kind, options)
-        return if (error == null) buildDevice(prefill, kind, name, host, port, location, username, password, options) else null
+        return if (error == null) buildDevice(prefill, kind, name, host, port, location, username, password, options, plexToken) else null
     }
 
     fun test() {
@@ -335,15 +389,8 @@ private fun DeviceConfigForm(
     /** Quick Connect réussi : enregistre l'appareil avec le jeton, sans aucun mot de passe. */
     fun saveWithToken(token: String, userId: String, userName: String) {
         val draft = draftOrNull() ?: return
-        val device = draft.device.copy(
-            extras = draft.device.extras - DeviceSecrets.PASSWORD - DeviceSecrets.ENCRYPTED_PASSWORD -
-                MediaServerController.EXTRA_SESSION_ID +
-                mapOf(
-                    MediaServerController.EXTRA_TOKEN to token,
-                    MediaServerController.EXTRA_USER_ID to userId,
-                    MediaServerController.EXTRA_USERNAME to userName,
-                ),
-        )
+        // Jeton en clair dans ce brouillon seulement : le dépôt le chiffre avant écriture.
+        val device = quickConnectDevice(prefill, draft.device, token, userId, userName)
         username = userName
         password = ""
         saving = true
@@ -430,6 +477,17 @@ private fun DeviceConfigForm(
             }
             if (DeviceOptions.supportsHttps(kind)) {
                 ConnectionModeChooser(mode) { mode = it }
+                if (mode == ConnectionMode.HTTPS_INSECURE) {
+                    TrustedCertificate(tlsPin, onForget = { tlsPin = "" })
+                }
+            } else if (kind == DeviceKind.PLEX && mode.secure) {
+                // Réglage hérité d'une version antérieure : lu et reconduit, mais plus proposé.
+                WarningCard(
+                    "Mode HTTPS hérité : l'API de contrôle du lecteur Plex (port 32500) ne le prend pas en charge " +
+                        "en pratique, et ce mode n'est plus proposé.",
+                ) {
+                    TextButton(onClick = { mode = ConnectionMode.HTTP; tlsPin = "" }) { Text("Passer en HTTP") }
+                }
             }
             when (kind) {
                 DeviceKind.FIRE_TV -> Hint(
@@ -437,6 +495,10 @@ private fun DeviceConfigForm(
                 )
                 DeviceKind.AIRPLAY -> Hint(
                     "Compatible AirPlay 1 (lecture d'URL). Les récepteurs AirPlay 2 exigeant un appairage ne sont pas pris en charge.",
+                )
+                DeviceKind.CHROMECAST -> Hint(
+                    "Saisie par adresse IP : le Chromecast doit aussi être visible par la découverte Cast (même réseau) ; " +
+                        "l'adresse sert à le retrouver parmi les appareils découverts.",
                 )
                 else -> Unit
             }
@@ -532,6 +594,10 @@ private fun DeviceConfigForm(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Hint(
+                    "Le serveur WebSocket de Kodi (port 9090) n'a pas d'authentification : le mot de passe HTTP n'y " +
+                        "est pas utilisé. Le flux n'est pas chiffré, même en mode HTTPS : à réserver à un réseau de confiance.",
+                )
             }
         }
         if (DeviceOptions.supportsEventServer(kind)) {
@@ -548,6 +614,34 @@ private fun DeviceConfigForm(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+        }
+        if (DeviceOptions.supportsPlexOptions(kind)) {
+            Text("Plex", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+            OutlinedTextField(
+                plexClientId, { plexClientId = it.trim() },
+                label = { Text("Identifiant client (clientIdentifier)") },
+                supportingText = { Text("Vide : identifiant du lecteur détecté à la connexion") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                plexTokenInput, { plexTokenInput = it; if (it.isNotBlank()) plexTokenCleared = false },
+                label = { Text("Jeton Plex propre à l'appareil") },
+                placeholder = if (hasStoredPlexToken && !plexTokenCleared) ({ Text("Inchangé si laissé vide") }) else null,
+                supportingText = {
+                    Text("Facultatif : prioritaire sur le jeton du compte lié. Conservé chiffré (Android Keystore).")
+                },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (hasStoredPlexToken && !plexTokenCleared && plexTokenInput.isBlank()) {
+                TextButton(onClick = { plexTokenCleared = true }) { Text("Supprimer le jeton enregistré") }
+            } else if (plexTokenCleared) {
+                Hint("Le jeton enregistré sera supprimé.")
             }
         }
         if (DeviceOptions.supportsAltDidl(kind)) {
@@ -638,13 +732,23 @@ private fun DeviceConfigForm(
                 ) {
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     testResult?.let { result ->
+                        val sha = result.certificateSha256?.let(InsecureTls::normalizeFingerprint)
                         TestResultView(
                             result,
                             onUseInsecure = if (
                                 result is ConnectionTestResult.Failure && result.problem == Problem.CERTIFICATE &&
                                 DeviceOptions.supportsHttps(kind) && mode != ConnectionMode.HTTPS_INSECURE
                             ) {
-                                { mode = ConnectionMode.HTTPS_INSECURE; testResult = null }
+                                // Confiance au premier usage : le certificat affiché est aussitôt épinglé.
+                                { mode = ConnectionMode.HTTPS_INSECURE; tlsPin = sha.orEmpty(); testResult = null }
+                            } else {
+                                null
+                            },
+                            onTrust = if (
+                                sha != null && mode == ConnectionMode.HTTPS_INSECURE && DeviceOptions.supportsHttps(kind) &&
+                                InsecureTls.normalizeFingerprint(tlsPin) != sha
+                            ) {
+                                { tlsPin = sha; testResult = null }
                             } else {
                                 null
                             },
@@ -756,10 +860,24 @@ private fun ConnectionModeChooser(mode: ConnectionMode, onChange: (ConnectionMod
     }
     if (mode == ConnectionMode.HTTPS_INSECURE) {
         WarningCard(
-            "Le certificat du serveur n'est pas vérifié : un tiers présent sur le réseau pourrait intercepter " +
-                "la connexion et vos identifiants. À réserver à un serveur domestique au certificat auto-signé ; " +
-                "comparez l'empreinte affichée par le test avec celle du serveur.",
+            "Le certificat du serveur n'est pas vérifié par une autorité : à réserver à un serveur domestique au " +
+                "certificat auto-signé. Testez la connexion, comparez l'empreinte affichée avec celle du serveur, " +
+                "puis faites confiance à ce certificat : seul lui sera ensuite accepté.",
         )
+    }
+}
+
+/** Certificat épinglé (mode non vérifié), ou avertissement si aucun ne l'est encore. */
+@Composable
+private fun TrustedCertificate(pin: String, onForget: () -> Unit) {
+    if (pin.isBlank()) {
+        WarningCard(
+            "Aucun certificat de confiance enregistré : tout certificat est accepté, une interception reste " +
+                "possible. Testez la connexion puis choisissez « Faire confiance à ce certificat ».",
+        )
+    } else {
+        Hint("Certificat de confiance (SHA-256) : $pin")
+        TextButton(onClick = onForget) { Text("Oublier ce certificat") }
     }
 }
 
@@ -780,9 +898,9 @@ private fun WarningCard(text: String, action: (@Composable () -> Unit)? = null) 
     }
 }
 
-/** Résultat du test : titre, conseil, empreinte du certificat et action « mode auto-signé ». */
+/** Résultat du test : titre, conseil, empreinte du certificat et actions de confiance. */
 @Composable
-private fun TestResultView(result: ConnectionTestResult, onUseInsecure: (() -> Unit)?) {
+private fun TestResultView(result: ConnectionTestResult, onUseInsecure: (() -> Unit)?, onTrust: (() -> Unit)?) {
     val success = result is ConnectionTestResult.Success
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -792,7 +910,11 @@ private fun TestResultView(result: ConnectionTestResult, onUseInsecure: (() -> U
         )
         (result as? ConnectionTestResult.Failure)?.advice?.let { Hint(it) }
         result.certificateSha256?.let { Hint("Empreinte SHA-256 du certificat : $it") }
-        onUseInsecure?.let { TextButton(onClick = it) { Text("Accepter ce certificat (mode non vérifié)") } }
+        onUseInsecure?.let { TextButton(onClick = it) { Text("Faire confiance à ce certificat (mode non vérifié)") } }
+        onTrust?.let {
+            val changed = (result as? ConnectionTestResult.Failure)?.problem == Problem.CERTIFICATE_CHANGED
+            TextButton(onClick = it) { Text(if (changed) "Faire confiance au nouveau certificat" else "Faire confiance à ce certificat") }
+        }
     }
 }
 

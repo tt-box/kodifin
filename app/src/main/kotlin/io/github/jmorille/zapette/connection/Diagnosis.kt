@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.connection
 
+import io.github.jmorille.zapette.model.CertificatePinMismatchException
 import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.RedirectRefusedException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -19,6 +20,9 @@ import javax.net.ssl.SSLPeerUnverifiedException
 /** Catégorie d'échec de connexion. */
 enum class Problem {
     UNKNOWN_HOST, REFUSED, TIMEOUT, CREDENTIALS, CERTIFICATE, TLS, REDIRECT, UNEXPECTED_RESPONSE, UNREACHABLE, HTTP, OTHER,
+
+    /** Certificat différent de celui auquel l'utilisateur avait fait confiance (empreinte épinglée). */
+    CERTIFICATE_CHANGED,
 }
 
 /** Échec classé : [title] dit ce qui s'est passé, [advice] ce qu'on peut faire. */
@@ -27,10 +31,22 @@ data class Diagnosis(val title: String, val advice: String?, val problem: Proble
 /**
  * Classe une erreur de connexion (logique pure, testée par table). Toute la chaîne des causes
  * est examinée : les protocoles enveloppent souvent l'erreur réseau dans une `RemoteException`.
+ * Les exceptions supprimées le sont aussi : OkHttp essaie chaque adresse de l'hôte et ne lève
+ * que la dernière erreur, les précédentes (ex. certificat refusé) y étant jointes.
  */
 fun diagnose(error: Throwable): Diagnosis {
-    val chain = generateSequence(error) { it.cause.takeIf { c -> c !== it } }.take(10).toList()
+    val chain = causes(error)
     val messages = chain.mapNotNull { it.message }.joinToString(" | ")
+
+    chain.has<CertificatePinMismatchException>()?.let { pin ->
+        return Diagnosis(
+            "Le certificat de l'appareil a changé (empreinte ${pin.actual}) : vérifiez puis faites de nouveau confiance",
+            "Le certificat présenté ne correspond plus à celui accepté (${pin.expected}). Serveur réinstallé ou " +
+                "certificat renouvelé ? Comparez la nouvelle empreinte avec celle du serveur avant de lui faire " +
+                "confiance ; sinon, quelqu'un intercepte peut-être la connexion.",
+            Problem.CERTIFICATE_CHANGED,
+        )
+    }
 
     chain.has<HttpStatusException>()?.let { http ->
         return when (http.code) {
@@ -115,6 +131,22 @@ fun diagnose(error: Throwable): Diagnosis {
 }
 
 private inline fun <reified T : Throwable> List<Throwable>.has(): T? = firstOrNull { it is T } as T?
+
+/** Causes et exceptions supprimées, en largeur, sans cycle et en nombre borné. */
+private fun causes(error: Throwable): List<Throwable> {
+    val out = mutableListOf<Throwable>()
+    val queue = ArrayDeque(listOf(error))
+    while (queue.isNotEmpty() && out.size < MAX_CAUSES) {
+        val e = queue.removeFirst()
+        if (out.any { it === e }) continue
+        out += e
+        e.cause?.let(queue::addLast)
+        e.suppressed.forEach(queue::addLast)
+    }
+    return out
+}
+
+private const val MAX_CAUSES = 20
 
 /** Délai global du test dépassé (aucune exception levée). */
 fun timeoutDiagnosis(): Diagnosis = timeout()

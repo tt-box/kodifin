@@ -120,15 +120,21 @@ const val MAX_CONNECT_TIMEOUT_S = 60
  * Client dérivé pour un appareil : partage le pool de connexions et la politique de
  * redirection de `this`, avec des délais proportionnels à [timeoutSeconds] (connexion ×1,
  * lecture ×3, appel complet ×6, soit 5 / 15 / 30 s par défaut) et, si [insecureTls] est vrai,
- * une validation TLS désactivée (voir [InsecureTls]). Le client d'origine n'est jamais modifié.
+ * une validation TLS remplacée par l'épinglage de [tlsPin] (empreinte SHA-256 du certificat
+ * accepté) ou, sans empreinte, désactivée (voir [InsecureTls]). [tlsPin] est ignoré hors mode non
+ * vérifié. Le client d'origine n'est jamais modifié.
  */
-fun OkHttpClient.forDevice(timeoutSeconds: Int = DEFAULT_CONNECT_TIMEOUT_S, insecureTls: Boolean = false): OkHttpClient {
+fun OkHttpClient.forDevice(
+    timeoutSeconds: Int = DEFAULT_CONNECT_TIMEOUT_S,
+    insecureTls: Boolean = false,
+    tlsPin: String? = null,
+): OkHttpClient {
     val t = timeoutSeconds.toLong().coerceIn(MIN_CONNECT_TIMEOUT_S.toLong(), MAX_CONNECT_TIMEOUT_S.toLong())
     val builder = newBuilder()
         .connectTimeout(t, TimeUnit.SECONDS)
         .readTimeout(t * 3, TimeUnit.SECONDS)
         .writeTimeout(t * 3, TimeUnit.SECONDS)
         .callTimeout(t * 6, TimeUnit.SECONDS)
-    if (insecureTls) InsecureTls.applyTo(builder)
+    if (insecureTls) InsecureTls.applyTo(builder, tlsPin)
     return builder.build()
 }

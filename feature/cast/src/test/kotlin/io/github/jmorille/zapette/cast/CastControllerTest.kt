@@ -191,10 +191,49 @@ class CastControllerTest {
 
     @Test
     fun `session failures become RemoteException`() = runTest {
-        platform.onSelect = { platform.listeners.toList().forEach { it.failed("Échec de la session Cast (2005)") } }
+        platform.onSelect = { platform.listeners.toList().forEach { it.failed("cast-salon", "Échec de la session Cast (2005)") } }
         val e = assertThrows<RemoteException> { controller().connect() }
         assertEquals("Échec de la session Cast (2005)", e.message)
         assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a failure of an unidentified session still ends the wait`() = runTest {
+        platform.onSelect = { platform.listeners.toList().forEach { it.failed(null, "Échec de la session Cast (15)") } }
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertEquals("Échec de la session Cast (15)", e.message)
+    }
+
+    @Test
+    fun `a failure of another device's session is ignored`() = runTest {
+        platform.onSelect = { route ->
+            platform.listeners.toList().forEach { it.failed("cast-chambre", "Échec de la session Cast (2005)") }
+            val session = FakeSession(route.deviceId)
+            platform.current = session
+            platform.listeners.toList().forEach { it.started(session) }
+        }
+        controller().connect()
+        assertEquals(listOf("route-salon"), platform.selected)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `our session ending before it starts is a failure, another device's end is ignored`() = runTest {
+        platform.onSelect = {
+            platform.listeners.toList().forEach { it.ended("cast-chambre") }
+            platform.listeners.toList().forEach { it.ended("cast-salon") }
+        }
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertTrue(e.message!!.contains("terminée"))
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a device entered by IP address is matched to its discovered route`() = runTest {
+        val manual = Device(id = Device.manualId(DeviceKind.CHROMECAST, "192.168.1.21", 8009), name = "Chambre",
+            kind = DeviceKind.CHROMECAST, host = "192.168.1.21", port = 8009)
+        CastController(manual, platform, EmptyCoroutineContext).connect()
+        assertEquals(listOf("route-chambre"), platform.selected)
     }
 
     @Test
@@ -349,6 +388,24 @@ class CastControllerTest {
         session.isConnected = false
         advanceTimeBy(1_001)
         assertTrue(states.await().exceptionOrNull() is RemoteException)
+    }
+
+    @Test
+    fun `the end of our session stops the playback state at once`() = runTest {
+        val session = FakeSession("cast-salon")
+        platform.current = session
+        val states = async { runCatching { controller().playbackState().toList() } }
+        runCurrent()
+        // La fin de la session d'un autre Chromecast ne change rien.
+        platform.listeners.toList().forEach { it.ended("cast-chambre") }
+        runCurrent()
+        assertFalse(states.isCompleted)
+        platform.listeners.toList().forEach { it.ended("cast-salon") }
+        runCurrent()
+        // Sans attendre le relevé suivant (1 s) : l'état est mis à jour aussitôt.
+        assertTrue(states.isCompleted)
+        assertTrue(states.await().exceptionOrNull() is RemoteException)
+        assertTrue(platform.listeners.isEmpty())
     }
 }
 

@@ -11,14 +11,15 @@ import io.github.jmorille.zapette.model.requireKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -71,6 +72,14 @@ class CastController internal constructor(
         return id == route()?.deviceId
     }
 
+    /**
+     * Un événement de l'appareil [eventDeviceId] concerne-t-il la session attendue ([expectedId]) ?
+     * Identifiant inconnu d'un côté ou de l'autre : on ne peut pas trancher, l'événement est retenu
+     * (comportement du SDK pour une session encore sans appareil).
+     */
+    internal fun concerns(eventDeviceId: String?, expectedId: String?): Boolean =
+        expectedId == null || eventDeviceId == null || eventDeviceId == expectedId
+
     private suspend fun session(): CastSessionPort = sessionLock.withLock {
         withContext(main) {
             translating {
@@ -92,11 +101,20 @@ class CastController internal constructor(
         val listening = platform.listen(object : CastSessionEvents {
             override fun started(session: CastSessionPort) {
                 // Une session ouverte entre-temps vers un autre appareil ne doit pas recevoir nos commandes.
-                if (expectedId == null || session.deviceId == null || session.deviceId == expectedId) started.complete(session)
+                if (concerns(session.deviceId, expectedId)) started.complete(session)
             }
 
-            override fun failed(message: String) {
-                started.completeExceptionally(RemoteException(message))
+            override fun failed(deviceId: String?, message: String) {
+                // L'échec de la session d'un autre Chromecast (autre écran) n'interrompt pas notre attente.
+                if (concerns(deviceId, expectedId)) started.completeExceptionally(RemoteException(message))
+            }
+
+            override fun ended(deviceId: String?) {
+                // Fin de l'éventuelle session précédente d'un autre appareil : sans effet ; la nôtre
+                // qui se termine avant d'avoir démarré est un échec.
+                if (expectedId != null && deviceId == expectedId) {
+                    started.completeExceptionally(RemoteException("Session Cast terminée par ${device.name}"))
+                }
             }
         })
         try {
@@ -187,9 +205,33 @@ class CastController internal constructor(
 
     override fun playbackState(): Flow<PlaybackState> = flow {
         val s = session()
+        // Fin de NOTRE session signalée par le SDK : l'état est mis à jour sans attendre le
+        // prochain relevé (la fin de la session d'un autre Chromecast est ignorée).
+        val ended = CompletableDeferred<Unit>()
+        val expectedId = s.deviceId
+        val listening = withContext(main) {
+            platform.listen(object : CastSessionEvents {
+                override fun started(session: CastSessionPort) = Unit
+                override fun failed(deviceId: String?, message: String) = Unit
+                override fun ended(deviceId: String?) {
+                    if (expectedId != null && deviceId == expectedId) ended.complete(Unit)
+                }
+            })
+        }
+        try {
+            pollPlayback(s, ended)
+        } finally {
+            withContext(main) { runCatching { listening.close() } }
+        }
+    }.flowOn(main)
+
+    private suspend fun FlowCollector<PlaybackState>.pollPlayback(
+        s: CastSessionPort,
+        ended: CompletableDeferred<Unit>,
+    ) {
         while (true) {
             // Le SDK lève IllegalStateException sur volume/isMute une fois la session fermée.
-            if (!s.isConnected) throw RemoteException("Session Cast terminée")
+            if (ended.isCompleted || !s.isConnected) throw RemoteException("Session Cast terminée")
             val media = s.media
             emit(
                 translating {
@@ -203,9 +245,10 @@ class CastController internal constructor(
                     )
                 },
             )
-            delay(1_000)
+            // Attente du prochain relevé, écourtée par la fin de la session.
+            withTimeoutOrNull(POLL_INTERVAL_MS) { ended.await() }
         }
-    }.flowOn(main)
+    }
 
     /**
      * Appelé par l'application en quittant la télécommande : ferme la session de cet appareil
@@ -230,5 +273,6 @@ class CastController internal constructor(
         private const val SEEK_STEP_MS = 10_000L
         private const val VOLUME_STEP = 0.05
         private const val SESSION_TIMEOUT_MS = 15_000L
+        private const val POLL_INTERVAL_MS = 1_000L
     }
 }

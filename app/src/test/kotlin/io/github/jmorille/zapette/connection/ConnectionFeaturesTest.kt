@@ -1,6 +1,8 @@
 package io.github.jmorille.zapette.connection
 
 import io.github.jmorille.zapette.model.Capability
+import io.github.jmorille.zapette.model.CertificatePinMismatchException
+import io.github.jmorille.zapette.model.PinnedTrustManager
 import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
@@ -39,10 +41,10 @@ class ConnectionModeOptionsTest {
     fun `connection modes are stored with scheme and tls_insecure`() {
         val https = DeviceOptions.apply(emptyMap(), DeviceKind.JELLYFIN, AdvancedOptions(mode = ConnectionMode.HTTPS))
         assertEquals(mapOf("scheme" to "https"), https)
-        val insecure = DeviceOptions.apply(emptyMap(), DeviceKind.PLEX, AdvancedOptions(mode = ConnectionMode.HTTPS_INSECURE))
+        val insecure = DeviceOptions.apply(emptyMap(), DeviceKind.KODI, AdvancedOptions(mode = ConnectionMode.HTTPS_INSECURE))
         assertEquals(mapOf("scheme" to "https", "tls_insecure" to "true"), insecure)
         // Retour en HTTP : les deux clés disparaissent.
-        assertEquals(emptyMap<String, String>(), DeviceOptions.apply(insecure, DeviceKind.PLEX, AdvancedOptions()))
+        assertEquals(emptyMap<String, String>(), DeviceOptions.apply(insecure, DeviceKind.KODI, AdvancedOptions()))
         // Roku n'a pas de mode HTTPS.
         assertEquals(emptyMap<String, String>(), DeviceOptions.apply(emptyMap(), DeviceKind.ROKU, AdvancedOptions(mode = ConnectionMode.HTTPS)))
     }
@@ -133,7 +135,92 @@ class ConnectionModeOptionsTest {
     }
 }
 
+class CertificatePinOptionsTest {
+    private val pin = List(32) { "AB" }.joinToString(":")
+
+    @Test
+    fun `the trusted fingerprint is stored normalised, only in insecure mode`() {
+        val options = AdvancedOptions(mode = ConnectionMode.HTTPS_INSECURE, tlsPin = pin.lowercase().replace(":", ""))
+        val extras = DeviceOptions.apply(emptyMap(), DeviceKind.JELLYFIN, options)
+        assertEquals(mapOf("scheme" to "https", "tls_insecure" to "true", "tls_pin" to pin), extras)
+        val device = JELLYFIN.copy(extras = extras)
+        assertEquals(pin, DeviceOptions.read(device).tlsPin)
+        assertEquals(pin, DeviceOptions.tlsPin(device))
+        // Mode vérifié ou HTTP : l'empreinte n'a plus de sens et disparaît.
+        assertEquals(mapOf("scheme" to "https"), DeviceOptions.apply(extras, DeviceKind.JELLYFIN, options.copy(mode = ConnectionMode.HTTPS)))
+        assertNull(DeviceOptions.tlsPin(JELLYFIN.copy(extras = mapOf("scheme" to "https", "tls_pin" to pin))))
+        // Ancien appareil sans empreinte : pas d'épinglage.
+        assertNull(DeviceOptions.tlsPin(JELLYFIN.copy(extras = mapOf("scheme" to "https", "tls_insecure" to "true"))))
+    }
+
+    @Test
+    fun `an invalid fingerprint is refused by the form`() {
+        assertEquals(
+            "Empreinte du certificat invalide (SHA-256, 32 octets)",
+            DeviceOptions.error(DeviceKind.KODI, AdvancedOptions(mode = ConnectionMode.HTTPS_INSECURE, tlsPin = "AB:CD")),
+        )
+        assertNull(DeviceOptions.error(DeviceKind.KODI, AdvancedOptions(mode = ConnectionMode.HTTPS_INSECURE, tlsPin = pin)))
+    }
+
+    @Test
+    fun `the derived client pins the trusted certificate`() {
+        val device = JELLYFIN.copy(extras = mapOf("scheme" to "https", "tls_insecure" to "true", "tls_pin" to pin))
+        val client = zapetteHttpClient().forDevice(device)
+        assertEquals(pin, (client.x509TrustManager as PinnedTrustManager).pin)
+        assertSame(InsecureTls.anyHostname, client.hostnameVerifier)
+    }
+}
+
+class PlexOptionsTest {
+    @Test
+    fun `https is no longer offered for plex but a legacy setting is kept`() {
+        assertFalse(DeviceOptions.supportsHttps(DeviceKind.PLEX))
+        assertTrue(DeviceOptions.supportsHttps(DeviceKind.KODI))
+        val legacy = PLEX.copy(extras = mapOf("scheme" to "https", "tls_insecure" to "true"))
+        assertEquals(ConnectionMode.HTTPS_INSECURE, DeviceOptions.connectionMode(legacy))
+        assertTrue(DeviceOptions.legacyHttps(legacy))
+        assertFalse(DeviceOptions.legacyHttps(PLEX))
+        assertFalse(DeviceOptions.legacyHttps(JELLYFIN.copy(extras = mapOf("scheme" to "https"))))
+        // Réenregistré sans changement : reconduit ; « Passer en HTTP » : retiré.
+        val read = DeviceOptions.read(legacy)
+        assertEquals(legacy.extras, DeviceOptions.apply(legacy.extras, DeviceKind.PLEX, read))
+        assertEquals(emptyMap<String, String>(), DeviceOptions.apply(legacy.extras, DeviceKind.PLEX, read.copy(mode = ConnectionMode.HTTP)))
+    }
+
+    @Test
+    fun `plex client identifier is an advanced option`() {
+        val extras = DeviceOptions.apply(mapOf("token_enc" to "enc:x"), DeviceKind.PLEX, AdvancedOptions(plexClientId = " abc123 "))
+        assertEquals(mapOf("token_enc" to "enc:x", "clientIdentifier" to "abc123"), extras)
+        assertEquals("abc123", DeviceOptions.read(PLEX.copy(extras = extras)).plexClientId)
+        // Vide : détecté à la connexion, la clé disparaît.
+        assertEquals(mapOf("token_enc" to "enc:x"), DeviceOptions.apply(extras, DeviceKind.PLEX, AdvancedOptions()))
+        assertEquals(
+            "Identifiant client Plex invalide (sans espace)",
+            DeviceOptions.error(DeviceKind.PLEX, AdvancedOptions(plexClientId = "a b")),
+        )
+        assertNull(DeviceOptions.error(DeviceKind.KODI, AdvancedOptions(plexClientId = "a b")))
+    }
+}
+
 class DiagnosisTest {
+    @Test
+    fun `a changed pinned certificate is reported with its fingerprint, even as a suppressed error`() {
+        val old = List(32) { "AB" }.joinToString(":")
+        val new = List(32) { "CD" }.joinToString(":")
+        val handshake = SSLHandshakeException("Échec").apply { initCause(CertificatePinMismatchException(old, new)) }
+        for (error in listOf(
+            handshake,
+            RemoteException("Appareil injoignable", handshake),
+            // OkHttp : dernière adresse refusée, l'échec TLS de la première est supprimé.
+            ConnectException("Failed to connect to localhost/[::1]").apply { addSuppressed(handshake) },
+        )) {
+            val d = diagnose(error)
+            assertEquals(Problem.CERTIFICATE_CHANGED, d.problem)
+            assertEquals("Le certificat de l'appareil a changé (empreinte $new) : vérifiez puis faites de nouveau confiance", d.title)
+            assertTrue(d.advice!!.contains(old))
+        }
+    }
+
     @Test
     fun `failures are classified with advice`() {
         val table: List<Pair<Throwable, Problem>> = listOf(

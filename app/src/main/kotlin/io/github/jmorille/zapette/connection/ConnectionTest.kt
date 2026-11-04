@@ -28,9 +28,12 @@ sealed interface ConnectionTestResult {
     ) : ConnectionTestResult
 }
 
-/** Client HTTP dérivé pour [device] : délai de connexion et mode TLS propres à l'appareil. */
+/**
+ * Client HTTP dérivé pour [device] : délai de connexion et mode TLS propres à l'appareil. En mode
+ * non vérifié, l'empreinte enregistrée ([DeviceOptions.TLS_PIN]) est imposée à chaque connexion.
+ */
 fun OkHttpClient.forDevice(device: Device): OkHttpClient =
-    forDevice(DeviceOptions.timeoutSeconds(device), DeviceOptions.insecureTls(device))
+    forDevice(DeviceOptions.timeoutSeconds(device), DeviceOptions.insecureTls(device), DeviceOptions.tlsPin(device))
 
 /** Délai global du test : plusieurs requêtes s'enchaînent (détection, authentification, session). */
 fun testTimeoutMs(device: Device): Long = DeviceOptions.timeoutSeconds(device) * 2_000L
@@ -42,7 +45,8 @@ fun testTimeoutMs(device: Device): Long = DeviceOptions.timeoutSeconds(device) *
  * [diagnose] (titre + conseil).
  *
  * [fingerprint] lit l'empreinte du certificat présenté (HTTPS) ; elle est jointe au succès en
- * mode non vérifié et à l'échec dû au certificat.
+ * mode non vérifié (pour « Faire confiance à ce certificat ») et à l'échec dû au certificat,
+ * y compris un certificat différent de celui auquel on avait fait confiance.
  */
 suspend fun testConnection(
     device: Device,
@@ -77,7 +81,8 @@ suspend fun testConnection(
         throw e
     } catch (e: Exception) {
         val d = diagnose(e)
-        val sha = if (d.problem == Problem.CERTIFICATE) safeFingerprint(fingerprint, device) else null
+        val certificateProblem = d.problem == Problem.CERTIFICATE || d.problem == Problem.CERTIFICATE_CHANGED
+        val sha = if (certificateProblem) safeFingerprint(fingerprint, device) else null
         return ConnectionTestResult.Failure(d.title, d.advice, d.problem, sha)
     } finally {
         withContext(NonCancellable) {

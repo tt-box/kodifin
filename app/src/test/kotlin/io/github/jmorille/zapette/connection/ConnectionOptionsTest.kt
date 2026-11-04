@@ -106,7 +106,10 @@ class DeviceOptionsTest {
         assertNull(DeviceOptions.kodiWebSocketUrl(KODI))
         val secure = KODI.copy(extras = mapOf("scheme" to "https", "kodi_ws" to "true", "kodi_ws_port" to "9443"))
         assertEquals("https://10.0.0.2:8080", DeviceOptions.httpBaseUrl(secure))
-        assertEquals("wss://10.0.0.2:9443/jsonrpc", DeviceOptions.kodiWebSocketUrl(secure))
+        // Le WebSocket de Kodi (9090) ne fait jamais de TLS : toujours ws://, même en mode HTTPS.
+        assertEquals("ws://10.0.0.2:9443/jsonrpc", DeviceOptions.kodiWebSocketUrl(secure))
+        val insecure = secure.copy(extras = secure.extras + ("tls_insecure" to "true"))
+        assertEquals("ws://10.0.0.2:9443/jsonrpc", DeviceOptions.kodiWebSocketUrl(insecure))
         val v6 = KODI.copy(host = "fd00::2", extras = mapOf("kodi_ws" to "true"))
         assertEquals("ws://[fd00::2]:9090/jsonrpc", DeviceOptions.kodiWebSocketUrl(v6))
     }

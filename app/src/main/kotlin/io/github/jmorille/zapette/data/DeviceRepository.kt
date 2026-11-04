@@ -31,11 +31,14 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Appareils enregistrés et réglages locaux (stockage privé de l'application, exclu des sauvegardes).
- * Les jetons (Plex, Jellyfin/Emby) y sont stockés en clair, protégés par le bac à sable Android.
- * Aucun mot de passe n'y est écrit en clair :
- * - Kodi (authentification Basic, mot de passe exigé à chaque requête) : chiffré par [SecretStore] ;
- * - Jellyfin/Emby : gardé en mémoire seulement, jusqu'à l'obtention du jeton.
- * Un mot de passe en clair hérité d'une version antérieure est migré à la première lecture.
+ * Aucun secret n'y est écrit en clair :
+ * - mot de passe Kodi (authentification Basic, exigé à chaque requête) : chiffré par [SecretStore] ;
+ * - mot de passe Jellyfin/Emby : gardé en mémoire seulement, jusqu'à l'obtention du jeton ;
+ * - jetons d'appareil (Jellyfin/Emby, Plex : extra `token`) : chiffrés sous `token_enc`
+ *   ([DeviceSecrets.ENCRYPTED_TOKEN]), l'identifiant d'utilisateur restant en clair ;
+ * - jeton du compte Plex lié : chiffré sous `plex_token_enc`.
+ * Les secrets en clair hérités d'une version antérieure sont migrés à la première lecture.
+ * Le déchiffrement n'a lieu qu'à la création du contrôleur ([DeviceSecrets.reveal]).
  */
 class DeviceRepository(
     private val store: DataStore<Preferences>,
@@ -51,7 +54,8 @@ class DeviceRepository(
 
     val saved: Flow<List<Device>> = data.map { prefs ->
         val raw = prefs[DEVICES]
-        if (DeviceCodec.anyValid(raw) { DeviceSecrets.PASSWORD in it.extras }) migratePlainPasswords(raw) else DeviceCodec.decode(raw)
+        if (prefs[PLEX_TOKEN] != null) migratePlexToken()
+        if (DeviceCodec.anyValid(raw, DeviceSecrets::hasPlainSecrets)) migratePlainSecrets(raw) else DeviceCodec.decode(raw)
     }.distinctUntilChanged()
 
     /**
@@ -73,8 +77,10 @@ class DeviceRepository(
      */
     suspend fun save(device: Device, password: String? = null) {
         val plain = password ?: device.extras[DeviceSecrets.PASSWORD]
+        // Version enregistrée : un jeton inchangé garde son chiffré (pas de réécriture à chaque connexion).
+        val previous = if (DeviceSecrets.hasPlainToken(device)) saved.first().firstOrNull { it.id == device.id } else null
         // Chiffrement hors transaction : en cas d'échec, rien n'est écrit (et surtout pas en clair).
-        val stored = DeviceSecrets.forStorage(device, plain, secrets)
+        val stored = DeviceSecrets.forStorage(device, plain, secrets, previous)
         store.edit { prefs -> prefs.updateDevices { raw -> DeviceCodec.upsert(raw, stored) } }
         if (DeviceSecrets.isTransient(device.kind)) {
             if (plain.isNullOrEmpty()) transientPasswords.remove(device.id) else transientPasswords[device.id] = plain
@@ -124,18 +130,59 @@ class DeviceRepository(
         return report
     }
 
-    val plexToken: Flow<String?> = data.map { it[PLEX_TOKEN] }
+    /** Un compte Plex est-il lié ? (le jeton lui-même reste chiffré) */
+    val plexLinked: Flow<Boolean> = data.map { prefs ->
+        if (prefs[PLEX_TOKEN] != null) migratePlexToken()
+        prefs[PLEX_TOKEN] != null || prefs[PLEX_TOKEN_ENCRYPTED] != null
+    }.distinctUntilChanged()
 
+    /**
+     * Jeton du compte Plex lié, CHIFFRÉ ([SecretStore]) : seule la fabrique de contrôleurs le
+     * déchiffre, au moment de créer le contrôleur. Un jeton en clair hérité est d'abord migré.
+     */
+    suspend fun sealedPlexToken(): String? {
+        val prefs = data.first()
+        val legacy = prefs[PLEX_TOKEN] ?: return prefs[PLEX_TOKEN_ENCRYPTED]
+        return migratePlexToken() ?: runCatching { secrets.encrypt(legacy) }.getOrNull()
+    }
+
+    /** Lie (jeton chiffré avant écriture) ou délie le compte Plex. */
     suspend fun setPlexToken(token: String?) {
-        store.edit { if (token == null) it.remove(PLEX_TOKEN) else it[PLEX_TOKEN] = token }
+        // Chiffrement hors transaction : en cas d'échec, rien n'est écrit (et surtout pas en clair).
+        val sealed = token?.let(secrets::encrypt)
+        store.edit {
+            it.remove(PLEX_TOKEN)
+            if (sealed == null) it.remove(PLEX_TOKEN_ENCRYPTED) else it[PLEX_TOKEN_ENCRYPTED] = sealed
+        }
     }
 
     /**
-     * Migration des mots de passe en clair d'une version antérieure : chiffrés (Kodi) ou
-     * retirés et gardés en mémoire (Jellyfin/Emby). Si l'écriture échoue, la liste renvoyée
-     * est migrée en mémoire ; on réessaiera à la lecture suivante.
+     * Migration du jeton de compte Plex en clair d'une version antérieure. Renvoie le chiffré
+     * écrit, ou `null` si la migration a échoué (on réessaiera à la lecture suivante) ; si le
+     * chiffrement est impossible, le jeton est retiré plutôt que laissé en clair (compte à relier).
      */
-    private suspend fun migratePlainPasswords(raw: String?): List<Device> = try {
+    private suspend fun migratePlexToken(): String? = try {
+        val legacy = data.first()[PLEX_TOKEN]
+        val sealed = legacy?.let { runCatching { secrets.encrypt(it) }.getOrNull() }
+        val prefs = store.edit { p ->
+            if (p[PLEX_TOKEN] == legacy) {
+                p.remove(PLEX_TOKEN)
+                if (sealed != null) p[PLEX_TOKEN_ENCRYPTED] = sealed
+            }
+        }
+        prefs[PLEX_TOKEN_ENCRYPTED]
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: IOException) {
+        null
+    }
+
+    /**
+     * Migration des secrets en clair d'une version antérieure : mots de passe chiffrés (Kodi) ou
+     * retirés et gardés en mémoire (Jellyfin/Emby), jetons chiffrés. Si l'écriture échoue, la
+     * liste renvoyée est migrée en mémoire ; on réessaiera à la lecture suivante.
+     */
+    private suspend fun migratePlainSecrets(raw: String?): List<Device> = try {
         val prefs = store.edit { p -> p.updateDevices { current -> DeviceCodec.mapValid(current, ::migrate) } }
         DeviceCodec.decode(prefs[DEVICES])
     } catch (e: CancellationException) {
@@ -145,13 +192,14 @@ class DeviceRepository(
     }
 
     private fun migrate(device: Device): Device {
-        val plain = device.extras[DeviceSecrets.PASSWORD] ?: return device
-        if (DeviceSecrets.isTransient(device.kind) && plain.isNotEmpty()) transientPasswords.putIfAbsent(device.id, plain)
+        if (!DeviceSecrets.hasPlainSecrets(device)) return device
+        val plain = device.extras[DeviceSecrets.PASSWORD]
+        if (DeviceSecrets.isTransient(device.kind) && !plain.isNullOrEmpty()) transientPasswords.putIfAbsent(device.id, plain)
         return try {
             DeviceSecrets.forStorage(device, plain, secrets)
         } catch (_: Exception) {
-            // Chiffrement impossible : le mot de passe est retiré plutôt que laissé en clair.
-            device.copy(extras = device.extras - DeviceSecrets.PASSWORD - DeviceSecrets.ENCRYPTED_PASSWORD)
+            // Chiffrement impossible : les secrets sont retirés plutôt que laissés en clair.
+            device.copy(extras = device.extras - DeviceSecrets.SECRET_KEYS)
         }
     }
 
@@ -175,7 +223,9 @@ class DeviceRepository(
         internal val DEVICES = stringPreferencesKey("devices")
         internal val DEVICES_UNREADABLE = stringPreferencesKey("devices_unreadable")
         private val INSTALLATION_ID = stringPreferencesKey("installation_id")
-        private val PLEX_TOKEN = stringPreferencesKey("plex_token")
+        /** Jeton du compte Plex en clair (versions antérieures) : migré vers [PLEX_TOKEN_ENCRYPTED]. */
+        internal val PLEX_TOKEN = stringPreferencesKey("plex_token")
+        internal val PLEX_TOKEN_ENCRYPTED = stringPreferencesKey("plex_token_enc")
 
         /**
          * Fichier illisible (écriture interrompue, stockage abîmé) : on repart d'un état vide au
@@ -197,34 +247,82 @@ class DeviceRepository(
     }
 }
 
-/** Règles de stockage des mots de passe (logique pure, testée unitairement). */
+/** Règles de stockage des secrets d'appareil (logique pure, testée unitairement). */
 internal object DeviceSecrets {
     const val PASSWORD = "password"
     const val ENCRYPTED_PASSWORD = "password_enc"
 
+    /**
+     * Jeton d'appareil : Jellyfin/Emby (`MediaServerController.EXTRA_TOKEN`) et Plex
+     * (`PlexController.EXTRA_TOKEN`, jeton propre à l'appareil) partagent la clé `token`.
+     */
+    const val TOKEN = "token"
+
+    /** Jeton chiffré par [SecretStore] (même format que [ENCRYPTED_PASSWORD]). */
+    const val ENCRYPTED_TOKEN = "token_enc"
+
+    /** Jetons en clair (en mémoire uniquement) → clé de leur forme chiffrée (seule enregistrée). */
+    val TOKENS = mapOf(TOKEN to ENCRYPTED_TOKEN)
+
+    /** Secrets chiffrés au repos : clé en clair → clé chiffrée. */
+    private val SEALED = TOKENS + (PASSWORD to ENCRYPTED_PASSWORD)
+
+    /** Toutes les clés de secrets, en clair ou chiffrés. */
+    val SECRET_KEYS = setOf(PASSWORD, ENCRYPTED_PASSWORD) + TOKENS.keys + TOKENS.values
+
     /** Mot de passe gardé seulement en mémoire, le temps d'obtenir un jeton. */
     fun isTransient(kind: DeviceKind) = kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY
 
+    fun hasPlainToken(device: Device): Boolean = TOKENS.keys.any { it in device.extras }
+
+    /** Secret en clair à ne pas laisser dans le stockage (migration d'une version antérieure). */
+    fun hasPlainSecrets(device: Device): Boolean = PASSWORD in device.extras || hasPlainToken(device)
+
+    /** Jeton disponible, en clair (en mémoire) ou chiffré (enregistré). */
+    fun hasToken(device: Device): Boolean = TOKENS.any { (plain, sealed) -> plain in device.extras || sealed in device.extras }
+
     /**
-     * Forme persistable de [device] : jamais d'extra `password`. Pour Kodi, [plain] (non vide)
-     * est chiffré ; un mot de passe vide efface le précédent. [plain] `null` : inchangé.
+     * Forme persistable de [device] : jamais d'extra `password` ni de jeton en clair. Pour Kodi,
+     * [plain] (non vide) est chiffré ; un mot de passe vide efface le précédent. [plain] `null` :
+     * inchangé. Chaque jeton en clair est chiffré (vide : effacé) ; s'il est identique à celui
+     * de [previous], le chiffré existant est repris tel quel. Lève une exception si le
+     * chiffrement échoue (rien ne doit alors être écrit).
      */
-    fun forStorage(device: Device, plain: String?, secrets: SecretStore): Device {
+    fun forStorage(device: Device, plain: String?, secrets: SecretStore, previous: Device? = null): Device {
         val extras = device.extras - PASSWORD
-        return when {
-            plain == null -> device.copy(extras = extras)
-            device.kind == DeviceKind.KODI && plain.isNotEmpty() ->
-                device.copy(extras = extras + (ENCRYPTED_PASSWORD to secrets.encrypt(plain)))
-            else -> device.copy(extras = extras - ENCRYPTED_PASSWORD)
+        val withPassword = when {
+            plain == null -> extras
+            device.kind == DeviceKind.KODI && plain.isNotEmpty() -> extras + (ENCRYPTED_PASSWORD to secrets.encrypt(plain))
+            else -> extras - ENCRYPTED_PASSWORD
         }
+        return device.copy(extras = sealTokens(withPassword, secrets, previous))
     }
 
-    /** Remplace le mot de passe chiffré par sa valeur en clair, pour la connexion uniquement. */
+    private fun sealTokens(extras: Map<String, String>, secrets: SecretStore, previous: Device?): Map<String, String> {
+        var out = extras
+        for ((key, sealedKey) in TOKENS) {
+            val token = extras[key] ?: continue
+            out = out - key - sealedKey
+            if (token.isEmpty()) continue
+            val reused = previous?.extras?.get(sealedKey)?.takeIf { secrets.decrypt(it) == token }
+            out = out + (sealedKey to (reused ?: secrets.encrypt(token)))
+        }
+        return out
+    }
+
+    /**
+     * Remplace le mot de passe et les jetons chiffrés par leur valeur en clair, pour la connexion
+     * uniquement (appelé par la fabrique de contrôleurs). Un chiffré illisible est retiré.
+     */
     fun reveal(device: Device, secrets: SecretStore): Device {
-        val encrypted = device.extras[ENCRYPTED_PASSWORD] ?: return device
-        val extras = device.extras - ENCRYPTED_PASSWORD
-        val plain = secrets.decrypt(encrypted) ?: return device.copy(extras = extras)
-        return device.copy(extras = extras + (PASSWORD to plain))
+        if (SEALED.values.none { it in device.extras }) return device
+        val extras = device.extras.toMutableMap()
+        for ((plainKey, sealedKey) in SEALED) {
+            val encrypted = extras.remove(sealedKey) ?: continue
+            // Une valeur en clair déjà présente (saisie non enregistrée) reste prioritaire.
+            if (plainKey !in extras) secrets.decrypt(encrypted)?.let { extras[plainKey] = it }
+        }
+        return device.copy(extras = extras)
     }
 }
 

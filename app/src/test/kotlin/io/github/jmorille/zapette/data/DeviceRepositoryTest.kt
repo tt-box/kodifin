@@ -92,11 +92,30 @@ class DeviceRepositoryTest {
 
     @Test
     fun `clearing the plex token removes the key`() = runBlocking {
-        repo.setPlexToken("abc")
-        assertEquals("abc", repo.plexToken.first())
+        repo.setPlexToken("JETON-COMPTE")
+        assertTrue(repo.plexLinked.first())
+        assertEquals("JETON-COMPTE", repo.sealedPlexToken()?.let(secrets::decrypt))
         repo.setPlexToken(null)
-        assertNull(repo.plexToken.first())
-        assertFalse(store.data.first().asMap().keys.any { it.name == "plex_token" })
+        assertFalse(repo.plexLinked.first())
+        assertNull(repo.sealedPlexToken())
+        assertFalse(store.data.first().asMap().keys.any { it.name.startsWith("plex_token") })
+    }
+
+    @Test
+    fun `the plex account token is stored encrypted only`() = runBlocking {
+        repo.setPlexToken("JETON-COMPTE")
+        assertFalse(file.readText(Charsets.ISO_8859_1).contains("JETON-COMPTE"))
+        assertNull(store.data.first()[DeviceRepository.PLEX_TOKEN])
+    }
+
+    @Test
+    fun `a plain plex account token from an older version is migrated`() = runBlocking {
+        store.edit { it[DeviceRepository.PLEX_TOKEN] = "JETON-COMPTE" }
+        assertTrue(repo.plexLinked.first())
+        val prefs = store.data.first()
+        assertNull(prefs[DeviceRepository.PLEX_TOKEN])
+        assertEquals("JETON-COMPTE", prefs[DeviceRepository.PLEX_TOKEN_ENCRYPTED]?.let(secrets::decrypt))
+        assertFalse(file.readText(Charsets.ISO_8859_1).contains("JETON-COMPTE"))
     }
 
     @Test
@@ -186,7 +205,67 @@ class DeviceRepositoryTest {
         // Connexion réussie : le ViewModel enregistre le jeton, sans mot de passe.
         repo.save(jelly.copy(extras = mapOf("username" to "u", "token" to "t")))
         assertNull(repo.get("j")?.extras?.get(DeviceSecrets.PASSWORD))
-        assertEquals("t", repo.get("j")?.extras?.get("token"))
+        assertEquals("t", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).extras["token"])
+    }
+
+    @Test
+    fun `device tokens are encrypted at rest, user id stays readable`() = runBlocking {
+        repo.save(jelly.copy(extras = mapOf("username" to "u", "token" to "JETON-JELLYFIN", "userId" to "U42")))
+        repo.save(Device("p", "Plex", DeviceKind.PLEX, "10.0.0.5", 32500, mapOf("token" to "JETON-PLEX")))
+        val json = checkNotNull(raw())
+        listOf("JETON-JELLYFIN", "JETON-PLEX", "\"token\"").forEach { assertFalse(it, json.contains(it)) }
+        assertFalse(file.readText(Charsets.ISO_8859_1).contains("JETON"))
+        val stored = checkNotNull(repo.get("j"))
+        assertEquals("U42", stored.extras["userId"])
+        assertNull(stored.extras["token"])
+        // Aller-retour : seul reveal (fabrique de contrôleurs) rend le jeton lisible.
+        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(stored, secrets).extras["token"])
+        assertEquals("JETON-PLEX", DeviceSecrets.reveal(checkNotNull(repo.get("p")), secrets).extras["token"])
+    }
+
+    @Test
+    fun `saving the same token again keeps the stored ciphertext`() = runBlocking {
+        repo.save(jelly.copy(extras = mapOf("token" to "JETON")))
+        val before = raw()
+        // Extras renvoyés par le contrôleur après connexion : jeton en clair, inchangé.
+        repo.save(jelly.copy(extras = mapOf("token" to "JETON")))
+        assertEquals(before, raw())
+        repo.save(jelly.copy(extras = mapOf("token" to "AUTRE")))
+        assertEquals("AUTRE", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).extras["token"])
+    }
+
+    @Test
+    fun `token encryption failure writes nothing`() = runBlocking {
+        secrets.failEncrypt = true
+        try {
+            repo.save(jelly.copy(extras = mapOf("token" to "JETON")))
+            fail("le chiffrement aurait dû échouer")
+        } catch (_: GeneralSecurityException) {
+        }
+        assertNull(raw())
+    }
+
+    @Test
+    fun `plain tokens from older versions are migrated on read`() = runBlocking {
+        writeRaw(
+            """[{"id":"j","name":"Jelly","kind":"JELLYFIN","host":"10.0.0.4","extras":{"username":"u","token":"JETON-JELLYFIN","userId":"U42","sessionId":"S"}},""" +
+                """{"id":"p","name":"Plex","kind":"PLEX","host":"10.0.0.5","extras":{"token":"JETON-PLEX","clientIdentifier":"cid"}}]""",
+        )
+        val devices = repo.saved.first()
+        assertTrue(devices.none { "token" in it.extras })
+        assertFalse(checkNotNull(raw()).contains("JETON"))
+        val j = devices.first { it.id == "j" }
+        assertEquals(mapOf("username" to "u", "userId" to "U42", "sessionId" to "S"), j.extras - DeviceSecrets.ENCRYPTED_TOKEN)
+        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(j, secrets).extras["token"])
+        assertEquals("JETON-PLEX", DeviceSecrets.reveal(devices.first { it.id == "p" }, secrets).extras["token"])
+    }
+
+    @Test
+    fun `token migration drops the token when encryption is impossible`() = runBlocking {
+        secrets.failEncrypt = true
+        writeRaw("""[{"id":"j","name":"Jelly","kind":"JELLYFIN","host":"10.0.0.4","extras":{"username":"u","token":"JETON"}}]""")
+        assertEquals(mapOf("username" to "u"), repo.saved.first().single().extras)
+        assertFalse(checkNotNull(raw()).contains("JETON"))
     }
 
     @Test
@@ -226,6 +305,19 @@ class DeviceRepositoryTest {
 class DeviceSecretsTest {
     private val secrets = FakeSecretStore()
     private val kodi = Device("k", "Kodi", DeviceKind.KODI, "10.0.0.2", extras = mapOf("username" to "kodi"))
+
+    @Test
+    fun `tokens are sealed, an empty token is removed, reveal restores them`() {
+        val jelly = Device("j", "Jelly", DeviceKind.JELLYFIN, "10.0.0.4", extras = mapOf("token" to "abc", "userId" to "U"))
+        val stored = DeviceSecrets.forStorage(jelly, null, secrets)
+        assertEquals(mapOf("token_enc" to "enc:cba", "userId" to "U"), stored.extras)
+        assertEquals(jelly.extras, DeviceSecrets.reveal(stored, secrets).extras)
+        assertEquals(mapOf("userId" to "U"), DeviceSecrets.forStorage(stored.copy(extras = stored.extras + ("token" to "")), null, secrets).extras)
+        // Chiffré illisible (clé perdue) : retiré, le jeton sera redemandé.
+        assertEquals(mapOf("userId" to "U"), DeviceSecrets.reveal(stored.copy(extras = mapOf("token_enc" to "??", "userId" to "U")), secrets).extras)
+        assertTrue(DeviceSecrets.hasToken(stored))
+        assertFalse(DeviceSecrets.hasPlainSecrets(stored))
+    }
 
     @Test
     fun `kodi password is encrypted, empty password clears it`() {
