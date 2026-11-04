@@ -234,6 +234,8 @@ fun DeviceConfigScreen(
     editDeviceId: String? = null,
     /** Emplacement optionnel sous les identifiants ; `null` : rien n'est affiché. */
     accountExtras: AccountExtras? = null,
+    /** Fire TV / Android TV : ouvre l'appairage en débogage sans fil (Android 11+). */
+    onAdbPairing: () -> Unit = {},
 ) {
     val context = LocalContext.current
     if (editDeviceId != null) {
@@ -245,7 +247,7 @@ fun DeviceConfigScreen(
             if (device == null) missing = true else loaded = device
         }
         when {
-            loaded != null -> DeviceConfigForm(loaded, editing = true, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras)
+            loaded != null -> DeviceConfigForm(loaded, editing = true, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras, onAdbPairing = onAdbPairing)
             missing -> Text("Appareil introuvable", Modifier.padding(16.dp))
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
@@ -254,7 +256,7 @@ fun DeviceConfigScreen(
     val prefill = remember(prefillJson) {
         prefillJson?.let { runCatching { Json.decodeFromString(Device.serializer(), it) }.getOrNull() }
     }
-    DeviceConfigForm(prefill, editing = false, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras)
+    DeviceConfigForm(prefill, editing = false, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras, onAdbPairing = onAdbPairing)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -265,6 +267,7 @@ private fun DeviceConfigForm(
     onSaved: (String) -> Unit,
     onBack: () -> Unit,
     accountExtras: AccountExtras? = null,
+    onAdbPairing: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -490,9 +493,12 @@ private fun DeviceConfigForm(
                 }
             }
             when (kind) {
-                DeviceKind.FIRE_TV -> Hint(
-                    "Activez « Débogage ADB » dans les options développeur du téléviseur, puis acceptez la clé de Zapette à la première connexion.",
-                )
+                DeviceKind.FIRE_TV -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Hint("Activez « Débogage ADB » dans les options développeur du téléviseur, puis acceptez la clé de Zapette à la première connexion.")
+                    OutlinedButton(onClick = onAdbPairing, modifier = Modifier.fillMaxWidth()) {
+                        Text("Android 11+ : appairer en débogage sans fil (code à 6 chiffres)")
+                    }
+                }
                 DeviceKind.AIRPLAY -> Hint(
                     "Compatible AirPlay 1 (lecture d'URL). Les récepteurs AirPlay 2 exigeant un appairage ne sont pas pris en charge.",
                 )
@@ -506,9 +512,11 @@ private fun DeviceConfigForm(
     }
 
     val credentialsSection: @Composable () -> Unit = {
-        if (usesCredentials(kind)) {
+        if (usesCredentials(kind) || kind == DeviceKind.AIRPLAY) {
             FormSection("Identifiants") {
-                OutlinedTextField(username, { username = it }, label = { Text("Utilisateur") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (kind != DeviceKind.AIRPLAY) {
+                    OutlinedTextField(username, { username = it }, label = { Text("Utilisateur") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
                 OutlinedTextField(
                     password, { password = it },
                     label = { Text("Mot de passe") },
@@ -527,7 +535,9 @@ private fun DeviceConfigForm(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Hint(
-                    if (kind == DeviceKind.KODI) {
+                    if (kind == DeviceKind.AIRPLAY) {
+                        "Facultatif : mot de passe AirPlay du récepteur. Conservé chiffré (Android Keystore)."
+                    } else if (kind == DeviceKind.KODI) {
                         "Le mot de passe est conservé chiffré (Android Keystore) sur cet appareil."
                     } else {
                         "Le mot de passe sert uniquement à obtenir un jeton ; il n'est pas conservé."

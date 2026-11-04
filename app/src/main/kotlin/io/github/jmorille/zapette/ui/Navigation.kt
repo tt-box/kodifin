@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui
 
+import io.github.jmorille.zapette.ui.adb.AdbPairingScreen
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
@@ -43,6 +44,10 @@ data class RemoteRoute(val deviceId: String, val sharedUrl: String? = null)
 
 @Serializable
 object PlexLinkRoute
+
+/** Appairage ADB en débogage sans fil (Android 11+). */
+@Serializable
+object AdbPairingRoute
 
 /** Réglages globaux (écran allumé, Chromecast). */
 @Serializable
@@ -94,6 +99,7 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
         composable<ConfigRoute> { entry ->
             DeviceConfigScreen(
                 prefillJson = entry.toRoute<ConfigRoute>().deviceJson,
+                onAdbPairing = { if (entry.isResumed) nav.navigate(AdbPairingRoute) },
                 onSaved = { id ->
                     // Appelé une seule fois (bouton désactivé pendant l'enregistrement), y compris
                     // si l'application est passée en arrière-plan entre-temps : pas de garde ici.
@@ -108,6 +114,7 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
             DeviceConfigScreen(
                 prefillJson = null,
                 editDeviceId = entry.toRoute<EditRoute>().deviceId,
+                onAdbPairing = { if (entry.isResumed) nav.navigate(AdbPairingRoute) },
                 // Nouvelle télécommande : la connexion repart avec la configuration modifiée.
                 onSaved = { id -> nav.navigate(RemoteRoute(id)) { popUpTo(DevicesRoute) } },
                 onBack = { if (entry.isResumed) nav.popBackStack() },
@@ -121,6 +128,15 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
                 onEdit = { if (entry.isResumed) nav.navigate(EditRoute(route.deviceId)) },
                 deviceId = route.deviceId,
                 sharedUrl = route.sharedUrl,
+                onBack = { if (entry.isResumed) nav.popBackStack() },
+            )
+        }
+        composable<AdbPairingRoute> { entry ->
+            AdbPairingScreen(
+                onPaired = { id ->
+                    nav.navigate(RemoteRoute(id, sharedUrl)) { popUpTo(DevicesRoute) }
+                    onSharedUrlConsumed()
+                },
                 onBack = { if (entry.isResumed) nav.popBackStack() },
             )
         }

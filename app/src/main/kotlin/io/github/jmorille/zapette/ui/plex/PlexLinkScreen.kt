@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.plex
 
+import io.github.jmorille.zapette.controller.androidPlexIdentity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.widget.Toast
@@ -118,7 +119,7 @@ fun AppContainer.plexLinkDependencies(): PlexLinkDependencies = object : PlexLin
     override val plexLinked: Flow<Boolean> get() = devices.plexLinked
     override suspend fun setPlexToken(token: String?) = devices.setPlexToken(token)
 
-    private suspend fun account() = PlexAccount(http, PlexIdentity(devices.installationId()))
+    private suspend fun account() = PlexAccount(http, androidPlexIdentity(devices.installationId()))
 
     override suspend fun homeUsers(accountToken: String): List<PlexHomeUser> = account().homeUsers(accountToken)
 

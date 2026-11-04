@@ -252,6 +252,9 @@ internal object DeviceSecrets {
     const val PASSWORD = "password"
     const val ENCRYPTED_PASSWORD = "password_enc"
 
+    /** Types dont le mot de passe est conservé (chiffré) : Kodi (HTTP Basic), AirPlay (Digest). */
+    val STORED_PASSWORD_KINDS = setOf(DeviceKind.KODI, DeviceKind.AIRPLAY)
+
     /**
      * Jeton d'appareil : Jellyfin/Emby (`MediaServerController.EXTRA_TOKEN`) et Plex
      * (`PlexController.EXTRA_TOKEN`, jeton propre à l'appareil) partagent la clé `token`.
@@ -292,7 +295,7 @@ internal object DeviceSecrets {
         val extras = device.extras - PASSWORD
         val withPassword = when {
             plain == null -> extras
-            device.kind == DeviceKind.KODI && plain.isNotEmpty() -> extras + (ENCRYPTED_PASSWORD to secrets.encrypt(plain))
+            device.kind in STORED_PASSWORD_KINDS && plain.isNotEmpty() -> extras + (ENCRYPTED_PASSWORD to secrets.encrypt(plain))
             else -> extras - ENCRYPTED_PASSWORD
         }
         return device.copy(extras = sealTokens(withPassword, secrets, previous))

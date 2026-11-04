@@ -86,7 +86,7 @@ class ControllerFactory(
     private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {
         DeviceKind.KODI, DeviceKind.JELLYFIN, DeviceKind.EMBY -> error("traité par create()")
         DeviceKind.PLEX ->
-            PlexController(withPlexToken(device, plexAccountToken()), http, PlexIdentity(repository.installationId()))
+            PlexController(withPlexToken(device, plexAccountToken()), http, androidPlexIdentity(repository.installationId()))
         DeviceKind.UPNP_RENDERER -> UpnpRendererController(device, http)
         DeviceKind.ROKU -> RokuController(device, http)
         DeviceKind.AIRPLAY -> AirPlayController(device, http)
