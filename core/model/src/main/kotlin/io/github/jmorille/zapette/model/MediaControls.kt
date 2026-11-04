@@ -118,6 +118,20 @@ interface SupportsLibraryMaintenance {
     suspend fun cleanLibrary()
 }
 
+/** Nature d'un élément de bibliothèque (filtres de recherche, icône, action par défaut). */
+enum class MediaKind(val label: String) {
+    MOVIE("Films"),
+    SERIES("Séries"),
+    SEASON("Saisons"),
+    EPISODE("Épisodes"),
+    ARTIST("Artistes"),
+    ALBUM("Albums"),
+    SONG("Titres"),
+    CHANNEL("Chaînes TV"),
+    FOLDER("Dossiers"),
+    OTHER("Autres"),
+}
+
 /** Élément de bibliothèque, de file d'attente, de chaîne TV ou de favori. */
 data class MediaEntry(
     /** Identifiant propre au protocole (ex. `movieid:12`, `channelid:3`, id d'élément Jellyfin). */
@@ -126,7 +140,49 @@ data class MediaEntry(
     val subtitle: String? = null,
     /** Dossier navigable (série, saison, album, catégorie) plutôt qu'élément jouable. */
     val browsable: Boolean = false,
+    val kind: MediaKind? = null,
+    /** Clé opaque à passer à [SupportsImages.image] (affiche, vignette), ou `null` sans image. */
+    val imageKey: String? = null,
+    val year: Int? = null,
+    /** Épisode : saison et numéro ; `null` sinon. */
+    val season: Int? = null,
+    val episode: Int? = null,
+    /** Déjà vu (si le serveur le publie). */
+    val watched: Boolean? = null,
 )
+
+/** Série du média en cours : ses saisons (navigables via [SupportsLibrary.browse]) et la position courante. */
+data class SeriesContext(
+    val seriesId: String,
+    val title: String,
+    val seasons: List<MediaEntry>,
+    val currentSeasonId: String? = null,
+    val currentEpisodeId: String? = null,
+)
+
+/** Navigation dans la série en cours de lecture (saisons puis épisodes). */
+interface SupportsSeries {
+    /** `null` si le média en cours n'est pas un épisode de série. */
+    suspend fun currentSeries(): SeriesContext?
+}
+
+/** Recherche dans la bibliothèque du serveur (fonctions de recherche natives du protocole). */
+interface SupportsSearch {
+    /** Natures interrogeables (filtres proposés à l'utilisateur). */
+    val searchKinds: Set<MediaKind>
+
+    /** [kinds] vide : toutes les natures de [searchKinds]. */
+    suspend fun search(query: String, kinds: Set<MediaKind> = emptySet(), limit: Int = 60): List<MediaEntry>
+}
+
+/**
+ * Images (affiches, vignettes) récupérées par le contrôleur avec son authentification : aucun
+ * jeton n'apparaît dans une URL ni ne sort vers un autre hôte. Taille bornée par l'implémentation.
+ */
+interface SupportsImages {
+    /** Octets de l'image (JPEG/PNG/WebP) redimensionnée côté serveur si possible, ou `null`. */
+    suspend fun image(imageKey: String, maxWidth: Int): ByteArray?
+}
 
 /** Rubrique racine de la bibliothèque (films, séries, musique, chaînes TV, favoris, add-ons…). */
 data class MediaSection(val id: String, val title: String)

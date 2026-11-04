@@ -19,7 +19,18 @@ data class PlaybackState(
     val durationMs: Long = 0,
     val volumePercent: Int? = null,
     val muted: Boolean = false,
+    /** Épisode de série : nom de la série, saison et numéro (affichés « Série · S01E10 · Titre »). */
+    val seriesTitle: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
 )
+
+/** « S01E10 » si saison et épisode sont connus, « E10 » si seul l'épisode l'est, sinon `null`. */
+fun PlaybackState.episodeCode(): String? = when {
+    season != null && episode != null -> "S%02dE%02d".format(season, episode)
+    episode != null -> "E%02d".format(episode)
+    else -> null
+}
 
 /** Levée quand une action n'existe pas pour le protocole de l'appareil. */
 class UnsupportedActionException(message: String) : UnsupportedOperationException(message)
