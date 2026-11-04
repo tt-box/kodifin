@@ -29,6 +29,9 @@ data class AuthResult(
 )
 
 @Serializable
+data class PublicInfoDto(@SerialName("Id") val id: String = "")
+
+@Serializable
 data class UserDto(@SerialName("Id") val id: String, @SerialName("Name") val name: String = "")
 
 @Serializable
@@ -72,7 +75,16 @@ class MediaServerClient(
     @Volatile
     var accessToken: String? = accessToken
 
-    private val base: HttpUrl? = baseUrl.trimEnd('/').toHttpUrlOrNull()
+    @Volatile
+    private var base: HttpUrl? = baseUrl.trimEnd('/').toHttpUrlOrNull()
+
+    /** URL racine courante de l'API (chemin de base compris). */
+    val baseUrl: String? get() = base?.toString()
+
+    /** Change l'URL racine (chemin de base détecté, ex. `http://hôte:8096/jellyfin`). */
+    internal fun rebase(baseUrl: String) {
+        base = baseUrl.trimEnd('/').toHttpUrlOrNull() ?: throw RemoteException("Adresse du serveur invalide")
+    }
 
     /** `coerceInputValues` : un `null` reçu pour un champ non nullable prend sa valeur par défaut. */
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
@@ -151,6 +163,24 @@ class MediaServerClient(
             putJsonObject("Arguments") { arguments.forEach { (k, v) -> put(k, v) } }
         }.toString()
         http.fetchString(request(url("Sessions", sessionId, "Command")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
+    }
+
+    /**
+     * `true` si [rootUrl] (par défaut l'URL courante) expose l'API publique du serveur :
+     * `GET …/System/Info/Public` renvoie un objet JSON portant un `Id`. Une redirection vers
+     * l'interface web (chemin de base mal réglé) ou une page HTML donne `false`.
+     */
+    suspend fun isServer(rootUrl: String? = null): Boolean {
+        val root = (rootUrl?.trimEnd('/')?.toHttpUrlOrNull() ?: base) ?: return false
+        val url = root.newBuilder().addPathSegments("System/Info/Public").build()
+        return try {
+            val text = http.fetchString(Request.Builder().url(url).header("Accept", "application/json").get().build())
+            json.decodeFromString(PublicInfoDto.serializer(), text).id.isNotBlank()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 
     suspend fun requireToken(): String = accessToken ?: throw RemoteException("Non authentifié sur le serveur")

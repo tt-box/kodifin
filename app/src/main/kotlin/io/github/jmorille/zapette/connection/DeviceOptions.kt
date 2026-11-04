@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.connection
 
+import io.github.jmorille.zapette.mediaserver.MediaServerController
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 
@@ -19,6 +20,8 @@ data class AdvancedOptions(
     val wolPort: String = DeviceOptions.DEFAULT_WOL_PORT.toString(),
     /** Envoie le signal de réveil avant chaque connexion, puis patiente pendant le démarrage. */
     val wolAuto: Boolean = false,
+    /** Jellyfin/Emby : chemin de base de l'API (« URL de base » du serveur), ex. `/jellyfin`. */
+    val basePath: String = "",
 )
 
 /** Destination d'un paquet magique Wake-on-LAN. */
@@ -39,16 +42,19 @@ object DeviceOptions {
     const val WOL_BROADCAST = "wol_broadcast"
     const val WOL_PORT = "wol_port"
     const val WOL_AUTO = "wol_auto"
+    /** Même clé que `MediaServerController.EXTRA_BASE_PATH`. */
+    const val BASE_PATH = MediaServerController.EXTRA_BASE_PATH
 
     const val DEFAULT_KODI_WS_PORT = 9090
     const val DEFAULT_WOL_PORT = 9
     const val DEFAULT_BROADCAST = "255.255.255.255"
 
-    private val KEYS = setOf(SCHEME, KODI_WEBSOCKET, KODI_WEBSOCKET_PORT, WOL_MAC, WOL_BROADCAST, WOL_PORT, WOL_AUTO)
+    private val KEYS = setOf(SCHEME, KODI_WEBSOCKET, KODI_WEBSOCKET_PORT, WOL_MAC, WOL_BROADCAST, WOL_PORT, WOL_AUTO, BASE_PATH)
     private val IPV4 = Regex("""^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$""")
 
     fun supportsHttps(kind: DeviceKind) = kind == DeviceKind.KODI || kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY
     fun supportsWebSocket(kind: DeviceKind) = kind == DeviceKind.KODI
+    fun supportsBasePath(kind: DeviceKind) = kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY
 
     /** Chromecast se réveille par le réseau Cast ; tous les autres peuvent être une machine à allumer. */
     fun supportsWakeOnLan(kind: DeviceKind) = kind != DeviceKind.CHROMECAST
@@ -64,6 +70,7 @@ object DeviceOptions {
             wolBroadcast = e[WOL_BROADCAST] ?: DEFAULT_BROADCAST,
             wolPort = e[WOL_PORT] ?: DEFAULT_WOL_PORT.toString(),
             wolAuto = e[WOL_AUTO] == "true",
+            basePath = e[BASE_PATH].orEmpty(),
         )
     }
 
@@ -71,6 +78,8 @@ object DeviceOptions {
     fun error(kind: DeviceKind, o: AdvancedOptions): String? = when {
         supportsWebSocket(kind) && o.kodiWebSocket && o.kodiWebSocketPort.toIntOrNull() !in 1..65535 ->
             "Port WebSocket invalide"
+        supportsBasePath(kind) && o.basePath.isNotBlank() && MediaServerController.normalizeBasePath(o.basePath) == null ->
+            "Chemin de base invalide (ex. /jellyfin)"
         !supportsWakeOnLan(kind) -> null
         o.wolMac.isBlank() && o.wolAuto -> "Adresse MAC requise pour le réveil automatique"
         o.wolMac.isBlank() -> null
@@ -87,6 +96,7 @@ object DeviceOptions {
     fun apply(extras: Map<String, String>, kind: DeviceKind, o: AdvancedOptions): Map<String, String> = buildMap {
         putAll(extras - KEYS)
         if (supportsHttps(kind) && o.https) put(SCHEME, "https")
+        if (supportsBasePath(kind)) MediaServerController.normalizeBasePath(o.basePath)?.let { put(BASE_PATH, it) }
         if (supportsWebSocket(kind) && o.kodiWebSocket) {
             put(KODI_WEBSOCKET, "true")
             put(KODI_WEBSOCKET_PORT, o.kodiWebSocketPort.trim())

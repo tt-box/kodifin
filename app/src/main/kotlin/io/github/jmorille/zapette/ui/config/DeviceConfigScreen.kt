@@ -1,6 +1,12 @@
 package io.github.jmorille.zapette.ui.config
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -12,7 +18,6 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.LaunchedEffect
@@ -218,7 +223,8 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
     var wolBroadcast by rememberSaveable { mutableStateOf(initial.wolBroadcast) }
     var wolPort by rememberSaveable { mutableStateOf(initial.wolPort) }
     var wolAuto by rememberSaveable { mutableStateOf(initial.wolAuto) }
-    val options = AdvancedOptions(https, kodiWebSocket, kodiWebSocketPort, wolMac, wolBroadcast, wolPort, wolAuto)
+    var basePath by rememberSaveable { mutableStateOf(initial.basePath) }
+    val options = AdvancedOptions(https, kodiWebSocket, kodiWebSocketPort, wolMac, wolBroadcast, wolPort, wolAuto, basePath)
 
     /** Valide le formulaire et construit l'appareil, ou affiche l'erreur et renvoie `null`. */
     fun draftOrNull(): DeviceDraft? {
@@ -226,20 +232,42 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
         return if (error == null) buildDevice(prefill, kind, name, host, port, location, username, password, options) else null
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(if (editing) "Modifier ${prefill?.name.orEmpty()}" else prefill?.name ?: "Ajouter un appareil") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+    fun test() {
+        val draft = draftOrNull() ?: return
+        testing = true
+        testResult = null
+        scope.launch {
+            try {
+                testResult = withContext(Dispatchers.IO) {
+                    testConnection(draft.device) { context.container.controllers.create(it, draft.password) }
+                }
+            } finally {
+                testing = false
+            }
+        }
+    }
+
+    fun save() {
+        val draft = draftOrNull() ?: return
+        // Désactive le bouton : un double appui enregistrait et ouvrait deux télécommandes.
+        saving = true
+        scope.launch {
+            try {
+                context.container.devices.save(draft.device, draft.password)
+                onSaved(draft.device.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = "Enregistrement impossible : ${e.message.orEmpty()}"
+            } finally {
+                saving = false
+            }
+        }
+    }
+
+    // --- Sections du formulaire, disposées en une ou deux colonnes selon la largeur.
+    val deviceSection: @Composable () -> Unit = {
+        FormSection("Appareil") {
             if (prefill == null) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(MANUAL_KINDS) { k ->
@@ -250,8 +278,15 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                         )
                     }
                 }
+            } else {
+                Text(kind.label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             OutlinedTextField(name, { name = it }, label = { Text("Nom") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        }
+    }
+
+    val connectionSection: @Composable () -> Unit = {
+        FormSection("Connexion") {
             if (kind == DeviceKind.UPNP_RENDERER) {
                 OutlinedTextField(
                     location, { location = it },
@@ -261,22 +296,39 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
-                OutlinedTextField(
-                    host, { host = it },
-                    label = { Text("Adresse IP ou nom") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    port, { port = it.filter(Char::isDigit) },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                // Hôte et port sur la même ligne : le port est court, l'adresse prend la place.
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                    OutlinedTextField(
+                        host, { host = it },
+                        label = { Text("Adresse IP ou nom") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        port, { port = it.filter(Char::isDigit) },
+                        label = { Text("Port") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.width(110.dp),
+                    )
+                }
             }
-            if (usesCredentials(kind)) {
+            when (kind) {
+                DeviceKind.FIRE_TV -> Hint(
+                    "Activez « Débogage ADB » dans les options développeur du téléviseur, puis acceptez la clé de Zapette à la première connexion.",
+                )
+                DeviceKind.AIRPLAY -> Hint(
+                    "Compatible AirPlay 1 (lecture d'URL). Les récepteurs AirPlay 2 exigeant un appairage ne sont pas pris en charge.",
+                )
+                else -> Unit
+            }
+        }
+    }
+
+    val credentialsSection: @Composable () -> Unit = {
+        if (usesCredentials(kind)) {
+            FormSection("Identifiants") {
                 OutlinedTextField(username, { username = it }, label = { Text("Utilisateur") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     password, { password = it },
@@ -295,146 +347,193 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(
+                Hint(
                     if (kind == DeviceKind.KODI) {
-                        "Le mot de passe est conservé chiffré (Android Keystore) sur ce téléphone."
+                        "Le mot de passe est conservé chiffré (Android Keystore) sur cet appareil."
                     } else {
                         "Le mot de passe sert uniquement à obtenir un jeton ; il n'est pas conservé."
                     },
-                    style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (kind == DeviceKind.FIRE_TV) {
-                Text(
-                    "Activez « Débogage ADB » dans les options développeur du téléviseur, puis acceptez la clé de Zapette à la première connexion.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (kind == DeviceKind.AIRPLAY) {
-                Text("Compatible AirPlay 1 (lecture d'URL). Les récepteurs AirPlay 2 exigeant un appairage ne sont pas pris en charge.", style = MaterialTheme.typography.bodySmall)
-            }
-            if (kind != DeviceKind.CHROMECAST) {
-                HorizontalDivider()
-                Row(
-                    Modifier.fillMaxWidth().clickable { advancedOpen = !advancedOpen }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Options avancées", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    Icon(
-                        if (advancedOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = if (advancedOpen) "Replier" else "Déplier",
-                    )
-                }
-                if (advancedOpen) {
-                    if (DeviceOptions.supportsHttps(kind)) {
-                        SwitchRow("HTTPS", "Connexion chiffrée (serveur derrière un proxy TLS)", https) { https = it }
-                    }
-                    if (DeviceOptions.supportsWebSocket(kind)) {
-                        SwitchRow(
-                            "WebSocket",
-                            "Transport JSON-RPC par WebSocket, plus réactif (« Autoriser le contrôle à distance » dans Kodi)",
-                            kodiWebSocket,
-                        ) { kodiWebSocket = it }
-                        if (kodiWebSocket) {
-                            OutlinedTextField(
-                                kodiWebSocketPort, { kodiWebSocketPort = it.filter(Char::isDigit) },
-                                label = { Text("Port WebSocket") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                    if (DeviceOptions.supportsWakeOnLan(kind)) {
-                        Text("Wake-on-LAN", style = MaterialTheme.typography.titleSmall)
-                        OutlinedTextField(
-                            wolMac, { wolMac = it },
-                            label = { Text("Adresse MAC (ex. 58:47:CA:7E:0D:48)") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (wolMac.isNotBlank()) {
-                            OutlinedTextField(
-                                wolBroadcast, { wolBroadcast = it },
-                                label = { Text("Adresse de diffusion") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            OutlinedTextField(
-                                wolPort, { wolPort = it.filter(Char::isDigit) },
-                                label = { Text("Port Wake-on-LAN") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            SwitchRow(
-                                "Réveil automatique",
-                                "Allume l'appareil à l'ouverture de la télécommande et patiente pendant son démarrage",
-                                wolAuto,
-                            ) { wolAuto = it }
-                        }
-                    }
-                }
-                HorizontalDivider()
-            }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            testResult?.let { result ->
-                Text(
-                    result.message,
-                    color = if (result is ConnectionTestResult.Success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                )
-            }
-            OutlinedButton(
-                onClick = {
-                    val draft = draftOrNull() ?: return@OutlinedButton
-                    testing = true
-                    testResult = null
-                    scope.launch {
-                        try {
-                            testResult = withContext(Dispatchers.IO) {
-                                testConnection(draft.device) { context.container.controllers.create(it, draft.password) }
-                            }
-                        } finally {
-                            testing = false
-                        }
-                    }
-                },
-                enabled = !testing && !saving,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (testing) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Test en cours…")
-                } else {
-                    Text("Tester la connexion")
-                }
-            }
-            Button(
-                onClick = {
-                    val draft = draftOrNull() ?: return@Button
-                    // Désactive le bouton : un double appui enregistrait et ouvrait deux télécommandes.
-                    saving = true
-                    scope.launch {
-                        try {
-                            context.container.devices.save(draft.device, draft.password)
-                            onSaved(draft.device.id)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            error = "Enregistrement impossible : ${e.message.orEmpty()}"
-                        } finally {
-                            saving = false
-                        }
-                    }
-                },
-                enabled = !saving,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (editing) "Enregistrer" else "Enregistrer et ouvrir") }
         }
     }
+
+    val advancedFields: @Composable () -> Unit = {
+        if (DeviceOptions.supportsHttps(kind)) {
+            SwitchRow("HTTPS", "Connexion chiffrée (serveur derrière un proxy TLS)", https) { https = it }
+        }
+        if (DeviceOptions.supportsBasePath(kind)) {
+            OutlinedTextField(
+                basePath, { basePath = it },
+                label = { Text("Chemin de base (ex. /jellyfin)") },
+                supportingText = { Text("Vide : détecté automatiquement à la connexion") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (DeviceOptions.supportsWebSocket(kind)) {
+            SwitchRow(
+                "WebSocket",
+                "Transport JSON-RPC par WebSocket, plus réactif (« Autoriser le contrôle à distance » dans Kodi)",
+                kodiWebSocket,
+            ) { kodiWebSocket = it }
+            if (kodiWebSocket) {
+                OutlinedTextField(
+                    kodiWebSocketPort, { kodiWebSocketPort = it.filter(Char::isDigit) },
+                    label = { Text("Port WebSocket") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        if (DeviceOptions.supportsWakeOnLan(kind)) {
+            Text("Wake-on-LAN", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+            OutlinedTextField(
+                wolMac, { wolMac = it },
+                label = { Text("Adresse MAC (ex. 58:47:CA:7E:0D:48)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (wolMac.isNotBlank()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        wolBroadcast, { wolBroadcast = it },
+                        label = { Text("Adresse de diffusion") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        wolPort, { wolPort = it.filter(Char::isDigit) },
+                        label = { Text("Port") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.width(110.dp),
+                    )
+                }
+                SwitchRow(
+                    "Réveil automatique",
+                    "Allume l'appareil à l'ouverture de la télécommande et patiente pendant son démarrage",
+                    wolAuto,
+                ) { wolAuto = it }
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (editing) "Modifier ${prefill?.name.orEmpty()}" else prefill?.name ?: "Ajouter un appareil") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
+                },
+            )
+        },
+        // Actions toujours visibles, même avec le clavier ouvert ou un long formulaire.
+        bottomBar = {
+            Surface(tonalElevation = 3.dp) {
+                Column(
+                    Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    testResult?.let { result ->
+                        Text(
+                            result.message,
+                            color = if (result is ConnectionTestResult.Success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(onClick = ::test, enabled = !testing && !saving, modifier = Modifier.weight(1f)) {
+                            if (testing) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Test…")
+                            } else {
+                                Text("Tester la connexion")
+                            }
+                        }
+                        Button(onClick = ::save, enabled = !saving, modifier = Modifier.weight(1f)) {
+                            Text(if (editing) "Enregistrer" else "Enregistrer et ouvrir")
+                        }
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+            val wide = maxWidth >= 720.dp
+            Column(
+                Modifier
+                    .widthIn(max = if (wide) 1100.dp else 640.dp)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (wide) {
+                    // Tablette : connexion à gauche, options avancées toujours visibles à droite.
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            deviceSection()
+                            connectionSection()
+                            credentialsSection()
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            if (kind != DeviceKind.CHROMECAST) FormSection("Options avancées") { advancedFields() }
+                        }
+                    }
+                } else {
+                    // Téléphone : une colonne, options avancées repliables.
+                    deviceSection()
+                    connectionSection()
+                    credentialsSection()
+                    if (kind != DeviceKind.CHROMECAST) {
+                        FormSection(
+                            "Options avancées",
+                            expanded = advancedOpen,
+                            onToggle = { advancedOpen = !advancedOpen },
+                        ) { advancedFields() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Bloc titré du formulaire ; repliable si [onToggle] est fourni. */
+@Composable
+private fun FormSection(
+    title: String,
+    expanded: Boolean = true,
+    onToggle: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().then(if (onToggle != null) Modifier.clickable(onClick = onToggle) else Modifier),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (onToggle != null) {
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "Replier" else "Déplier",
+                    )
+                }
+            }
+            if (expanded) content()
+        }
+    }
+}
+
+@Composable
+private fun Hint(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

@@ -38,7 +38,11 @@ class MediaServerController(
         userId?.let { put(EXTRA_USER_ID, it) }
         // Une session imposée mais disparue n'est pas reconduite.
         pinnedSessionId?.let { put(EXTRA_SESSION_ID, it) }
+        detectedBasePath?.let { put(EXTRA_BASE_PATH, it) }
     }
+
+    /** Chemin de base trouvé automatiquement à la connexion (ex. `/jellyfin`), à enregistrer. */
+    @Volatile private var detectedBasePath: String? = null
 
     override val capabilities = setOf(
         Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK,
@@ -56,8 +60,38 @@ class MediaServerController(
     @Volatile private var sessionId: String? = pinnedSessionId
 
     override suspend fun connect() {
-        mutex.withLock { if (client.accessToken == null) authenticateLocked() }
+        try {
+            mutex.withLock { if (client.accessToken == null) authenticateLocked() }
+        } catch (e: Exception) {
+            // Réponse non JSON (redirection vers l'interface web) ou 404 : le serveur est
+            // probablement publié sous un chemin de base (« URL de base » de Jellyfin/Emby).
+            if (!looksLikeWrongPath(e) || !detectBasePath()) throw e
+            mutex.withLock { if (client.accessToken == null) authenticateLocked() }
+        }
         session()
+    }
+
+    private fun looksLikeWrongPath(e: Exception): Boolean =
+        device.extras[EXTRA_BASE_PATH].isNullOrEmpty() &&
+            ((e is RemoteException && e.cause is kotlinx.serialization.SerializationException) ||
+                (e is HttpStatusException && e.code == 404))
+
+    /** Essaie les chemins de base usuels ; `true` (et client recalé) si l'un expose l'API. */
+    private suspend fun detectBasePath(): Boolean {
+        val root = client.baseUrl ?: return false
+        if (client.isServer()) return false
+        for (path in BASE_PATH_CANDIDATES) {
+            val candidate = root.trimEnd('/') + path
+            if (client.isServer(candidate)) {
+                client.rebase(candidate)
+                detectedBasePath = path
+                return true
+            }
+        }
+        throw RemoteException(
+            "${device.name} ne répond pas comme un serveur ${device.kind.label} à cette adresse : " +
+                "vérifiez le port et le chemin de base (ex. /jellyfin) dans les options avancées",
+        )
     }
 
     private suspend fun authenticateLocked() {
@@ -205,16 +239,30 @@ class MediaServerController(
         const val EXTRA_SESSION_ID = "sessionId"
         const val EXTRA_TOKEN = "token"
 
+        /** Chemin de base de l'API (« URL de base » du serveur), ex. `/jellyfin`. */
+        const val EXTRA_BASE_PATH = "base_path"
+
+        private val BASE_PATH_CANDIDATES = listOf("/jellyfin", "/emby")
+        private val BASE_PATH = Regex("^(/[A-Za-z0-9._~-]+)+$")
+
+        /** Chemin de base normalisé (`/a/b`), ou `null` s'il est vide ou invalide. */
+        fun normalizeBasePath(raw: String?): String? {
+            val trimmed = raw?.trim()?.trim('/')?.takeIf { it.isNotEmpty() } ?: return null
+            return "/$trimmed".takeIf(BASE_PATH::matches)
+        }
+
         /**
          * URL du serveur : [Device.baseUrl] impose `http` ; le schéma `https` annoncé à la
          * découverte (extra [MediaServerDiscovery.EXTRA_SCHEME]) est respecté.
          */
-        internal fun baseUrl(device: Device): String =
-            if (device.extras[MediaServerDiscovery.EXTRA_SCHEME] == "https") {
+        internal fun baseUrl(device: Device): String {
+            val root = if (device.extras[MediaServerDiscovery.EXTRA_SCHEME] == "https") {
                 "https://" + device.baseUrl.removePrefix("http://")
             } else {
                 device.baseUrl
             }
+            return root + normalizeBasePath(device.extras[EXTRA_BASE_PATH]).orEmpty()
+        }
 
         fun create(device: Device, http: OkHttpClient, deviceId: String): MediaServerController {
             val flavor = if (device.kind == DeviceKind.EMBY) MediaServerFlavor.EMBY else MediaServerFlavor.JELLYFIN

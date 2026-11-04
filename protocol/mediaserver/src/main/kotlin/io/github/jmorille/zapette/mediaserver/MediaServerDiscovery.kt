@@ -65,7 +65,10 @@ object MediaServerDiscovery {
             kind = kind,
             host = host,
             port = port,
-            extras = if (url?.isHttps == true) mapOf(EXTRA_SCHEME to "https") else emptyMap(),
+            extras = buildMap {
+                if (url?.isHttps == true) put(EXTRA_SCHEME, "https")
+                MediaServerController.normalizeBasePath(url?.encodedPath)?.let { put(MediaServerController.EXTRA_BASE_PATH, it) }
+            },
         )
     }
 
