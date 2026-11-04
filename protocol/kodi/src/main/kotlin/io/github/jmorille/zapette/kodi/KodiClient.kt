@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.RemoteException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -9,9 +10,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -37,11 +35,14 @@ class KodiClient(private val transport: KodiTransport) {
 
     suspend fun call(method: String, params: JsonObject? = null): JsonElement = transport.call(method, params)
 
-    suspend fun ping(): Boolean = call(KodiMethod.PING).jsonPrimitive.contentOrNull == "pong"
+    suspend fun ping(): Boolean = (call(KodiMethod.PING) as? JsonPrimitive)?.contentOrNull == "pong"
+
+    /** Ferme le transport sous-jacent (WebSocket notamment). */
+    fun close() = transport.close()
 
     suspend fun apiVersion(): String {
-        val v = call(KodiMethod.VERSION).jsonObject["version"]!!.jsonObject
-        return listOf("major", "minor", "patch").joinToString(".") { v[it]?.jsonPrimitive?.contentOrNull ?: "0" }
+        val v = call(KodiMethod.VERSION).obj(KodiMethod.VERSION)["version"].obj(KodiMethod.VERSION)
+        return listOf("major", "minor", "patch").joinToString(".") { v[it].primitive()?.contentOrNull ?: "0" }
     }
 
     // --- Entrées ---------------------------------------------------------
@@ -59,9 +60,11 @@ class KodiClient(private val transport: KodiTransport) {
 
     // --- Lecteur ---------------------------------------------------------
     suspend fun activePlayers(): List<KodiPlayer> =
-        call(KodiMethod.PLAYER_GET_ACTIVE).jsonArray.map {
-            val o = it.jsonObject
-            KodiPlayer(o["playerid"]!!.jsonPrimitive.intOrNull ?: 0, o["type"]?.jsonPrimitive?.contentOrNull ?: "unknown")
+        call(KodiMethod.PLAYER_GET_ACTIVE).arr(KodiMethod.PLAYER_GET_ACTIVE).mapNotNull {
+            val o = it as? JsonObject ?: return@mapNotNull null
+            // Un lecteur sans identifiant exploitable est ignoré plutôt que ciblé au hasard.
+            val id = o["playerid"].primitive()?.intOrNull ?: return@mapNotNull null
+            KodiPlayer(id, o["type"].primitive()?.contentOrNull ?: "unknown")
         }
 
     suspend fun playPause(playerId: Int) = call(KodiMethod.PLAYER_PLAY_PAUSE, playerParams(playerId))
@@ -84,11 +87,13 @@ class KodiClient(private val transport: KodiTransport) {
         buildJsonObject {
             put("playerid", playerId)
             putJsonObject("value") {
+                // Une position négative produirait des champs négatifs refusés par Kodi.
+                val ms = positionMs.coerceAtLeast(0)
                 putJsonObject("time") {
-                    put("hours", positionMs / 3_600_000)
-                    put("minutes", (positionMs / 60_000) % 60)
-                    put("seconds", (positionMs / 1000) % 60)
-                    put("milliseconds", positionMs % 1000)
+                    put("hours", ms / 3_600_000)
+                    put("minutes", (ms / 60_000) % 60)
+                    put("seconds", (ms / 1000) % 60)
+                    put("milliseconds", ms % 1000)
                 }
             }
         },
@@ -106,12 +111,12 @@ class KodiClient(private val transport: KodiTransport) {
                 put("playerid", playerId)
                 putJsonArray("properties") { listOf("speed", "time", "totaltime", "percentage").forEach { add(JsonPrimitive(it)) } }
             },
-        ).jsonObject
+        ).obj(KodiMethod.PLAYER_GET_PROPERTIES)
         return KodiPlayerProperties(
-            speed = o["speed"]?.jsonPrimitive?.intOrNull ?: 0,
+            speed = o["speed"].primitive()?.intOrNull ?: 0,
             timeMs = o["time"]?.let(::kodiTimeToMs) ?: 0,
             totalTimeMs = o["totaltime"]?.let(::kodiTimeToMs) ?: 0,
-            percentage = o["percentage"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            percentage = o["percentage"].primitive()?.doubleOrNull ?: 0.0,
         )
     }
 
@@ -122,12 +127,12 @@ class KodiClient(private val transport: KodiTransport) {
                 put("playerid", playerId)
                 putJsonArray("properties") { add(JsonPrimitive("title")) }
             },
-        ).jsonObject["item"]!!.jsonObject
-        val title = item["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        ).obj(KodiMethod.PLAYER_GET_ITEM)["item"].obj(KodiMethod.PLAYER_GET_ITEM)
+        val title = item["title"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
         return KodiMediaItem(
-            id = item["id"]?.jsonPrimitive?.intOrNull,
-            label = title ?: item["label"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            type = item["type"]?.jsonPrimitive?.contentOrNull,
+            id = item["id"].primitive()?.intOrNull,
+            label = title ?: item["label"].primitive()?.contentOrNull.orEmpty(),
+            type = item["type"].primitive()?.contentOrNull,
         )
     }
 
@@ -136,13 +141,13 @@ class KodiClient(private val transport: KodiTransport) {
         val o = call(
             KodiMethod.APP_GET_PROPERTIES,
             buildJsonObject { putJsonArray("properties") { listOf("volume", "muted", "version").forEach { add(JsonPrimitive(it)) } } },
-        ).jsonObject
-        val version = o["version"]?.jsonObject?.let { v ->
-            "${v["major"]?.jsonPrimitive?.contentOrNull}.${v["minor"]?.jsonPrimitive?.contentOrNull}"
+        ).obj(KodiMethod.APP_GET_PROPERTIES)
+        val version = (o["version"] as? JsonObject)?.let { v ->
+            "${v["major"].primitive()?.contentOrNull ?: "0"}.${v["minor"].primitive()?.contentOrNull ?: "0"}"
         }
         return KodiAppProperties(
-            volume = o["volume"]?.jsonPrimitive?.intOrNull ?: 0,
-            muted = o["muted"]?.jsonPrimitive?.booleanOrNull ?: false,
+            volume = o["volume"].primitive()?.intOrNull ?: 0,
+            muted = o["muted"].primitive()?.booleanOrNull ?: false,
             version = version,
         )
     }
@@ -184,11 +189,11 @@ class KodiClient(private val transport: KodiTransport) {
         val result = call(
             method,
             buildJsonObject { putJsonObject("limits") { put("start", 0); put("end", limit) } },
-        ).jsonObject
+        ).obj(method)
         val items = result[key] as? JsonArray ?: return emptyList()
-        return items.map {
-            val o = it.jsonObject
-            KodiMediaItem(o[idKey]?.jsonPrimitive?.intOrNull, o["label"]?.jsonPrimitive?.contentOrNull.orEmpty(), key)
+        return items.mapNotNull {
+            val o = it as? JsonObject ?: return@mapNotNull null
+            KodiMediaItem(o[idKey].primitive()?.intOrNull, o["label"].primitive()?.contentOrNull.orEmpty(), key)
         }
     }
 
@@ -196,9 +201,20 @@ class KodiClient(private val transport: KodiTransport) {
 
     companion object {
         internal fun kodiTimeToMs(element: JsonElement): Long {
-            val o = element.jsonObject
-            fun f(name: String) = o[name]?.jsonPrimitive?.longOrNull ?: 0L
+            val o = element as? JsonObject ?: return 0
+            fun f(name: String) = o[name].primitive()?.longOrNull ?: 0L
             return f("hours") * 3_600_000 + f("minutes") * 60_000 + f("seconds") * 1000 + f("milliseconds")
         }
     }
 }
+
+/** Valeur primitive ou `null` (objet, tableau, absence). */
+private fun JsonElement?.primitive(): JsonPrimitive? = this as? JsonPrimitive
+
+/** Exige un objet JSON ; sinon la réponse de Kodi est jugée invalide. */
+private fun JsonElement?.obj(method: String): JsonObject =
+    this as? JsonObject ?: throw RemoteException("Réponse Kodi inattendue pour $method")
+
+/** Exige un tableau JSON ; sinon la réponse de Kodi est jugée invalide. */
+private fun JsonElement?.arr(method: String): JsonArray =
+    this as? JsonArray ?: throw RemoteException("Réponse Kodi inattendue pour $method")

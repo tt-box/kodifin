@@ -25,7 +25,9 @@ suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
         }
 
         override fun onResponse(call: Call, response: Response) {
-            if (cont.isActive) cont.resume(response) else response.close()
+            // Si la coroutine est annulée entre-temps (y compris pendant la reprise),
+            // la réponse n'est jamais livrée : on la ferme pour libérer la connexion.
+            cont.resume(response) { _, value, _ -> value.close() }
         }
     })
 }
@@ -38,11 +40,15 @@ suspend fun OkHttpClient.fetchString(request: Request): String {
         throw RemoteException("Appareil injoignable (${request.url.host})", e)
     }
     response.use {
-        val body = it.body.string()
         if (!it.isSuccessful) {
             throw HttpStatusException(it.code, "HTTP ${it.code} sur ${request.url.encodedPath}")
         }
-        return body
+        // La lecture du corps peut elle aussi échouer (connexion coupée, délai dépassé).
+        return try {
+            it.body.string()
+        } catch (e: IOException) {
+            throw RemoteException("Réponse interrompue (${request.url.host})", e)
+        }
     }
 }
 
