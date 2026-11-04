@@ -1,15 +1,13 @@
 package io.github.jmorille.zapette.upnp
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
+import io.github.jmorille.zapette.model.UdpDestination
+import io.github.jmorille.zapette.model.UdpOptions
+import io.github.jmorille.zapette.model.UdpSocketFactory
+import io.github.jmorille.zapette.model.discover
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import java.net.DatagramPacket
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.MulticastSocket
 import java.net.NetworkInterface
-import java.net.SocketTimeoutException
+import kotlin.time.TimeSource
 
 /** Réponse SSDP (en-têtes normalisés en majuscules). */
 data class SsdpResponse(val headers: Map<String, String>, val sourceAddress: String) {
@@ -83,46 +81,33 @@ object Ssdp {
     /**
      * Envoie un M-SEARCH et collecte les réponses pendant [timeoutMs] (durée totale bornée).
      * [networkInterface] force l'interface d'émission (Wi-Fi/Ethernet) quand l'appareil en a plusieurs.
-     * Les réponses dont LOCATION ne désigne pas l'émetteur sont ignorées.
+     * Les réponses dont LOCATION ne désigne pas l'émetteur sont ignorées ; les doublons sont
+     * fusionnés par USN (à défaut par LOCATION). [sockets] et [timeSource] sont injectables pour les tests.
      */
     suspend fun search(
         searchTarget: String,
         timeoutMs: Int = 3_000,
         networkInterface: NetworkInterface? = null,
-    ): List<SsdpResponse> = withContext(Dispatchers.IO) {
-        val results = linkedMapOf<String, SsdpResponse>()
-        MulticastSocket(null).use { socket ->
-            socket.reuseAddress = true
-            socket.bind(InetSocketAddress(0))
-            socket.timeToLive = MULTICAST_TTL
-            networkInterface?.let { socket.networkInterface = it }
-            // MX inférieur à la fenêtre d'écoute pour laisser aux réponses le temps d'arriver.
-            val mx = (timeoutMs / 1000 - 1).coerceIn(1, 5)
-            val data = searchMessage(searchTarget, mx).toByteArray(Charsets.US_ASCII)
-            val group = InetAddress.getByName(MULTICAST_ADDRESS)
+        sockets: UdpSocketFactory = UdpSocketFactory.Default,
+        timeSource: TimeSource = TimeSource.Monotonic,
+    ): List<SsdpResponse> {
+        // MX inférieur à la fenêtre d'écoute pour laisser aux réponses le temps d'arriver.
+        val mx = (timeoutMs / 1000 - 1).coerceIn(1, 5)
+        val data = searchMessage(searchTarget, mx).toByteArray(Charsets.US_ASCII)
+        val group = UdpDestination(MULTICAST_ADDRESS, PORT)
+        return sockets.discover(
+            options = UdpOptions(multicastTtl = MULTICAST_TTL, networkInterface = networkInterface),
             // UDP n'étant pas fiable, le M-SEARCH est émis deux fois.
-            repeat(2) { socket.send(DatagramPacket(data, data.size, group, PORT)) }
-            val buffer = ByteArray(8192)
-            val deadline = System.currentTimeMillis() + timeoutMs
-            while (true) {
-                ensureActive()
-                val remaining = deadline - System.currentTimeMillis()
-                if (remaining <= 0) break
-                // Attente bornée au temps restant, et courte pour rester annulable.
-                socket.soTimeout = remaining.coerceIn(1, 500).toInt()
-                val packet = DatagramPacket(buffer, buffer.size)
-                try {
-                    socket.receive(packet)
-                } catch (_: SocketTimeoutException) {
-                    continue
-                }
-                val payload = String(packet.data, packet.offset, packet.length, Charsets.UTF_8)
-                val response = parse(payload, packet.address.hostAddress) ?: continue
-                if (!response.hasTrustedLocation) continue
-                val key = response.usn ?: response.location ?: continue
-                results[key] = response
-            }
+            destinations = listOf(group, group),
+            payload = data,
+            timeoutMs = timeoutMs.toLong(),
+            timeSource = timeSource,
+        ) { datagram ->
+            val source = datagram.sourceAddress ?: return@discover null
+            val response = parse(datagram.text(), source) ?: return@discover null
+            if (!response.hasTrustedLocation) return@discover null
+            val key = response.usn ?: response.location ?: return@discover null
+            key to response
         }
-        results.values.toList()
     }
 }

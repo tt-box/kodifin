@@ -8,19 +8,18 @@ import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.fetchString
 import io.github.jmorille.zapette.model.requireKey
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
+import io.github.jmorille.zapette.model.UdpDestination
+import io.github.jmorille.zapette.model.UdpOptions
+import io.github.jmorille.zapette.model.UdpSocketFactory
+import io.github.jmorille.zapette.model.discover
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.TimeSource
 
 /**
  * Contrôle direct d'un lecteur Plex (Plex HTPC, Plex pour TV…) via l'API
@@ -47,16 +46,17 @@ class PlexController(
         // Identifiant `PLEX:<id>` issu de GDM ; un identifiant manuel `PLEX:hôte:port` n'en est pas un.
         ?: device.id.takeIf { it.startsWith("PLEX:") }?.removePrefix("PLEX:")?.takeIf { it.isNotBlank() && ':' !in it }
 
+    /** Jeton du compte plex.tv, transmis uniquement à un lecteur local (voir [request]). */
+    private val token: String? = device.extras[EXTRA_TOKEN]?.ifBlank { null }
+
     /**
-     * Le jeton du compte n'est transmis qu'à un lecteur du réseau local : l'API du lecteur
+     * Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local : l'API du lecteur
      * est en HTTP clair, l'envoyer à un hôte public l'exposerait.
      */
-    internal val token: String? = device.extras[EXTRA_TOKEN]?.takeIf { isLocalHost(device.host) }
-
     private fun request(url: HttpUrl): Request.Builder {
         val builder = identity.apply(Request.Builder().url(url))
         targetClientId?.let { builder.header("X-Plex-Target-Client-Identifier", it) }
-        token?.let { builder.header("X-Plex-Token", it) }
+        token?.takeIf { isLocalHost(url.host) }?.let { builder.header("X-Plex-Token", it) }
         return builder.get()
     }
 
@@ -125,7 +125,6 @@ class PlexController(
         private const val MEDIA_TYPE = "video"
         private const val VOLUME_STEP = 10
         private const val DEFAULT_VOLUME = 50
-        private const val RECEIVE_SLICE_MS = 250
 
         val COMMANDS: Map<RemoteKey, String> = mapOf(
             RemoteKey.UP to "/player/navigation/moveUp",
@@ -161,19 +160,43 @@ class PlexController(
             return (active + timelines).firstNotNullOfOrNull { it["volume"]?.toIntOrNull() }?.coerceIn(0, 100)
         }
 
+        private val DOTTED_QUAD = Regex("""(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}""")
+        private val HEX = Regex("0x[0-9a-f]*")
+        private val LABEL = Regex("[a-z0-9]([a-z0-9-]*[a-z0-9])?")
+
         /**
          * Hôte du réseau local : adresse privée, de lien local, de boucle ou IPv6 ULA,
          * ou nom sans domaine / en `.local`, `.lan`, `.home.arpa`. Aucune résolution DNS.
+         *
+         * Les formes numériques ambiguës (`134744072`, `0x08080808`, `8.8.2056`, zéros de tête
+         * interprétés en octal) sont refusées : un résolveur les traduirait en adresse publique.
+         * Le point final (`nom.local.`) et l'adresse joker `0.0.0.0` sont refusés.
          */
         internal fun isLocalHost(host: String): Boolean {
             val h = host.removePrefix("[").removeSuffix("]").lowercase()
-            val isLiteral = h.contains(':') || h.matches(Regex("\\d{1,3}(\\.\\d{1,3}){3}"))
-            if (!isLiteral) {
-                return h == "localhost" || !h.contains('.') ||
-                    h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")
+            if (h.isEmpty()) return false
+            if (':' in h) return isLocalAddress(h)
+            if (DOTTED_QUAD.matches(h)) return isLocalAddress(h)
+            val labels = h.split('.')
+            // Nombre seul, hexadécimal ou quadruplet non canonique : potentiellement une IPv4 déguisée.
+            if (labels.all { it.isNotEmpty() && (it.all(Char::isDigit) || HEX.matches(it)) }) return false
+            if (labels.any { !LABEL.matches(it) }) return false // vide (point final) ou caractère invalide
+            if (labels.last().all(Char::isDigit)) return false
+            return h == "localhost" || labels.size == 1 ||
+                h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")
+        }
+
+        /** Adresse littérale (IPv4 canonique ou IPv6) du réseau local ; IPv4 mappée évaluée en IPv4. */
+        private fun isLocalAddress(literal: String): Boolean {
+            val address = runCatching { InetAddress.getByName(literal) }.getOrNull() ?: return false
+            val bytes = address.address
+            // ::ffff:a.b.c.d : certaines JVM la renvoient en Inet6Address, on évalue l'IPv4 incluse.
+            if (address is Inet6Address && bytes.size == 16 &&
+                (0 until 10).all { bytes[it].toInt() == 0 } && bytes[10].toInt() == -1 && bytes[11].toInt() == -1
+            ) {
+                return isLocalAddress(bytes.copyOfRange(12, 16).joinToString(".") { (it.toInt() and 0xff).toString() })
             }
-            val address = runCatching { InetAddress.getByName(h) }.getOrNull() ?: return false
-            val uniqueLocalV6 = address is Inet6Address && (address.address[0].toInt() and 0xfe) == 0xfc
+            val uniqueLocalV6 = address is Inet6Address && (bytes[0].toInt() and 0xfe) == 0xfc
             return address.isSiteLocalAddress || address.isLinkLocalAddress || address.isLoopbackAddress || uniqueLocalV6
         }
 
@@ -197,34 +220,23 @@ class PlexController(
             )
         }
 
-        /** Découverte GDM des lecteurs Plex sur le réseau local. */
-        suspend fun discover(timeoutMs: Int = 2_000): List<Device> = withContext(Dispatchers.IO) {
-            val found = linkedMapOf<String, Device>()
-            DatagramSocket().use { socket ->
-                socket.broadcast = true
-                val data = "M-SEARCH * HTTP/1.0\r\n\r\n".toByteArray(Charsets.US_ASCII)
-                // Un échec d'envoi sur une des deux destinations ne doit pas empêcher l'autre.
-                runCatching { socket.send(DatagramPacket(data, data.size, InetAddress.getByName(GDM_ADDRESS), GDM_PLAYER_PORT)) }
-                runCatching { socket.send(DatagramPacket(data, data.size, InetAddress.getByName("255.255.255.255"), GDM_PLAYER_PORT)) }
-                val buffer = ByteArray(8192)
-                // Échéance globale : des réponses continues ne prolongent pas l'écoute.
-                val deadline = System.nanoTime() + timeoutMs * 1_000_000L
-                while (true) {
-                    ensureActive()
-                    val remainingMs = (deadline - System.nanoTime()) / 1_000_000L
-                    if (remainingMs <= 0) break
-                    socket.soTimeout = remainingMs.coerceAtMost(RECEIVE_SLICE_MS.toLong()).toInt().coerceAtLeast(1)
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    try {
-                        socket.receive(packet)
-                    } catch (_: SocketTimeoutException) {
-                        continue
-                    }
-                    val source = packet.address?.hostAddress ?: continue
-                    parseGdm(String(packet.data, packet.offset, packet.length, Charsets.UTF_8), source)?.let { found[it.id] = it }
-                }
-            }
-            found.values.toList()
+        /**
+         * Découverte GDM des lecteurs Plex sur le réseau local (multicast et diffusion ;
+         * un échec d'envoi vers l'une des destinations n'empêche pas l'autre).
+         */
+        suspend fun discover(
+            timeoutMs: Int = 2_000,
+            sockets: UdpSocketFactory = UdpSocketFactory.Default,
+            timeSource: TimeSource = TimeSource.Monotonic,
+        ): List<Device> = sockets.discover(
+            options = UdpOptions(broadcast = true),
+            destinations = listOf(UdpDestination(GDM_ADDRESS, GDM_PLAYER_PORT), UdpDestination("255.255.255.255", GDM_PLAYER_PORT)),
+            payload = "M-SEARCH * HTTP/1.0\r\n\r\n".toByteArray(Charsets.US_ASCII),
+            timeoutMs = timeoutMs.toLong(),
+            timeSource = timeSource,
+        ) { datagram ->
+            val source = datagram.sourceAddress ?: return@discover null
+            parseGdm(datagram.text(), source)?.let { it.id to it }
         }
     }
 }

@@ -55,7 +55,12 @@ class SoapClient(private val http: OkHttpClient) {
         } catch (e: IOException) {
             throw RemoteException("Appareil UPnP injoignable", e)
         }
-        val (code, body) = response.use { it.code to it.body.string() }
+        val (code, body) = try {
+            response.use { it.code to it.body.string() }
+        } catch (e: IOException) {
+            // Corps interrompu : même erreur métier qu'un appareil injoignable.
+            throw RemoteException("Réponse UPnP interrompue pour $action", e)
+        }
         if (code !in 200..299 && code != 500) throw HttpStatusException(code, "UPnP $action : HTTP $code")
         // Certains renderers répondent 200 sans corps aux actions sans argument de sortie.
         if (code in 200..299 && body.isBlank()) return emptyMap()
