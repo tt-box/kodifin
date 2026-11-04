@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -119,7 +120,7 @@ fun MediaProgress(
         if (chapters.size > 1) {
             // Bande de chapitres : largeur proportionnelle à la durée, chapitre courant en évidence.
             Row(
-                Modifier.fillMaxWidth().height(28.dp).padding(top = 4.dp).clip(RoundedCornerShape(6.dp)),
+                Modifier.fillMaxWidth().padding(top = 6.dp).height(40.dp).clip(RoundedCornerShape(8.dp)),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 chapters.forEachIndexed { i, c ->
@@ -137,15 +138,15 @@ fun MediaProgress(
                             }
                             .semantics { contentDescription = chapterLabel(chapters, i) + " à " + formatHms(c.startMs) },
                     ) {
-                        if (weight > 0.06f) {
+                        if (weight > 0.06f) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 c.name ?: "${i + 1}",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 textAlign = TextAlign.Center,
                                 color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 6.dp),
                             )
                         }
                     }
