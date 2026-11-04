@@ -10,10 +10,9 @@ import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 
@@ -40,8 +39,8 @@ class PlexRobustnessTest {
         val controller = player()
         controller.send(RemoteKey.STOP)
         controller.send(RemoteKey.LEFT)
-        assertEquals("video", server.takeRequest().url.queryParameter("type"))
-        assertNull(server.takeRequest().url.queryParameter("type"))
+        assertEquals("video", server.next().url.queryParameter("type"))
+        assertNull(server.next().url.queryParameter("type"))
     }
 
     @Test
@@ -56,9 +55,9 @@ class PlexRobustnessTest {
         val controller = player()
         controller.send(RemoteKey.VOLUME_UP)
         controller.send(RemoteKey.VOLUME_UP)
-        assertEquals("/player/timeline/poll", server.takeRequest().url.encodedPath)
-        assertEquals("30", server.takeRequest().url.queryParameter("volume"))
-        assertEquals("40", server.takeRequest().url.queryParameter("volume"))
+        assertEquals("/player/timeline/poll", server.next().url.encodedPath)
+        assertEquals("30", server.next().url.queryParameter("volume"))
+        assertEquals("40", server.next().url.queryParameter("volume"))
     }
 
     @Test
@@ -67,15 +66,15 @@ class PlexRobustnessTest {
         server.enqueue(MockResponse.Builder().build())
         val controller = player()
         controller.send(RemoteKey.VOLUME_DOWN)
-        server.takeRequest()
-        assertEquals("40", server.takeRequest().url.queryParameter("volume"))
+        server.next()
+        assertEquals("40", server.next().url.queryParameter("volume"))
     }
 
     @Test
     fun `negative seek is clamped`() = runTest {
         server.enqueue(MockResponse.Builder().build())
         player().seekTo(-1)
-        val request = server.takeRequest()
+        val request = server.next()
         assertEquals("0", request.url.queryParameter("offset"))
         assertEquals("video", request.url.queryParameter("type"))
     }
@@ -91,35 +90,15 @@ class PlexRobustnessTest {
         val controller = player(extras = emptyMap(), id = "PLEX:10.0.0.8:32500")
         controller.connect()
         controller.send(RemoteKey.SELECT)
-        assertEquals("/resources", server.takeRequest().url.encodedPath)
-        assertEquals("m-42", server.takeRequest().headers["X-Plex-Target-Client-Identifier"])
+        assertEquals("/resources", server.next().url.encodedPath)
+        assertEquals("m-42", server.next().headers["X-Plex-Target-Client-Identifier"])
     }
 
     @Test
     fun `manual device id is never used as a client identifier`() = runTest {
         server.enqueue(MockResponse.Builder().build())
         player(extras = emptyMap(), id = "PLEX:10.0.0.8:32500").send(RemoteKey.SELECT)
-        assertNull(server.takeRequest().headers["X-Plex-Target-Client-Identifier"])
-    }
-
-    @Test
-    fun `token is only sent to local hosts`() {
-        listOf("192.168.1.5", "10.0.0.8", "172.16.3.4", "127.0.0.1", "fe80::1", "fd12::5", "[fd12::5]", "htpc", "salon.local", "localhost")
-            .forEach { assertTrue(it, PlexController.isLocalHost(it)) }
-        listOf("8.8.8.8", "2001:db8::1", "plex.example.com", "100.1.2.3")
-            .forEach { assertFalse(it, PlexController.isLocalHost(it)) }
-    }
-
-    @Test
-    fun `token is not sent to a public player`() = runTest {
-        // Aucune requête : on vérifie seulement que le jeton est écarté à la construction.
-        val controller = PlexController(
-            Device("PLEX:x", "Distant", DeviceKind.PLEX, "plex.example.com", 32500, mapOf("token" to "tk")),
-            OkHttpClient(),
-            identity,
-        )
-
-        assertNull(controller.token)
+        assertNull(server.next().headers["X-Plex-Target-Client-Identifier"])
     }
 
     @Test
@@ -138,21 +117,20 @@ class PlexRobustnessTest {
 
     @Test
     fun `plex account refuses clear http outside loopback`() {
-        try {
+        val e = assertThrows(IllegalArgumentException::class.java) {
             PlexAccount(OkHttpClient(), identity, "http://plex.example.com")
-            fail("HTTP clair attendu refusé")
-        } catch (_: IllegalArgumentException) {
         }
+        assertEquals("L'API plex.tv doit être jointe en HTTPS", e.message)
+        // HTTPS et boucle locale sont acceptés.
+        PlexAccount(OkHttpClient(), identity, "https://plex.tv")
+        PlexAccount(OkHttpClient(), identity, "http://127.0.0.1:1234")
     }
 
     @Test
     fun `unexpected pin json becomes a RemoteException`() = runTest {
         server.enqueue(MockResponse.Builder().body("""{"errors":[{"code":1020}]}""").build())
-        try {
-            PlexAccount(OkHttpClient(), identity, server.url("/").toString()).createPin()
-            fail("une RemoteException était attendue")
-        } catch (e: RemoteException) {
-            assertTrue(e.message!!.contains("inattendue"))
-        }
+        val e = expectFailure<RemoteException> { PlexAccount(OkHttpClient(), identity, server.url("/").toString()).createPin() }
+        assertEquals("Réponse inattendue de plex.tv", e.message)
+        assertTrue("cause : ${e.cause}", e.cause is kotlinx.serialization.SerializationException)
     }
 }

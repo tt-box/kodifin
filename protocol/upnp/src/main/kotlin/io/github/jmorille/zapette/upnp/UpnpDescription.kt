@@ -31,6 +31,36 @@ object UpnpXml {
     /** Motif de détection d'une déclaration de type de document (DTD), interdite ici. */
     private val DOCTYPE = Regex("<!DOCTYPE", RegexOption.IGNORE_CASE)
 
+    /** Taille maximale d'un document (description, réponse SOAP) : largement au-delà des cas réels. */
+    const val MAX_DOCUMENT_CHARS = 512 * 1024
+
+    /** Profondeur maximale d'imbrication des éléments. */
+    const val MAX_DEPTH = 64
+
+    /**
+     * Estime la profondeur d'imbrication avant l'analyse DOM (borne contre les documents
+     * pathologiques) ; commentaires, CDATA et instructions de traitement sont sautés.
+     */
+    private fun checkDepth(xml: String) {
+        var depth = 0
+        var i = xml.indexOf('<')
+        while (i >= 0 && i < xml.length - 1) {
+            val next = xml[i + 1]
+            val end = when {
+                xml.startsWith("<!--", i) -> xml.indexOf("-->", i).let { if (it < 0) -1 else it + 2 }
+                xml.startsWith("<![CDATA[", i) -> xml.indexOf("]]>", i).let { if (it < 0) -1 else it + 2 }
+                else -> xml.indexOf('>', i)
+            }
+            if (end < 0) return // document tronqué : l'analyseur le rejettera
+            when {
+                next == '/' -> depth--
+                next == '!' || next == '?' -> Unit
+                xml[end - 1] != '/' -> if (++depth > MAX_DEPTH) throw SAXException("Document UPnP trop imbriqué")
+            }
+            i = xml.indexOf('<', end + 1)
+        }
+    }
+
     /**
      * Analyse un document XML sans DTD. Les DOCTYPE sont refusés avant l'analyse : sur Android,
      * le DocumentBuilderFactory ne prend pas en charge les fonctionnalités Xerces
@@ -38,7 +68,9 @@ object UpnpXml {
      * Le résolveur d'entités vide reste une seconde barrière contre les entités externes.
      */
     internal fun parseDocument(xml: String): Element {
+        if (xml.length > MAX_DOCUMENT_CHARS) throw SAXException("Document UPnP trop volumineux (${xml.length} caractères)")
         if (DOCTYPE.containsMatchIn(xml)) throw SAXException("DOCTYPE interdit dans un document UPnP")
+        checkDepth(xml)
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
             isValidating = false
@@ -80,18 +112,26 @@ object UpnpXml {
      * Analyse la description d'appareil et résout les URL relatives (par rapport à URLBase si elle
      * est valide, sinon à [location], conformément à UDA 1.1). Lève [SAXException] si le document
      * est invalide ou incomplet.
+     *
+     * Protection SSRF : les requêtes SOAP ne doivent viser que l'appareil décrit. Une URLBase
+     * désignant un autre hôte que [location] est ignorée (repli sur [location]) ; un service dont
+     * l'URL de contrôle résolue désigne un autre hôte, ou un schéma autre que http/https, est ignoré.
      */
     fun parseDescription(xml: String, location: String): UpnpDeviceDescription {
         val root = parseDocument(xml)
         val locationUrl = location.toHttpUrlOrNull() ?: throw SAXException("URL de description invalide : $location")
-        val base: HttpUrl = root.text("URLBase")?.let { locationUrl.resolve(it) } ?: locationUrl
+        val base: HttpUrl = root.text("URLBase")
+            ?.let { locationUrl.resolve(it) }
+            ?.takeIf { it.host == locationUrl.host }
+            ?: locationUrl
         val device = root.child("device") ?: throw SAXException("Élément <device> absent")
         val services = mutableListOf<UpnpService>()
         fun collect(d: Element) {
             d.child("serviceList")?.children("service")?.forEach { s ->
                 val type = s.text("serviceType") ?: return@forEach
                 val control = s.text("controlURL") ?: return@forEach
-                val url = base.resolve(control) ?: return@forEach
+                // resolve() n'aboutit que pour http/https : file:, javascript:… sont écartés.
+                val url = base.resolve(control)?.takeIf { it.host == locationUrl.host } ?: return@forEach
                 services += UpnpService(type, url.toString())
             }
             d.child("deviceList")?.children("device")?.forEach(::collect)

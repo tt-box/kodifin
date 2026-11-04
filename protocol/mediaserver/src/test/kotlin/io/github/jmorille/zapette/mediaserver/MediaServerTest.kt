@@ -47,16 +47,16 @@ class MediaServerTest {
         controller.connect()
         controller.send(RemoteKey.PLAY_PAUSE)
 
-        val auth = server.takeRequest()
+        val auth = server.next()
         assertEquals("/Users/AuthenticateByName", auth.url.encodedPath)
         assertTrue(auth.body!!.utf8().contains("\"Username\":\"jo\""))
         assertTrue(auth.headers["Authorization"]!!.startsWith("MediaBrowser Client=\"Zapette\""))
 
-        val sessions = server.takeRequest()
+        val sessions = server.next()
         assertEquals("u1", sessions.url.queryParameter("ControllableByUserId"))
         assertTrue(sessions.headers["Authorization"]!!.contains("Token=\"tok\""))
 
-        assertEquals("/Sessions/tv/Playing/PlayPause", server.takeRequest().url.encodedPath)
+        assertEquals("/Sessions/tv/Playing/PlayPause", server.next().url.encodedPath)
 
         val persisted = controller.persistableExtras()
         assertEquals("tok", persisted["token"])
@@ -73,7 +73,7 @@ class MediaServerTest {
             "dev-1",
         )
         controller.send(RemoteKey.UP)
-        val request = server.takeRequest()
+        val request = server.next()
         assertEquals("/Sessions/s9/Command", request.url.encodedPath)
         assertTrue(request.headers["X-Emby-Authorization"]!!.contains("Token=\"abc\""))
         assertTrue(request.body!!.utf8().contains("\"Name\":\"MoveUp\""))
@@ -88,7 +88,7 @@ class MediaServerTest {
             "dev",
         )
         controller.seekTo(1_500)
-        assertEquals("15000000", server.takeRequest().url.queryParameter("seekPositionTicks"))
+        assertEquals("15000000", server.next().url.queryParameter("seekPositionTicks"))
     }
 
     @Test

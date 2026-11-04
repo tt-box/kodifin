@@ -117,6 +117,11 @@ class UpnpRendererController(
         avTransport("Play", "Speed" to "1")
     }
 
+    /**
+     * Sonde l'état toutes les [pollIntervalMs] ms. Volume et sourdine sont facultatifs (état émis
+     * sans eux en cas d'échec) ; une erreur sur AVTransport (transport, description) termine le flux
+     * avec une [RemoteException], au collecteur de décider d'une reprise.
+     */
     override fun playbackState(): Flow<PlaybackState> = flow {
         while (true) {
             val transport = avTransport("GetTransportInfo")

@@ -93,30 +93,48 @@ class MediaServerController(
         if (pinnedSessionId == stale) pinnedSessionId = null
     }
 
-    /** Oublie le jeton refusé puis tente une nouvelle authentification. */
+    /**
+     * Renouvelle le jeton [refused] s'il est encore le jeton courant : des requêtes parallèles
+     * refusées avec le même jeton ne déclenchent qu'une seule authentification. Le jeton refusé
+     * reste en place pendant l'authentification et n'est oublié qu'en cas d'échec.
+     */
     private suspend fun renewToken(refused: String?) = mutex.withLock {
         if (client.accessToken == refused) {
-            client.accessToken = null
-            authenticateLocked()
+            try {
+                authenticateLocked()
+            } catch (e: Throwable) {
+                if (client.accessToken == refused) client.accessToken = null
+                throw e
+            }
         }
     }
 
     /**
-     * Exécute [action] sur la session courante. Au plus une nouvelle tentative :
-     * après une nouvelle authentification (401) ou une nouvelle sélection de session (404).
+     * Exécute [action] sur la session courante. Au plus une nouvelle authentification (401) et
+     * une nouvelle sélection de session (404) : un second 401 ou un second 404 est remonté tel quel,
+     * sans boucle.
      */
     private suspend fun <T> withSession(action: suspend (String) -> T): T {
-        val token = client.accessToken
-        val id = session()
-        return try {
-            action(id)
-        } catch (e: HttpStatusException) {
-            when (e.code) {
-                401 -> renewToken(token)
-                404 -> forgetSession(id)
-                else -> throw e
+        var renewed = false
+        var reselected = false
+        while (true) {
+            val token = client.accessToken
+            val id = session()
+            try {
+                return action(id)
+            } catch (e: HttpStatusException) {
+                when {
+                    e.code == 401 && !renewed -> {
+                        renewed = true
+                        renewToken(token)
+                    }
+                    e.code == 404 && !reselected -> {
+                        reselected = true
+                        forgetSession(id)
+                    }
+                    else -> throw e
+                }
             }
-            action(session())
         }
     }
 
@@ -187,9 +205,20 @@ class MediaServerController(
         const val EXTRA_SESSION_ID = "sessionId"
         const val EXTRA_TOKEN = "token"
 
+        /**
+         * URL du serveur : [Device.baseUrl] impose `http` ; le schéma `https` annoncé à la
+         * découverte (extra [MediaServerDiscovery.EXTRA_SCHEME]) est respecté.
+         */
+        internal fun baseUrl(device: Device): String =
+            if (device.extras[MediaServerDiscovery.EXTRA_SCHEME] == "https") {
+                "https://" + device.baseUrl.removePrefix("http://")
+            } else {
+                device.baseUrl
+            }
+
         fun create(device: Device, http: OkHttpClient, deviceId: String): MediaServerController {
             val flavor = if (device.kind == DeviceKind.EMBY) MediaServerFlavor.EMBY else MediaServerFlavor.JELLYFIN
-            val client = MediaServerClient(http, device.baseUrl, flavor, deviceId, device.extras[EXTRA_TOKEN])
+            val client = MediaServerClient(http, baseUrl(device), flavor, deviceId, device.extras[EXTRA_TOKEN])
             return MediaServerController(device, client, ownDeviceId = deviceId)
         }
     }

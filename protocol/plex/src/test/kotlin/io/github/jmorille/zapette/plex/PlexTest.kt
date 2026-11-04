@@ -35,13 +35,13 @@ class PlexTest {
         controller.send(RemoteKey.UP)
         controller.send(RemoteKey.PLAY_PAUSE)
 
-        val first = server.takeRequest()
+        val first = server.next()
         assertEquals("/player/navigation/moveUp", first.url.encodedPath)
         assertEquals("1", first.url.queryParameter("commandID"))
         assertEquals("abc", first.headers["X-Plex-Target-Client-Identifier"])
         assertEquals("tk", first.headers["X-Plex-Token"])
         assertEquals("zapette-test", first.headers["X-Plex-Client-Identifier"])
-        val second = server.takeRequest()
+        val second = server.next()
         assertEquals("/player/playback/playPause", second.url.encodedPath)
         assertEquals("2", second.url.queryParameter("commandID"))
     }
@@ -56,8 +56,8 @@ class PlexTest {
         assertEquals("ABCD", pin.code)
         assertNull(account.checkPin(pin))
         assertEquals("secret", account.checkPin(pin))
-        assertEquals("POST", server.takeRequest().method)
-        assertEquals("/api/v2/pins/42", server.takeRequest().url.encodedPath)
+        assertEquals("POST", server.next().method)
+        assertEquals("/api/v2/pins/42", server.next().url.encodedPath)
     }
 
     @Test
@@ -70,7 +70,7 @@ class PlexTest {
         )
         val resources = PlexAccount(OkHttpClient(), identity, server.url("/").toString().trimEnd('/')).resources("tok")
         assertEquals(listOf("Salon"), resources.filter { it.isPlayer }.map { it.name })
-        assertEquals("tok", server.takeRequest().headers["X-Plex-Token"])
+        assertEquals("tok", server.next().headers["X-Plex-Token"])
     }
 
     @Test
