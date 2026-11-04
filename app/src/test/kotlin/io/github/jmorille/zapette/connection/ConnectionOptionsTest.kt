@@ -61,7 +61,7 @@ class DeviceOptionsTest {
         assertEquals(emptyMap<String, String>(), DeviceOptions.apply(emptyMap(), DeviceKind.KODI, AdvancedOptions()))
 
         val options = AdvancedOptions(
-            https = true, kodiWebSocket = true, kodiWebSocketPort = "9091",
+            mode = ConnectionMode.HTTPS, kodiWebSocket = true, kodiWebSocketPort = "9091",
             wolMac = "58-47-ca-7e-0d-48", wolBroadcast = "192.168.30.255", wolPort = "7", wolAuto = true,
         )
         val extras = DeviceOptions.apply(mapOf("username" to "kodi"), DeviceKind.KODI, options)
@@ -80,7 +80,7 @@ class DeviceOptionsTest {
         val before = mapOf("scheme" to "https", "kodi_ws" to "true", "wol_mac" to "58:47:CA:7E:0D:48", "token" to "t")
         assertEquals(mapOf("token" to "t"), DeviceOptions.apply(before, DeviceKind.KODI, AdvancedOptions()))
         // HTTPS et WebSocket n'existent pas pour Roku ; Wake-on-LAN pas pour Chromecast.
-        val roku = DeviceOptions.apply(emptyMap(), DeviceKind.ROKU, AdvancedOptions(https = true, kodiWebSocket = true))
+        val roku = DeviceOptions.apply(emptyMap(), DeviceKind.ROKU, AdvancedOptions(mode = ConnectionMode.HTTPS, kodiWebSocket = true))
         assertEquals(emptyMap<String, String>(), roku)
         val cast = DeviceOptions.apply(emptyMap(), DeviceKind.CHROMECAST, AdvancedOptions(wolMac = "58:47:CA:7E:0D:48"))
         assertEquals(emptyMap<String, String>(), cast)
@@ -147,7 +147,7 @@ class EditDeviceTest {
 
     @Test
     fun `advanced options are applied on save`() {
-        val draft = buildDevice(saved, DeviceKind.KODI, "Salon", "10.0.0.2", "8080", "", "kodi", "", AdvancedOptions(https = true))
+        val draft = buildDevice(saved, DeviceKind.KODI, "Salon", "10.0.0.2", "8080", "", "kodi", "", AdvancedOptions(mode = ConnectionMode.HTTPS))
         assertEquals("https", draft.device.extras["scheme"])
         assertFalse(draft.device.extras.containsKey("wol_mac"))
     }
@@ -169,6 +169,7 @@ class ConnectionTestTest {
     fun `success connects then disconnects`() = runTest {
         lateinit var fake: Fake
         val result = testConnection(KODI) { Fake(it) {}.also { f -> fake = f } }
+
         assertEquals(ConnectionTestResult.Success("Connexion réussie à Salon (Kodi)"), result)
         assertEquals(1, fake.disconnected)
     }
@@ -178,6 +179,7 @@ class ConnectionTestTest {
         lateinit var fake: Fake
         val result = testConnection(KODI) { Fake(it) { throw RemoteException("Kodi refuse : 401") }.also { f -> fake = f } }
         assertEquals(ConnectionTestResult.Failure("Kodi refuse : 401"), result)
+        assertNull((result as ConnectionTestResult.Failure).advice)
         assertEquals(1, fake.disconnected)
     }
 
@@ -185,7 +187,9 @@ class ConnectionTestTest {
     fun `timeout is reported as a failure`() = runTest {
         lateinit var fake: Fake
         val result = testConnection(KODI, timeoutMs = 2_000) { Fake(it) { awaitCancellation() }.also { f -> fake = f } }
-        assertEquals(ConnectionTestResult.Failure("Salon ne répond pas (délai de 2 s dépassé)"), result)
+        result as ConnectionTestResult.Failure
+        assertEquals("Salon : Délai dépassé (2 s)", result.message)
+        assertEquals(Problem.TIMEOUT, result.problem)
         assertEquals(1, fake.disconnected)
     }
 

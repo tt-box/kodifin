@@ -9,6 +9,13 @@
     <!-- Verrou multicast : réception des réponses mDNS / SSDP / GDM pendant la découverte. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!--
+      Lecture du nom du réseau Wi-Fi (SSID) pour la restriction « réseaux autorisés » d'un
+      appareil : Android l'exige. Demandée à l'exécution uniquement quand l'utilisateur saisit
+      des SSID ; la position n'est jamais lue. COARSE accompagne FINE (exigence Android 12+).
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!--
       Non demandées volontairement :
       - NEARBY_WIFI_DEVICES : réservée au Wi-Fi Direct / Aware et au scan Wi-Fi ; NsdManager
         et les sockets multicast n'en ont pas besoin.

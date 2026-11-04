@@ -98,3 +98,12 @@ fun parseHms(value: String?): Long {
     if (h < 0 || m < 0 || !s.isFinite() || s < 0) return 0
     return h * 3_600_000 + m * 60_000 + (s * 1000).toLong()
 }
+
+/**
+ * Implémenté par les contrôleurs capables de décrire le serveur joint (produit, version) :
+ * le test de connexion l'affiche, par exemple « Kodi 21.2 (JSON-RPC 13.5.0) ».
+ */
+interface DescribesServer {
+    /** Description courte du serveur, ou `null` si elle n'est pas disponible. À appeler après `connect()`. */
+    suspend fun serverDescription(): String?
+}

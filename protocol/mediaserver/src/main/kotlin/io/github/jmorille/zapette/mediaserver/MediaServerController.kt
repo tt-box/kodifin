@@ -1,6 +1,7 @@
 package io.github.jmorille.zapette.mediaserver
 
 import io.github.jmorille.zapette.model.Capability
+import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.HttpStatusException
@@ -30,7 +31,7 @@ class MediaServerController(
     private val client: MediaServerClient,
     private val pollIntervalMs: Long = 2_000,
     private val ownDeviceId: String? = null,
-) : RemoteController, PersistsCredentials {
+) : RemoteController, PersistsCredentials, DescribesServer {
 
     override fun persistableExtras(): Map<String, String> = buildMap {
         putAll(device.extras - EXTRA_PASSWORD - EXTRA_SESSION_ID - EXTRA_TOKEN - EXTRA_USER_ID)
@@ -58,6 +59,9 @@ class MediaServerController(
     @Volatile private var pinnedSessionId: String? = device.extras[EXTRA_SESSION_ID]
 
     @Volatile private var sessionId: String? = pinnedSessionId
+
+    /** « Jellyfin Server 10.10.3 – thor » (Emby ne publie pas `ProductName`). */
+    override suspend fun serverDescription(): String = describe(device.kind, client.publicInfo())
 
     override suspend fun connect() {
         try {
@@ -262,6 +266,13 @@ class MediaServerController(
                 device.baseUrl
             }
             return root + normalizeBasePath(device.extras[EXTRA_BASE_PATH]).orEmpty()
+        }
+
+        /** Description lisible des informations publiques du serveur (logique pure). */
+        fun describe(kind: DeviceKind, info: PublicInfoDto): String {
+            val product = info.productName?.takeIf { it.isNotBlank() } ?: kind.label
+            val head = listOfNotNull(product, info.version?.takeIf { it.isNotBlank() }).joinToString(" ")
+            return info.serverName?.takeIf { it.isNotBlank() }?.let { "$head – $it" } ?: head
         }
 
         fun create(device: Device, http: OkHttpClient, deviceId: String): MediaServerController {

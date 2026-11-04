@@ -23,10 +23,25 @@ import androidx.compose.material3.Switch
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.input.VisualTransformation
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.semantics.Role
 import io.github.jmorille.zapette.connection.AdvancedOptions
+import io.github.jmorille.zapette.connection.AndroidNetworkInfo
+import io.github.jmorille.zapette.connection.ConnectionMode
 import io.github.jmorille.zapette.connection.ConnectionTestResult
 import io.github.jmorille.zapette.connection.DeviceOptions
+import io.github.jmorille.zapette.connection.NetworkGuard
+import io.github.jmorille.zapette.connection.Problem
 import io.github.jmorille.zapette.connection.testConnection
+import io.github.jmorille.zapette.model.InsecureTls
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Column
@@ -162,6 +177,12 @@ internal fun buildDevice(
     return DeviceDraft(device, password.takeIf { newCredentials })
 }
 
+/**
+ * Contenu additionnel de la section « Identifiants » (sélecteur d'utilisateur, Quick Connect…)
+ * fourni par un autre module : type, hôte, port et URL de base courants du formulaire.
+ */
+typealias AccountExtras = @Composable (kind: DeviceKind, host: String, port: Int, baseUrl: String) -> Unit
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceConfigScreen(
@@ -170,6 +191,8 @@ fun DeviceConfigScreen(
     onBack: () -> Unit,
     /** Identifiant d'un appareil enregistré à modifier (prioritaire sur [prefillJson]). */
     editDeviceId: String? = null,
+    /** Emplacement optionnel sous les identifiants ; `null` : rien n'est affiché. */
+    accountExtras: AccountExtras? = null,
 ) {
     val context = LocalContext.current
     if (editDeviceId != null) {
@@ -181,7 +204,7 @@ fun DeviceConfigScreen(
             if (device == null) missing = true else loaded = device
         }
         when {
-            loaded != null -> DeviceConfigForm(loaded, editing = true, onSaved = onSaved, onBack = onBack)
+            loaded != null -> DeviceConfigForm(loaded, editing = true, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras)
             missing -> Text("Appareil introuvable", Modifier.padding(16.dp))
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
@@ -190,12 +213,18 @@ fun DeviceConfigScreen(
     val prefill = remember(prefillJson) {
         prefillJson?.let { runCatching { Json.decodeFromString(Device.serializer(), it) }.getOrNull() }
     }
-    DeviceConfigForm(prefill, editing = false, onSaved = onSaved, onBack = onBack)
+    DeviceConfigForm(prefill, editing = false, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (String) -> Unit, onBack: () -> Unit) {
+private fun DeviceConfigForm(
+    prefill: Device?,
+    editing: Boolean,
+    onSaved: (String) -> Unit,
+    onBack: () -> Unit,
+    accountExtras: AccountExtras? = null,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -213,10 +242,16 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
     var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
     val hasStoredPassword = editing && prefill?.extras?.containsKey(DeviceSecrets.ENCRYPTED_PASSWORD) == true
 
-    // Options avancées : HTTPS, WebSocket Kodi, Wake-on-LAN.
+    // Options : mode de connexion, délai, réseau, WebSocket Kodi, Wake-on-LAN…
     val initial = remember(prefill) { DeviceOptions.read(prefill) }
     var advancedOpen by rememberSaveable { mutableStateOf(false) }
-    var https by rememberSaveable { mutableStateOf(initial.https) }
+    var mode by rememberSaveable { mutableStateOf(initial.mode) }
+    var timeoutS by rememberSaveable { mutableStateOf(initial.timeoutS) }
+    var wifiOnly by rememberSaveable { mutableStateOf(initial.wifiOnly) }
+    var wifiSsids by rememberSaveable { mutableStateOf(initial.wifiSsids) }
+    var kodiEventServer by rememberSaveable { mutableStateOf(initial.kodiEventServer) }
+    var kodiEventServerPort by rememberSaveable { mutableStateOf(initial.kodiEventServerPort) }
+    var upnpAltDidl by rememberSaveable { mutableStateOf(initial.upnpAltDidl) }
     var kodiWebSocket by rememberSaveable { mutableStateOf(initial.kodiWebSocket) }
     var kodiWebSocketPort by rememberSaveable { mutableStateOf(initial.kodiWebSocketPort) }
     var wolMac by rememberSaveable { mutableStateOf(initial.wolMac) }
@@ -224,7 +259,41 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
     var wolPort by rememberSaveable { mutableStateOf(initial.wolPort) }
     var wolAuto by rememberSaveable { mutableStateOf(initial.wolAuto) }
     var basePath by rememberSaveable { mutableStateOf(initial.basePath) }
-    val options = AdvancedOptions(https, kodiWebSocket, kodiWebSocketPort, wolMac, wolBroadcast, wolPort, wolAuto, basePath)
+    val options = AdvancedOptions(
+        mode = mode, timeoutS = timeoutS, wifiOnly = wifiOnly, wifiSsids = wifiSsids,
+        kodiEventServer = kodiEventServer, kodiEventServerPort = kodiEventServerPort, upnpAltDidl = upnpAltDidl,
+        kodiWebSocket = kodiWebSocket, kodiWebSocketPort = kodiWebSocketPort,
+        wolMac = wolMac, wolBroadcast = wolBroadcast, wolPort = wolPort, wolAuto = wolAuto, basePath = basePath,
+    )
+
+    // Lecture du SSID : autorisation de localisation demandée seulement quand l'utilisateur
+    // restreint l'appareil à des réseaux Wi-Fi précis.
+    val network = remember { AndroidNetworkInfo(context) }
+    var locationGranted by remember { mutableStateOf(network.hasLocationPermission()) }
+    var fillSsidAfterGrant by remember { mutableStateOf(false) }
+    var ssidNotice by remember { mutableStateOf<String?>(null) }
+
+    fun fillCurrentSsid() {
+        val ssid = network.currentSsid()
+        ssidNotice = when {
+            !network.isWifiConnected() -> "Aucun réseau Wi-Fi connecté"
+            ssid == null && !network.isLocationEnabled() -> "Activez la localisation pour lire le nom du réseau"
+            ssid == null -> "Nom du réseau illisible"
+            else -> null.also { wifiSsids = NetworkGuard.addSsid(wifiSsids, ssid) }
+        }
+    }
+
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        locationGranted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        if (fillSsidAfterGrant && locationGranted) fillCurrentSsid()
+        if (!locationGranted) ssidNotice = "Autorisation refusée : la restriction de réseau ne pourra pas être vérifiée"
+        fillSsidAfterGrant = false
+    }
+
+    fun requestLocation(thenFill: Boolean) {
+        fillSsidAfterGrant = thenFill
+        locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
 
     /** Valide le formulaire et construit l'appareil, ou affiche l'erreur et renvoie `null`. */
     fun draftOrNull(): DeviceDraft? {
@@ -239,7 +308,17 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
         scope.launch {
             try {
                 testResult = withContext(Dispatchers.IO) {
-                    testConnection(draft.device) { context.container.controllers.create(it, draft.password) }
+                    testConnection(
+                        draft.device,
+                        // Empreinte lue par une simple poignée de main TLS, sans requête HTTP.
+                        fingerprint = { d ->
+                            if (DeviceOptions.connectionMode(d).secure) {
+                                InsecureTls.peerFingerprint(d.host, d.port, DeviceOptions.timeoutSeconds(d) * 1000)
+                            } else {
+                                null
+                            }
+                        },
+                    ) { context.container.controllers.create(it, draft.password) }
                 }
             } finally {
                 testing = false
@@ -314,6 +393,9 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                     )
                 }
             }
+            if (DeviceOptions.supportsHttps(kind)) {
+                ConnectionModeChooser(mode) { mode = it }
+            }
             when (kind) {
                 DeviceKind.FIRE_TV -> Hint(
                     "Activez « Débogage ADB » dans les options développeur du téléviseur, puis acceptez la clé de Zapette à la première connexion.",
@@ -354,13 +436,25 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                         "Le mot de passe sert uniquement à obtenir un jeton ; il n'est pas conservé."
                     },
                 )
+                val portNumber = port.toIntOrNull()
+                if (accountExtras != null && portNumber != null) {
+                    DeviceOptions.formBaseUrl(mode, host, portNumber, if (DeviceOptions.supportsBasePath(kind)) basePath else "")
+                        ?.let { accountExtras(kind, host.trim(), portNumber, it) }
+                }
             }
         }
     }
 
     val advancedFields: @Composable () -> Unit = {
-        if (DeviceOptions.supportsHttps(kind)) {
-            SwitchRow("HTTPS", "Connexion chiffrée (serveur derrière un proxy TLS)", https) { https = it }
+        if (DeviceOptions.supportsTimeout(kind)) {
+            OutlinedTextField(
+                timeoutS, { timeoutS = it.filter(Char::isDigit).take(2) },
+                label = { Text("Délai de connexion (s)") },
+                supportingText = { Text("De 1 à 60 s ; 5 s par défaut. À augmenter pour un appareil lent à répondre.") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
         if (DeviceOptions.supportsBasePath(kind)) {
             OutlinedTextField(
@@ -387,6 +481,57 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+        if (DeviceOptions.supportsEventServer(kind)) {
+            SwitchRow(
+                "Event Server (UDP)",
+                "Touches envoyées par l'Event Server de Kodi (« Autoriser le contrôle à distance par des applications »)",
+                kodiEventServer,
+            ) { kodiEventServer = it }
+            if (kodiEventServer) {
+                OutlinedTextField(
+                    kodiEventServerPort, { kodiEventServerPort = it.filter(Char::isDigit) },
+                    label = { Text("Port Event Server") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        if (DeviceOptions.supportsAltDidl(kind)) {
+            SwitchRow(
+                "Métadonnées DLNA alternatives",
+                "Pour les renderers capricieux qui refusent la lecture d'une URL",
+                upnpAltDidl,
+            ) { upnpAltDidl = it }
+        }
+        if (DeviceOptions.supportsNetworkRestriction(kind)) {
+            Text("Réseau", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+            SwitchRow("Wi-Fi uniquement", "Ne tente pas la connexion hors Wi-Fi (données mobiles, VPN…)", wifiOnly) { wifiOnly = it }
+            OutlinedTextField(
+                wifiSsids, { wifiSsids = it },
+                label = { Text("Réseaux Wi-Fi autorisés (un par ligne)") },
+                supportingText = { Text("Vide : tous les réseaux. Renseigné : connexion seulement sur ces réseaux.") },
+                minLines = 1,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(onClick = { if (locationGranted) fillCurrentSsid() else requestLocation(thenFill = true) }) {
+                Text("Utiliser le réseau actuel")
+            }
+            if (wifiSsids.isNotBlank() && !locationGranted) {
+                // Explication avant la demande : Android associe la lecture du SSID à la localisation.
+                WarningCard(
+                    "Android ne donne le nom du réseau Wi-Fi qu'aux applications autorisées à accéder à la " +
+                        "localisation précise. Zapette ne lit ni ne conserve votre position. Sans cette autorisation, " +
+                        "la restriction ne peut pas être vérifiée et la connexion reste permise.",
+                ) {
+                    TextButton(onClick = { requestLocation(thenFill = false) }) { Text("Autoriser") }
+                }
+            } else if (wifiSsids.isNotBlank() && !network.isLocationEnabled()) {
+                Hint("Localisation désactivée : le nom du réseau ne peut pas être vérifié.")
+            }
+            ssidNotice?.let { Hint(it) }
         }
         if (DeviceOptions.supportsWakeOnLan(kind)) {
             Text("Wake-on-LAN", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
@@ -441,9 +586,16 @@ private fun DeviceConfigForm(prefill: Device?, editing: Boolean, onSaved: (Strin
                 ) {
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     testResult?.let { result ->
-                        Text(
-                            result.message,
-                            color = if (result is ConnectionTestResult.Success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        TestResultView(
+                            result,
+                            onUseInsecure = if (
+                                result is ConnectionTestResult.Failure && result.problem == Problem.CERTIFICATE &&
+                                DeviceOptions.supportsHttps(kind) && mode != ConnectionMode.HTTPS_INSECURE
+                            ) {
+                                { mode = ConnectionMode.HTTPS_INSECURE; testResult = null }
+                            } else {
+                                null
+                            },
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -528,6 +680,67 @@ private fun FormSection(
             }
             if (expanded) content()
         }
+    }
+}
+
+/** Choix HTTP / HTTPS / HTTPS non vérifié, avec avertissement pour ce dernier. */
+@Composable
+private fun ConnectionModeChooser(mode: ConnectionMode, onChange: (ConnectionMode) -> Unit) {
+    Text("Mode de connexion", style = MaterialTheme.typography.titleSmall)
+    Column(Modifier.selectableGroup()) {
+        ConnectionMode.entries.forEach { m ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = m == mode, onClick = { onChange(m) }, role = Role.RadioButton)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = m == mode, onClick = null)
+                Spacer(Modifier.width(8.dp))
+                Text(m.label, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+    if (mode == ConnectionMode.HTTPS_INSECURE) {
+        WarningCard(
+            "Le certificat du serveur n'est pas vérifié : un tiers présent sur le réseau pourrait intercepter " +
+                "la connexion et vos identifiants. À réserver à un serveur domestique au certificat auto-signé ; " +
+                "comparez l'empreinte affichée par le test avec celle du serveur.",
+        )
+    }
+}
+
+@Composable
+private fun WarningCard(text: String, action: (@Composable () -> Unit)? = null) {
+    OutlinedCard(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                action?.invoke()
+            }
+        }
+    }
+}
+
+/** Résultat du test : titre, conseil, empreinte du certificat et action « mode auto-signé ». */
+@Composable
+private fun TestResultView(result: ConnectionTestResult, onUseInsecure: (() -> Unit)?) {
+    val success = result is ConnectionTestResult.Success
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            result.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
+        (result as? ConnectionTestResult.Failure)?.advice?.let { Hint(it) }
+        result.certificateSha256?.let { Hint("Empreinte SHA-256 du certificat : $it") }
+        onUseInsecure?.let { TextButton(onClick = it) { Text("Accepter ce certificat (mode non vérifié)") } }
     }
 }
 

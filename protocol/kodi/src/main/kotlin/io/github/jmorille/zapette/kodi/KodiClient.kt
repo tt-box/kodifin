@@ -26,6 +26,9 @@ data class KodiPlayerProperties(
 
 data class KodiAppProperties(val volume: Int, val muted: Boolean, val version: String?)
 
+/** Nom et version de l'application (ex. « Kodi », « 21.2 »), via `Application.GetProperties`. */
+data class KodiAppInfo(val name: String, val version: String?)
+
 data class KodiMediaItem(val id: Int?, val label: String, val type: String?)
 
 /** API typée au-dessus d'un [KodiTransport]. */
@@ -150,6 +153,20 @@ class KodiClient(private val transport: KodiTransport) {
             muted = o["muted"].primitive()?.booleanOrNull ?: false,
             version = version,
         )
+    }
+
+    suspend fun appInfo(): KodiAppInfo {
+        val o = call(
+            KodiMethod.APP_GET_PROPERTIES,
+            buildJsonObject { putJsonArray("properties") { listOf("name", "version").forEach { add(JsonPrimitive(it)) } } },
+        ).obj(KodiMethod.APP_GET_PROPERTIES)
+        val version = (o["version"] as? JsonObject)?.let { v ->
+            val base = "${v["major"].primitive()?.contentOrNull ?: "0"}.${v["minor"].primitive()?.contentOrNull ?: "0"}"
+            // Étiquette affichée seulement pour les préversions (« alpha1 », « rc2 »…).
+            val tag = v["tag"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() && it != "stable" }
+            if (tag != null) "$base $tag" else base
+        }
+        return KodiAppInfo(o["name"].primitive()?.contentOrNull?.takeIf { it.isNotBlank() } ?: "Kodi", version)
     }
 
     suspend fun setVolume(percent: Int) =

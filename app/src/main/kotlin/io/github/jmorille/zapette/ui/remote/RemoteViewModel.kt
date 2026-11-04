@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jmorille.zapette.AppContainer
 import io.github.jmorille.zapette.connection.DeviceOptions
+import io.github.jmorille.zapette.connection.NetworkCheck
+import io.github.jmorille.zapette.connection.NetworkGuard
+import io.github.jmorille.zapette.connection.NetworkInfo
 import io.github.jmorille.zapette.connection.WakeOnLan
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
@@ -36,6 +39,8 @@ data class RemoteUiState(
     val supportedKeys: Set<RemoteKey> = emptySet(),
     val capabilities: Set<Capability> = emptySet(),
     val playback: PlaybackState? = null,
+    /** Connexion non tentée : réseau non autorisé pour cet appareil (Wi-Fi requis, SSID). */
+    val networkBlocked: String? = null,
 )
 
 /** Dépendances du ViewModel, isolées pour les tests JVM (pas de Context Android). */
@@ -47,11 +52,15 @@ interface RemoteDependencies {
     /** Envoie le signal Wake-on-LAN de l'appareil (sans effet s'il n'en a pas). */
     suspend fun wake(device: Device) {}
 
+    /** État du réseau pour la restriction Wi-Fi / SSID ; `null` : pas de vérification. */
+    val network: NetworkInfo? get() = null
+
     /** Portée qui survit au ViewModel : sert à fermer la connexion après sa destruction. */
     val backgroundScope: CoroutineScope
 }
 
-fun AppContainer.remoteDependencies(): RemoteDependencies = object : RemoteDependencies {
+fun AppContainer.remoteDependencies(networkInfo: NetworkInfo? = null): RemoteDependencies = object : RemoteDependencies {
+    override val network: NetworkInfo? get() = networkInfo
     override suspend fun loadDevice(id: String) = devices.get(id)
     override suspend fun createController(device: Device) = controllers.create(device)
     override suspend fun saveDevice(device: Device) = devices.save(device)
@@ -133,13 +142,22 @@ class RemoteViewModel(
                 controller = null
                 release(old)
             }
-            _state.update { it.copy(connecting = true, connected = false, playback = null) }
+            _state.update { it.copy(connecting = true, connected = false, playback = null, networkBlocked = null) }
 
             val device = deps.loadDevice(deviceId)
             if (device == null) {
                 _state.update { it.copy(connecting = false) }
                 _messages.trySend("Appareil introuvable")
                 return@launch
+            }
+            // Restriction réseau : rien n'est envoyé (ni réveil, ni connexion) hors des réseaux autorisés.
+            when (val check = NetworkGuard.check(DeviceOptions.networkPolicy(device), deps.network)) {
+                is NetworkCheck.Blocked -> {
+                    _state.update { it.copy(device = device, connecting = false, networkBlocked = check.message) }
+                    _messages.trySend(check.message)
+                    return@launch
+                }
+                is NetworkCheck.Allowed -> check.warning?.let { _messages.trySend(it) }
             }
             // Réveil automatique : signal envoyé avant de se connecter, puis tentatives répétées.
             val autoWake = DeviceOptions.autoWake(device)

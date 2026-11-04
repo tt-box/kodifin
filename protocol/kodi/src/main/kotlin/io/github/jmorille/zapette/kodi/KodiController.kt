@@ -1,6 +1,7 @@
 package io.github.jmorille.zapette.kodi
 
 import io.github.jmorille.zapette.model.Capability
+import io.github.jmorille.zapette.model.DescribesServer
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.PlaybackState
 import io.github.jmorille.zapette.model.RemoteController
@@ -21,7 +22,7 @@ class KodiController(
     override val device: Device,
     private val client: KodiClient,
     private val pollIntervalMs: Long = 1_000,
-) : RemoteController {
+) : RemoteController, DescribesServer {
 
     override val capabilities = Capability.entries.toSet()
     override val supportedKeys = RemoteKey.entries.toSet()
@@ -30,6 +31,20 @@ class KodiController(
         // Un serveur qui répond 200 sans être Kodi (ou une réponse inattendue) ne doit
         // pas être considéré comme connecté.
         if (!client.ping()) throw RemoteException("L'appareil ne répond pas comme un serveur Kodi")
+    }
+
+    /** « Kodi 21.2 (JSON-RPC 13.5.0) » ; sans `Application.GetProperties`, la version JSON-RPC seule. */
+    override suspend fun serverDescription(): String {
+        val api = client.apiVersion()
+        val app = try {
+            client.appInfo()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val product = app?.let { listOfNotNull(it.name, it.version).joinToString(" ") } ?: "Kodi"
+        return "$product (JSON-RPC $api)"
     }
 
     override suspend fun send(key: RemoteKey) {

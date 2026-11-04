@@ -110,3 +110,25 @@ class SameHostRedirectInterceptor(private val maxRedirects: Int = DEFAULT_MAX_RE
         }
     }
 }
+
+/** Délai de connexion par défaut d'un appareil, en secondes (bornes : 1 à 60). */
+const val DEFAULT_CONNECT_TIMEOUT_S = 5
+const val MIN_CONNECT_TIMEOUT_S = 1
+const val MAX_CONNECT_TIMEOUT_S = 60
+
+/**
+ * Client dérivé pour un appareil : partage le pool de connexions et la politique de
+ * redirection de `this`, avec des délais proportionnels à [timeoutSeconds] (connexion ×1,
+ * lecture ×3, appel complet ×6, soit 5 / 15 / 30 s par défaut) et, si [insecureTls] est vrai,
+ * une validation TLS désactivée (voir [InsecureTls]). Le client d'origine n'est jamais modifié.
+ */
+fun OkHttpClient.forDevice(timeoutSeconds: Int = DEFAULT_CONNECT_TIMEOUT_S, insecureTls: Boolean = false): OkHttpClient {
+    val t = timeoutSeconds.toLong().coerceIn(MIN_CONNECT_TIMEOUT_S.toLong(), MAX_CONNECT_TIMEOUT_S.toLong())
+    val builder = newBuilder()
+        .connectTimeout(t, TimeUnit.SECONDS)
+        .readTimeout(t * 3, TimeUnit.SECONDS)
+        .writeTimeout(t * 3, TimeUnit.SECONDS)
+        .callTimeout(t * 6, TimeUnit.SECONDS)
+    if (insecureTls) InsecureTls.applyTo(builder)
+    return builder.build()
+}

@@ -28,8 +28,15 @@ data class AuthResult(
     @SerialName("User") val user: UserDto,
 )
 
+/** Réponse publique (sans authentification) de `GET …/System/Info/Public`. */
 @Serializable
-data class PublicInfoDto(@SerialName("Id") val id: String = "")
+data class PublicInfoDto(
+    @SerialName("Id") val id: String = "",
+    @SerialName("ServerName") val serverName: String? = null,
+    @SerialName("Version") val version: String? = null,
+    /** « Jellyfin Server » ; absent chez Emby. */
+    @SerialName("ProductName") val productName: String? = null,
+)
 
 @Serializable
 data class UserDto(@SerialName("Id") val id: String, @SerialName("Name") val name: String = "")
@@ -181,6 +188,14 @@ class MediaServerClient(
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** Informations publiques du serveur (nom, version, produit) à l'URL courante. */
+    suspend fun publicInfo(): PublicInfoDto {
+        val text = http.fetchString(request(url("System", "Info", "Public")).get().build())
+        val info = decode(PublicInfoDto.serializer(), text)
+        if (info.id.isBlank()) throw RemoteException("Réponse inattendue du serveur")
+        return info
     }
 
     suspend fun requireToken(): String = accessToken ?: throw RemoteException("Non authentifié sur le serveur")

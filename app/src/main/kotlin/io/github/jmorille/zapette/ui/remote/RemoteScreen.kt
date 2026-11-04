@@ -56,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +71,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -80,6 +82,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import io.github.jmorille.zapette.connection.AndroidNetworkInfo
 import io.github.jmorille.zapette.connection.DeviceOptions
 import io.github.jmorille.zapette.container
 import io.github.jmorille.zapette.model.Capability
@@ -93,16 +96,31 @@ private enum class InputDialog { Url, Text }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit, onEdit: () -> Unit = {}) {
+fun RemoteScreen(
+    deviceId: String,
+    sharedUrl: String?,
+    onBack: () -> Unit,
+    onEdit: () -> Unit = {},
+    /** Réglage global « Garder l'écran allumé » sur la télécommande (fourni par l'appelant). */
+    keepScreenOn: Boolean = false,
+) {
     val context = LocalContext.current
     val vm: RemoteViewModel = viewModel(
         key = deviceId,
         factory = viewModelFactory {
             initializer {
-                RemoteViewModel(context.container.remoteDependencies(), deviceId, sharedUrl, createSavedStateHandle())
+                val network = AndroidNetworkInfo(context.applicationContext)
+                RemoteViewModel(context.container.remoteDependencies(network), deviceId, sharedUrl, createSavedStateHandle())
             }
         },
     )
+    // Écran maintenu allumé tant que la télécommande est affichée (drapeau de la vue, aucune permission).
+    val view = LocalView.current
+    DisposableEffect(view, keepScreenOn) {
+        val previous = view.keepScreenOn
+        if (keepScreenOn) view.keepScreenOn = true
+        onDispose { view.keepScreenOn = previous }
+    }
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     // Survit à la rotation (enum sérialisable dans le Bundle).
@@ -144,6 +162,17 @@ fun RemoteScreen(deviceId: String, sharedUrl: String?, onBack: () -> Unit, onEdi
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+            state.networkBlocked?.let { reason ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(reason, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                        Text(
+                            "Connectez-vous à un réseau autorisé puis appuyez sur « Reconnecter », ou modifiez les options réseau de l'appareil.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
             state.playback?.let { NowPlaying(it, onSeek = vm::seekTo, canSeek = Capability.SEEK in state.capabilities) }
 
             val keys = state.supportedKeys

@@ -9,6 +9,7 @@ import io.github.jmorille.zapette.data.SecretStore
 import io.github.jmorille.zapette.firetv.DadbShell
 import io.github.jmorille.zapette.firetv.FireTvController
 import io.github.jmorille.zapette.connection.DeviceOptions
+import io.github.jmorille.zapette.connection.forDevice
 import io.github.jmorille.zapette.kodi.KodiClient
 import io.github.jmorille.zapette.kodi.KodiController
 import io.github.jmorille.zapette.kodi.KodiHttpTransport
@@ -52,16 +53,22 @@ class ControllerFactory(
      */
     suspend fun create(device: Device, password: String? = null): RemoteController {
         val effective = if (password != null) withPassword(device, password) else device
+        // Client propre à l'appareil : délai de connexion et, si demandé pour CET appareil,
+        // certificat non vérifié. Le client global n'est jamais modifié.
+        val http = httpFor(effective)
         return when (effective.kind) {
             // Mot de passe Kodi déchiffré ici seulement, le temps de construire le transport.
-            DeviceKind.KODI -> kodi(DeviceSecrets.reveal(effective, secrets))
+            DeviceKind.KODI -> kodi(DeviceSecrets.reveal(effective, secrets), http)
             DeviceKind.JELLYFIN, DeviceKind.EMBY ->
                 MediaServerController.create(effective, http, repository.installationId())
-            else -> createOther(effective)
+            else -> createOther(effective, http)
         }
     }
 
-    private fun kodi(device: Device): RemoteController {
+    /** Client HTTP dérivé utilisé pour [device] (exposé pour les tests). */
+    fun httpFor(device: Device): OkHttpClient = http.forDevice(device)
+
+    private fun kodi(device: Device, http: OkHttpClient): RemoteController {
         val transport = DeviceOptions.kodiWebSocketUrl(device)?.let { KodiWebSocketTransport(http, it) }
             ?: KodiHttpTransport(
                 http,
@@ -72,7 +79,7 @@ class ControllerFactory(
         return KodiController(device, KodiClient(transport))
     }
 
-    private suspend fun createOther(device: Device): RemoteController = when (device.kind) {
+    private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {
         DeviceKind.KODI, DeviceKind.JELLYFIN, DeviceKind.EMBY -> error("traité par create()")
         DeviceKind.PLEX ->
             PlexController(withPlexToken(device, repository.plexToken.first()), http, PlexIdentity(repository.installationId()))
