@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +35,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -141,9 +145,16 @@ fun LibraryPanel(
     onLoadMore: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Recherche plein écran disponible : champ « Rechercher » en tête du volet. */
+    onSearch: (() -> Unit)? = null,
+    /** Affiches disponibles : grille au lieu de la liste dès qu'un élément a une image. */
+    images: Boolean = false,
+    onPlay: (MediaEntry) -> Unit = onOpenEntry,
 ) {
     val level = library.current
+    var sheetEntry by remember { mutableStateOf<MediaEntry?>(null) }
     Column(modifier.fillMaxSize()) {
+        if (onSearch != null) SearchLauncher(onSearch)
         PanelHeader(
             title = level?.title ?: "Bibliothèque",
             navigation = if (level != null) {
@@ -182,6 +193,7 @@ fun LibraryPanel(
             }
         } else {
             if (level.endReached && level.entries.isEmpty()) EmptyText("Dossier vide")
+            val grid = images && level.entries.any { it.imageKey != null }
             val nearEnd by remember(listState) {
                 derivedStateOf {
                     val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -189,13 +201,49 @@ fun LibraryPanel(
                 }
             }
             LaunchedEffect(nearEnd, level.entries.size, level.endReached) {
-                if (nearEnd && !level.endReached) onLoadMore()
+                if (!grid && nearEnd && !level.endReached) onLoadMore()
             }
-            LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
-                itemsIndexed(level.entries, key = { index, entry -> "$index:${entry.id}" }) { _, entry ->
-                    LibraryEntryItem(entry, onOpenEntry, onEnqueue)
+            if (grid) {
+                val gridState = remember(library.path.size, level.id) { LazyGridState() }
+                MediaGrid(
+                    entries = level.entries,
+                    onEntry = { if (it.browsable) onOpenEntry(it) else sheetEntry = it },
+                    onEntryLongPress = { sheetEntry = it },
+                    state = gridState,
+                    onLoadMore = onLoadMore.takeIf { !level.endReached },
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+                    itemsIndexed(level.entries, key = { index, entry -> "$index:${entry.id}" }) { _, entry ->
+                        LibraryEntryItem(entry, onOpenEntry, onEnqueue)
+                    }
                 }
             }
+        }
+    }
+    sheetEntry?.let { entry ->
+        EntryActionsSheet(entry = entry, onDismiss = { sheetEntry = null }, onPlay = onPlay, onEnqueue = onEnqueue)
+    }
+}
+
+/** Faux champ de saisie : ouvre la recherche plein écran. */
+@Composable
+private fun SearchLauncher(onSearch: () -> Unit) {
+    Surface(
+        onClick = onSearch,
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(22.dp))
+            Text(
+                "Rechercher",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 12.dp),
+            )
         }
     }
 }

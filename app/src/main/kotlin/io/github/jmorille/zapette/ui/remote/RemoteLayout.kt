@@ -53,7 +53,7 @@ object RemoteLayouts {
     fun phoneTabs(capabilities: Set<Capability>, features: RemoteFeatures): List<RemoteTab> = buildList {
         add(RemoteTab.REMOTE)
         if (Capability.PLAYBACK in capabilities || features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
-        if (features.queue) add(RemoteTab.QUEUE)
+        if (features.queue || features.series) add(RemoteTab.QUEUE)
         if (features.library) add(RemoteTab.LIBRARY)
     }
 
@@ -64,7 +64,7 @@ object RemoteLayouts {
      */
     fun sideTabs(layout: RemoteLayout, features: RemoteFeatures): List<RemoteTab> = buildList {
         if (layout == RemoteLayout.TABLET_PORTRAIT && features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
-        if (features.queue) add(RemoteTab.QUEUE)
+        if (features.queue || features.series) add(RemoteTab.QUEUE)
         if (features.library) add(RemoteTab.LIBRARY)
     }
 

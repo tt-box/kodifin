@@ -3,6 +3,7 @@ package io.github.jmorille.zapette.ui.remote
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.graphics.ImageBitmap
 import io.github.jmorille.zapette.AppContainer
 import io.github.jmorille.zapette.connection.DeviceOptions
 import io.github.jmorille.zapette.connection.NetworkCheck
@@ -13,6 +14,7 @@ import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.MediaDetails
 import io.github.jmorille.zapette.model.MediaEntry
+import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
 import io.github.jmorille.zapette.model.PersistsCredentials
 import io.github.jmorille.zapette.model.PlaybackState
@@ -26,7 +28,10 @@ import io.github.jmorille.zapette.model.SupportsLibraryMaintenance
 import io.github.jmorille.zapette.model.SupportsNotify
 import io.github.jmorille.zapette.model.SupportsPlayMode
 import io.github.jmorille.zapette.model.SupportsPower
+import io.github.jmorille.zapette.model.SupportsImages
 import io.github.jmorille.zapette.model.SupportsQueue
+import io.github.jmorille.zapette.model.SupportsSearch
+import io.github.jmorille.zapette.model.SupportsSeries
 import io.github.jmorille.zapette.model.SupportsSeekStep
 import io.github.jmorille.zapette.model.SupportsSpeed
 import io.github.jmorille.zapette.model.SupportsSyncOffset
@@ -68,6 +73,8 @@ data class RemoteUiState(
     val queue: QueueState = QueueState(),
     val library: LibraryState = LibraryState(),
     val targets: TargetsState = TargetsState(),
+    val series: SeriesState = SeriesState(),
+    val search: SearchState = SearchState(),
 )
 
 /** Dépendances du ViewModel, isolées pour les tests JVM (pas de Context Android). */
@@ -109,6 +116,10 @@ class RemoteViewModel(
     private val disconnectTimeoutMs: Long = DISCONNECT_TIMEOUT_MS,
     /** Pause entre deux tentatives de connexion pendant le démarrage d'un appareil réveillé. */
     private val wakeRetryDelayMs: Long = WAKE_RETRY_DELAY_MS,
+    /** Attente après la dernière frappe avant d'interroger le serveur. */
+    private val searchDebounceMs: Long = SEARCH_DEBOUNCE_MS,
+    /** Décodage des images (remplaçable dans les tests JVM). */
+    imageDecoder: ImageDecoder<ImageBitmap> = BitmapImageDecoder,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(RemoteUiState())
@@ -129,6 +140,17 @@ class RemoteViewModel(
     private var detailsJob: Job? = null
     private var queueJob: Job? = null
     private var libraryJob: Job? = null
+    private var seriesJob: Job? = null
+    private var searchJob: Job? = null
+    private var searchPathJob: Job? = null
+
+    /** Affiches et vignettes, récupérées par le contrôleur courant et gardées en mémoire. */
+    val images: ImageLoader<ImageBitmap> = ImageLoader(
+        scope = viewModelScope,
+        io = io,
+        decoder = imageDecoder,
+        maxCacheBytes = ImageLoader.defaultCacheBytes(),
+    ) { key, width -> connectedAs<SupportsImages>()?.image(key, width) }
 
     /** Dernier titre reçu, pour ne recharger pistes et file qu'au changement de média. */
     @Volatile private var lastTitle: String? = null
@@ -182,11 +204,16 @@ class RemoteViewModel(
             detailsJob?.cancel()
             queueJob?.cancel()
             libraryJob?.cancel()
+            seriesJob?.cancel()
+            searchJob?.cancel()
+            searchPathJob?.cancel()
+            images.clear()
             titleSeen = false
             _state.update {
                 it.copy(
                     connecting = true, connected = false, playback = null, networkBlocked = null,
                     mediaDetails = null, queue = QueueState(), library = LibraryState(), targets = TargetsState(),
+                    series = SeriesState(), search = SearchState(),
                 )
             }
 
@@ -385,7 +412,10 @@ class RemoteViewModel(
     private fun refreshPanel(panel: RemotePanel) {
         when (panel) {
             RemotePanel.DETAILS -> refreshDetails()
-            RemotePanel.QUEUE -> refreshQueue()
+            RemotePanel.QUEUE -> {
+                refreshQueue()
+                refreshSeries()
+            }
             RemotePanel.LIBRARY -> openLibrary()
         }
     }
@@ -399,7 +429,10 @@ class RemoteViewModel(
         viewModelScope.launch {
             // Pistes et chapitres : nécessaires à la barre d'avancement même volet fermé.
             if (title != null) refreshDetails()
-            if (changed && RemotePanel.QUEUE in visiblePanels) refreshQueue()
+            if (changed && RemotePanel.QUEUE in visiblePanels) {
+                refreshQueue()
+                refreshSeries()
+            }
         }
     }
 
@@ -580,6 +613,194 @@ class RemoteViewModel(
         },
     ) { it.enqueue(entry.id, next) }
 
+    // --- Série en cours --------------------------------------------------------------------
+
+    /** Recharge la série du média en cours ; la saison courante est sélectionnée par défaut. */
+    fun refreshSeries() {
+        val c = connectedAs<SupportsSeries>() ?: return
+        seriesJob?.cancel()
+        _state.update { it.copy(series = it.series.copy(loading = true, error = null)) }
+        seriesJob = viewModelScope.launch {
+            val context = try {
+                withContext(io) { c.currentSeries() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(series = it.series.copy(loading = false, error = errorMessage(e))) }
+                return@launch
+            }
+            if (context == null) {
+                _state.update { it.copy(series = SeriesState(loaded = true)) }
+                return@launch
+            }
+            val seasonId = context.currentSeasonId?.takeIf { id -> context.seasons.any { it.id == id } }
+                ?: context.seasons.firstOrNull()?.id
+            _state.update {
+                it.copy(
+                    series = SeriesState(context = context, loaded = true, seasonId = seasonId, episodesLoading = seasonId != null),
+                )
+            }
+            if (seasonId != null) loadEpisodes(seasonId)
+        }
+    }
+
+    /** Affiche les épisodes d'une autre saison de la série. */
+    fun selectSeason(seasonId: String) {
+        val series = _state.value.series
+        if (series.context == null || (seasonId == series.seasonId && series.episodes.isNotEmpty())) return
+        seriesJob?.cancel()
+        _state.update {
+            it.copy(series = it.series.copy(seasonId = seasonId, episodes = emptyList(), episodesLoading = true, error = null))
+        }
+        seriesJob = viewModelScope.launch { loadEpisodes(seasonId) }
+    }
+
+    private suspend fun loadEpisodes(seasonId: String) {
+        val c = connectedAs<SupportsLibrary>() ?: return
+        var error: String? = null
+        val episodes = try {
+            withContext(io) { c.browse(seasonId, 0, SEASON_PAGE_SIZE) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = errorMessage(e)
+            emptyList()
+        }
+        _state.update { s ->
+            // Autre saison choisie entre-temps : réponse ignorée.
+            if (s.series.seasonId != seasonId) return@update s
+            s.copy(series = s.series.copy(episodes = episodes, episodesLoading = false, error = error))
+        }
+    }
+
+    // --- Recherche -------------------------------------------------------------------------
+
+    fun openSearch() {
+        if (!_state.value.features.search) return
+        _state.update { it.copy(search = it.search.copy(open = true)) }
+    }
+
+    /** Ferme la vue de recherche ; la saisie et les résultats sont conservés pour la réouverture. */
+    fun closeSearch() {
+        searchPathJob?.cancel()
+        _state.update {
+            it.copy(search = it.search.copy(open = false, path = emptyList(), pathLoading = false, pathError = null))
+        }
+    }
+
+    /** Recherche au fil de la frappe, après [searchDebounceMs] sans nouvelle saisie. */
+    fun setSearchQuery(query: String) {
+        if (query == _state.value.search.query) return
+        _state.update { it.copy(search = it.search.copy(query = query)) }
+        scheduleSearch(searchDebounceMs)
+    }
+
+    /** Touche « Rechercher » du clavier : sans attendre. */
+    fun submitSearch() = scheduleSearch(0)
+
+    fun toggleSearchKind(kind: MediaKind) {
+        _state.update {
+            val kinds = it.search.kinds
+            it.copy(search = it.search.copy(kinds = if (kind in kinds) kinds - kind else kinds + kind))
+        }
+        scheduleSearch(0)
+    }
+
+    fun clearSearchKinds() {
+        if (_state.value.search.kinds.isEmpty()) return
+        _state.update { it.copy(search = it.search.copy(kinds = emptySet())) }
+        scheduleSearch(0)
+    }
+
+    private fun scheduleSearch(delayMs: Long) {
+        searchJob?.cancel()
+        val query = _state.value.search.query.trim()
+        if (query.length < MIN_SEARCH_LENGTH) {
+            _state.update {
+                it.copy(search = it.search.copy(results = emptyList(), loading = false, searched = false, error = null))
+            }
+            return
+        }
+        val c = connectedAs<SupportsSearch>() ?: return
+        _state.update { it.copy(search = it.search.copy(loading = true, error = null)) }
+        searchJob = viewModelScope.launch {
+            if (delayMs > 0) delay(delayMs)
+            val kinds = _state.value.search.kinds
+            try {
+                val results = withContext(io) { c.search(query, kinds, SEARCH_LIMIT) }
+                _state.update {
+                    it.copy(search = it.search.copy(results = results, loading = false, searched = true, error = null))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(search = it.search.copy(loading = false, searched = false, error = errorMessage(e))) }
+            }
+        }
+    }
+
+    /** Résultat navigable (série, saison, album…) : ouvert dans la vue de recherche. */
+    fun openSearchEntry(entry: MediaEntry) {
+        if (!entry.browsable) return
+        connectedAs<SupportsLibrary>() ?: return
+        searchPathJob?.cancel()
+        _state.update {
+            it.copy(
+                search = it.search.copy(path = it.search.path + LibraryLevel(entry.id, entry.title), pathLoading = false, pathError = null),
+            )
+        }
+        loadSearchPage()
+    }
+
+    fun loadMoreSearchLevel() {
+        val s = _state.value.search
+        val level = s.current ?: return
+        if (s.pathLoading || level.endReached) return
+        loadSearchPage()
+    }
+
+    /** Remonte d'un niveau dans la vue de recherche ; `false` si l'on est déjà sur les résultats. */
+    fun searchBack(): Boolean {
+        if (_state.value.search.path.isEmpty()) return false
+        searchPathJob?.cancel()
+        _state.update {
+            it.copy(search = it.search.copy(path = it.search.path.dropLast(1), pathLoading = false, pathError = null))
+        }
+        return true
+    }
+
+    private fun loadSearchPage() {
+        val c = connectedAs<SupportsLibrary>() ?: return
+        val search = _state.value.search
+        val level = search.current ?: return
+        val depth = search.path.size
+        _state.update { it.copy(search = it.search.copy(pathLoading = true, pathError = null)) }
+        searchPathJob = viewModelScope.launch {
+            var error: String? = null
+            val page = try {
+                withContext(io) { c.browse(level.id, level.entries.size, LIBRARY_PAGE_SIZE) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = errorMessage(e)
+                null
+            }
+            _state.update { s ->
+                val path = s.search.path
+                // Navigation entre-temps : la page reçue ne concerne plus le dossier affiché.
+                if (path.size != depth || path.last().id != level.id) {
+                    return@update s.copy(search = s.search.copy(pathLoading = false))
+                }
+                val updated = if (page == null) {
+                    path.last().copy(endReached = true)
+                } else {
+                    path.last().copy(entries = path.last().entries + page, endReached = page.size < LIBRARY_PAGE_SIZE)
+                }
+                s.copy(search = s.search.copy(path = path.dropLast(1) + updated, pathLoading = false, pathError = error))
+            }
+        }
+    }
+
     // --- Cibles de lecture -----------------------------------------------------------------
 
     fun refreshTargets() {
@@ -618,6 +839,10 @@ class RemoteViewModel(
         const val NOT_SUPPORTED = "Action non prise en charge par cet appareil"
         const val VOLUME_STEP = 5
         const val LIBRARY_PAGE_SIZE = 100
+        const val SEASON_PAGE_SIZE = 300
+        const val SEARCH_DEBOUNCE_MS = 350L
+        const val SEARCH_LIMIT = 60
+        const val MIN_SEARCH_LENGTH = 2
 
         // Réveil : jusqu'à 12 tentatives espacées de 5 s (environ une minute de démarrage).
         const val WAKE_ATTEMPTS = 12
