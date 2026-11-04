@@ -75,31 +75,6 @@ data class PublicInfoDto(
 @Serializable
 data class UserDto(@SerialName("Id") val id: String, @SerialName("Name") val name: String = "")
 
-@Serializable
-data class SessionDto(
-    @SerialName("Id") val id: String,
-    @SerialName("DeviceId") val deviceId: String? = null,
-    @SerialName("DeviceName") val deviceName: String = "",
-    @SerialName("Client") val client: String = "",
-    @SerialName("SupportsRemoteControl") val supportsRemoteControl: Boolean = false,
-    @SerialName("NowPlayingItem") val nowPlaying: NowPlayingDto? = null,
-    @SerialName("PlayState") val playState: PlayStateDto? = null,
-)
-
-@Serializable
-data class NowPlayingDto(
-    @SerialName("Name") val name: String = "",
-    @SerialName("RunTimeTicks") val runTimeTicks: Long = 0,
-)
-
-@Serializable
-data class PlayStateDto(
-    @SerialName("PositionTicks") val positionTicks: Long = 0,
-    @SerialName("IsPaused") val isPaused: Boolean = false,
-    @SerialName("IsMuted") val isMuted: Boolean = false,
-    @SerialName("VolumeLevel") val volumeLevel: Int? = null,
-)
-
 /** 1 tick = 100 ns. */
 const val TICKS_PER_MS = 10_000L
 
@@ -133,9 +108,27 @@ class MediaServerClient(
     /** Retire ce qui casserait la syntaxe `Clé="valeur"` de l'en-tête (guillemets, virgules, contrôles). */
     private fun headerParam(value: String): String = value.filterNot { it == '"' || it == ',' || it.isISOControl() }
 
-    /** En-tête d'autorisation `MediaBrowser …` attendu par les deux serveurs. */
+    /**
+     * Utilisateur authentifié : Emby l'attend dans `X-Emby-Authorization` (`UserId=…`).
+     * Renseigné à l'authentification ou depuis les extras enregistrés.
+     */
+    @Volatile
+    var userId: String? = null
+
+    /**
+     * Valeur de l'en-tête d'autorisation : `MediaBrowser Client=…` (Jellyfin, en-tête
+     * `Authorization`) ou `Emby UserId=…, Client=…` (format documenté de l'API REST Emby,
+     * en-tête `X-Emby-Authorization`).
+     */
     internal fun authorizationValue(): String = buildString {
-        append("MediaBrowser Client=\"Zapette\", Device=\"Android\", DeviceId=\"")
+        when (flavor) {
+            MediaServerFlavor.JELLYFIN -> append("MediaBrowser ")
+            MediaServerFlavor.EMBY -> {
+                append("Emby ")
+                userId?.takeIf { it.isNotBlank() }?.let { append("UserId=\"").append(headerParam(it)).append("\", ") }
+            }
+        }
+        append("Client=\"Zapette\", Device=\"Android\", DeviceId=\"")
         append(headerParam(deviceId))
         append("\", Version=\"").append(headerParam(appVersion)).append('"')
         accessToken?.let { append(", Token=\"").append(headerParam(it)).append('"') }
@@ -182,6 +175,7 @@ class MediaServerClient(
         val result = decode(AuthResult.serializer(), text)
         if (result.accessToken.isBlank()) throw RemoteException("Jeton absent de la réponse du serveur")
         accessToken = result.accessToken
+        userId = result.user.id
         return result
     }
 
@@ -232,6 +226,7 @@ class MediaServerClient(
         val result = decode(AuthResult.serializer(), text)
         if (result.accessToken.isBlank()) throw RemoteException("Jeton absent de la réponse du serveur")
         accessToken = result.accessToken
+        userId = result.user.id
         return result
     }
 
@@ -271,6 +266,68 @@ class MediaServerClient(
             putJsonObject("Arguments") { arguments.forEach { (k, v) -> put(k, v) } }
         }.toString()
         http.fetchString(request(url("Sessions", sessionId, "Command")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
+    }
+
+    /**
+     * Lance ou met en file des éléments sur la session (`POST /Sessions/{id}/Playing`) ;
+     * [playCommand] : `PlayNow`, `PlayNext` ou `PlayLast`. Les identifiants sont séparés par
+     * des virgules (forme acceptée par Jellyfin et Emby).
+     */
+    suspend fun play(sessionId: String, playCommand: String, itemIds: List<String>, startIndex: Int? = null) {
+        val query = buildMap {
+            put("playCommand", playCommand)
+            put("itemIds", itemIds.joinToString(","))
+            startIndex?.let { put("startIndex", it.toString()) }
+        }
+        http.fetchString(request(url("Sessions", sessionId, "Playing", query = query)).post(EMPTY_BODY).build())
+    }
+
+    /** Affiche un message sur l'écran de la session (`POST /Sessions/{id}/Message`). */
+    suspend fun sendMessage(sessionId: String, header: String, text: String, timeoutMs: Long) {
+        val body = buildJsonObject {
+            put("Header", header)
+            put("Text", text)
+            put("TimeoutMs", timeoutMs)
+        }.toString()
+        http.fetchString(request(url("Sessions", sessionId, "Message")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
+    }
+
+    /** Analyse de toutes les bibliothèques (`POST /Library/Refresh`, réservé aux administrateurs). */
+    suspend fun refreshLibrary() {
+        http.fetchString(request(url("Library", "Refresh")).post(EMPTY_BODY).build())
+    }
+
+    /**
+     * Vues (bibliothèques racines) de l'utilisateur. Jellyfin récent n'expose plus que
+     * `GET /UserViews?userId=…` ; Emby conserve `GET /Users/{userId}/Views`.
+     */
+    suspend fun userViews(userId: String): List<ItemDto> {
+        val target = when (flavor) {
+            MediaServerFlavor.JELLYFIN -> url("UserViews", query = mapOf("userId" to userId))
+            MediaServerFlavor.EMBY -> url("Users", userId, "Views")
+        }
+        return decode(ItemsResultDto.serializer(), http.fetchString(request(target).get().build())).items
+    }
+
+    /**
+     * Recherche d'éléments : `GET /Items?userId=…` (Jellyfin récent) ou
+     * `GET /Users/{userId}/Items` (Emby), avec les paramètres [query] (`ParentId`, `Ids`…).
+     */
+    suspend fun items(userId: String, query: Map<String, String>): ItemsResultDto {
+        val target = when (flavor) {
+            MediaServerFlavor.JELLYFIN -> url("Items", query = mapOf("userId" to userId) + query)
+            MediaServerFlavor.EMBY -> url("Users", userId, "Items", query = query)
+        }
+        return decode(ItemsResultDto.serializer(), http.fetchString(request(target).get().build()))
+    }
+
+    /** Détail d'un élément (pistes comprises) : `GET /Items/{id}?userId=…` ou `GET /Users/{userId}/Items/{id}`. */
+    suspend fun item(userId: String, itemId: String): ItemDto {
+        val target = when (flavor) {
+            MediaServerFlavor.JELLYFIN -> url("Items", itemId, query = mapOf("userId" to userId))
+            MediaServerFlavor.EMBY -> url("Users", userId, "Items", itemId)
+        }
+        return decode(ItemDto.serializer(), http.fetchString(request(target).get().build()))
     }
 
     /**

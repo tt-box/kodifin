@@ -231,7 +231,7 @@ class MediaServerAccountsTest {
         val auth = server.next()
         assertEquals("/Users/AuthenticateByName", auth.url.encodedPath)
         assertEquals("""{"Username":"Salon","Pw":""}""", auth.body!!.utf8())
-        assertTrue(auth.headers["X-Emby-Authorization"]!!.startsWith("MediaBrowser Client=\"Zapette\""))
+        assertTrue(auth.headers["X-Emby-Authorization"]!!.startsWith("Emby Client=\"Zapette\""))
         assertNull("aucun jeton avant authentification", auth.headers["X-Emby-Token"])
         assertEquals("tok-e", server.next().headers["X-Emby-Token"])
         assertEquals("/Sessions/tv/Command", server.next().url.encodedPath)
