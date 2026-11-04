@@ -1,5 +1,16 @@
 # Zapette
 
+[![CI](https://github.com/jmorille/zapette/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmorille/zapette/actions/workflows/ci.yml)
+[![Fusion auto Dependabot](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml)
+[![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/jmorille/zapette/security/dependabot)
+[![Scan CVE](https://img.shields.io/badge/CVE-OSV--Scanner-4285F4?logo=google&logoColor=white)](https://github.com/google/osv-scanner)
+[![Traceurs](https://img.shields.io/badge/traceurs-0-brightgreen)](scripts/check-no-trackers.sh)
+
+[![Android](https://img.shields.io/badge/Android-8%2B%20%E2%86%92%2016%20(API%2036)-3DDC84?logo=android&logoColor=white)](app/build.gradle.kts)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?logo=kotlin&logoColor=white)](gradle/libs.versions.toml)
+[![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)](gradle/libs.versions.toml)
+[![AGP](https://img.shields.io/badge/AGP-9.5.0-02303A?logo=gradle&logoColor=white)](gradle/libs.versions.toml)
+
 Télécommande Android pour media centers et lecteurs réseau, **sans aucun traceur**.
 Cible Android 16 (API 36), compatible Android 8+.
 
