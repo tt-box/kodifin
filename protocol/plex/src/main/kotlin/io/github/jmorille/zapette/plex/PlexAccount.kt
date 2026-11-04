@@ -1,10 +1,14 @@
 package io.github.jmorille.zapette.plex
 
 import io.github.jmorille.zapette.model.EMPTY_BODY
+import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.fetchString
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -40,32 +44,50 @@ data class PlexIdentity(val clientIdentifier: String, val product: String = "Zap
 /**
  * Compte plex.tv par code de liaison : l'utilisateur saisit le code sur
  * https://plex.tv/link — l'application ne manipule jamais le mot de passe.
+ *
+ * Le jeton du compte n'est envoyé qu'à [apiBase], qui doit être en HTTPS
+ * (seule la boucle locale est tolérée en HTTP, pour les tests).
  */
 class PlexAccount(
     private val http: OkHttpClient,
     private val identity: PlexIdentity,
-    private val apiBase: String = "https://plex.tv",
+    apiBase: String = "https://plex.tv",
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val base: HttpUrl = apiBase.trimEnd('/').toHttpUrl()
+
+    init {
+        require(base.isHttps || base.host == "localhost" || base.host.startsWith("127.") || base.host == "::1") {
+            "L'API plex.tv doit être jointe en HTTPS"
+        }
+    }
+
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
+
+    private fun url(vararg segments: String): HttpUrl.Builder =
+        base.newBuilder().apply { segments.forEach { addPathSegment(it) } }
+
+    private fun <T> decode(serializer: DeserializationStrategy<T>, text: String): T = try {
+        json.decodeFromString(serializer, text)
+    } catch (e: SerializationException) {
+        throw RemoteException("Réponse inattendue de plex.tv", e)
+    } catch (e: IllegalArgumentException) {
+        throw RemoteException("Réponse inattendue de plex.tv", e)
+    }
 
     suspend fun createPin(): PlexPin {
-        val text = http.fetchString(identity.apply(Request.Builder().url("$apiBase/api/v2/pins")).post(EMPTY_BODY).build())
-        return json.decodeFromString(PlexPin.serializer(), text)
+        val request = identity.apply(Request.Builder().url(url("api", "v2", "pins").build())).post(EMPTY_BODY).build()
+        return decode(PlexPin.serializer(), http.fetchString(request))
     }
 
     /** Renvoie le jeton une fois le code validé par l'utilisateur, sinon `null`. */
     suspend fun checkPin(pin: PlexPin): String? {
-        val text = http.fetchString(identity.apply(Request.Builder().url("$apiBase/api/v2/pins/${pin.id}")).get().build())
-        return json.decodeFromString(PlexPin.serializer(), text).authToken?.ifBlank { null }
+        val request = identity.apply(Request.Builder().url(url("api", "v2", "pins", pin.id.toString()).build())).get().build()
+        return decode(PlexPin.serializer(), http.fetchString(request)).authToken?.ifBlank { null }
     }
 
     suspend fun resources(token: String): List<PlexResource> {
-        val url = "$apiBase/api/v2/resources".toHttpUrl().newBuilder()
-            .addQueryParameter("includeHttps", "1")
-            .build()
-        val text = http.fetchString(
-            identity.apply(Request.Builder().url(url)).header("X-Plex-Token", token).get().build(),
-        )
-        return json.decodeFromString(ListSerializer(PlexResource.serializer()), text)
+        val target = url("api", "v2", "resources").addQueryParameter("includeHttps", "1").build()
+        val request = identity.apply(Request.Builder().url(target)).header("X-Plex-Token", token).get().build()
+        return decode(ListSerializer(PlexResource.serializer()), http.fetchString(request))
     }
 }

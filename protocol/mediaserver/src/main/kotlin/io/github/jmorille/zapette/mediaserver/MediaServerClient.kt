@@ -4,13 +4,17 @@ import io.github.jmorille.zapette.model.EMPTY_BODY
 import io.github.jmorille.zapette.model.JSON_MEDIA_TYPE
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.fetchString
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -30,6 +34,7 @@ data class UserDto(@SerialName("Id") val id: String, @SerialName("Name") val nam
 @Serializable
 data class SessionDto(
     @SerialName("Id") val id: String,
+    @SerialName("DeviceId") val deviceId: String? = null,
     @SerialName("DeviceName") val deviceName: String = "",
     @SerialName("Client") val client: String = "",
     @SerialName("SupportsRemoteControl") val supportsRemoteControl: Boolean = false,
@@ -60,18 +65,27 @@ class MediaServerClient(
     baseUrl: String,
     private val flavor: MediaServerFlavor,
     private val deviceId: String,
-    var accessToken: String? = null,
+    accessToken: String? = null,
     private val appVersion: String = "1.0",
 ) {
-    private val base = baseUrl.trimEnd('/')
-    private val json = Json { ignoreUnknownKeys = true }
+    /** Jeton courant ; lu et écrit depuis plusieurs coroutines (commandes et suivi de lecture). */
+    @Volatile
+    var accessToken: String? = accessToken
+
+    private val base: HttpUrl? = baseUrl.trimEnd('/').toHttpUrlOrNull()
+
+    /** `coerceInputValues` : un `null` reçu pour un champ non nullable prend sa valeur par défaut. */
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
+
+    /** Retire ce qui casserait la syntaxe `Clé="valeur"` de l'en-tête (guillemets, virgules, contrôles). */
+    private fun headerParam(value: String): String = value.filterNot { it == '"' || it == ',' || it.isISOControl() }
 
     /** En-tête d'autorisation `MediaBrowser …` attendu par les deux serveurs. */
     internal fun authorizationValue(): String = buildString {
         append("MediaBrowser Client=\"Zapette\", Device=\"Android\", DeviceId=\"")
-        append(deviceId.replace("\"", ""))
-        append("\", Version=\"").append(appVersion).append('"')
-        accessToken?.let { append(", Token=\"").append(it).append('"') }
+        append(headerParam(deviceId))
+        append("\", Version=\"").append(headerParam(appVersion)).append('"')
+        accessToken?.let { append(", Token=\"").append(headerParam(it)).append('"') }
     }
 
     private fun authHeaderName() = when (flavor) {
@@ -79,32 +93,55 @@ class MediaServerClient(
         MediaServerFlavor.EMBY -> "X-Emby-Authorization"
     }
 
-    private fun request(path: String) = Request.Builder()
-        .url("$base$path")
+    /** Construit l'URL en encodant chaque segment : un identifiant ne peut pas sortir de son segment. */
+    internal fun url(vararg segments: String, query: Map<String, String> = emptyMap()): HttpUrl {
+        val root = base ?: throw RemoteException("Adresse du serveur invalide")
+        return root.newBuilder().apply {
+            segments.forEach { addPathSegment(it) }
+            query.forEach { (k, v) -> addQueryParameter(k, v) }
+        }.build()
+    }
+
+    private fun request(url: HttpUrl): Request.Builder = Request.Builder()
+        .url(url)
         .header(authHeaderName(), authorizationValue())
         .header("Accept", "application/json")
+        .apply {
+            // Emby lit le jeton dans X-Emby-Token ; Jellyfin le prend dans l'en-tête Authorization.
+            val token = accessToken
+            if (flavor == MediaServerFlavor.EMBY && token != null) header("X-Emby-Token", headerParam(token))
+        }
 
+    private fun <T> decode(serializer: DeserializationStrategy<T>, text: String): T = try {
+        json.decodeFromString(serializer, text)
+    } catch (e: SerializationException) {
+        throw RemoteException("Réponse inattendue du serveur", e)
+    } catch (e: IllegalArgumentException) {
+        throw RemoteException("Réponse inattendue du serveur", e)
+    }
+
+    /** Le mot de passe n'est ni conservé ni repris dans un message d'erreur. */
     suspend fun authenticate(username: String, password: String): AuthResult {
         val body = buildJsonObject { put("Username", username); put("Pw", password) }.toString()
-        val text = http.fetchString(request("/Users/AuthenticateByName").post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
-        val result = json.decodeFromString(AuthResult.serializer(), text)
+        val text = http.fetchString(
+            request(url("Users", "AuthenticateByName")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build(),
+        )
+        val result = decode(AuthResult.serializer(), text)
+        if (result.accessToken.isBlank()) throw RemoteException("Jeton absent de la réponse du serveur")
         accessToken = result.accessToken
         return result
     }
 
     suspend fun sessions(userId: String? = null): List<SessionDto> {
-        val url = "$base/Sessions".toHttpUrl().newBuilder().apply {
-            if (userId != null) addQueryParameter("ControllableByUserId", userId)
-        }.build()
-        val text = http.fetchString(request("").url(url).get().build())
-        return json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(SessionDto.serializer()), text)
+        val query = if (userId != null) mapOf("ControllableByUserId" to userId) else emptyMap()
+        val text = http.fetchString(request(url("Sessions", query = query)).get().build())
+        return decode(ListSerializer(SessionDto.serializer()), text)
     }
 
     /** Commande de lecture : `PlayPause`, `Stop`, `NextTrack`, `Seek`… */
     suspend fun playstate(sessionId: String, command: String, seekPositionTicks: Long? = null) {
-        val path = "/Sessions/$sessionId/Playing/$command" +
-            (seekPositionTicks?.let { "?seekPositionTicks=$it" } ?: "")
-        http.fetchString(request(path).post(EMPTY_BODY).build())
+        val query = seekPositionTicks?.let { mapOf("seekPositionTicks" to it.coerceAtLeast(0).toString()) } ?: emptyMap()
+        http.fetchString(request(url("Sessions", sessionId, "Playing", command, query = query)).post(EMPTY_BODY).build())
     }
 
     /** Commande générale : `MoveUp`, `Select`, `GoHome`, `VolumeUp`… */
@@ -113,7 +150,7 @@ class MediaServerClient(
             put("Name", name)
             putJsonObject("Arguments") { arguments.forEach { (k, v) -> put(k, v) } }
         }.toString()
-        http.fetchString(request("/Sessions/$sessionId/Command").post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
+        http.fetchString(request(url("Sessions", sessionId, "Command")).post(body.toRequestBody(JSON_MEDIA_TYPE)).build())
     }
 
     suspend fun requireToken(): String = accessToken ?: throw RemoteException("Non authentifié sur le serveur")
