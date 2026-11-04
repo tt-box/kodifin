@@ -8,6 +8,7 @@ import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.requireKey
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import okhttp3.OkHttpClient
@@ -74,7 +75,8 @@ class KodiController(
     override fun playbackState(): Flow<PlaybackState> = flow {
         while (true) {
             emit(snapshot())
-            delay(pollIntervalMs)
+            // delay(0) rend la main sans suspendre : yield() évite une boucle active non annulable.
+            if (pollIntervalMs > 0) delay(pollIntervalMs) else yield()
         }
     }
 

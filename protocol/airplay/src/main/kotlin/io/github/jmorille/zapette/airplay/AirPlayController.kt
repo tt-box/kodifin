@@ -10,6 +10,7 @@ import io.github.jmorille.zapette.model.RemoteKey
 import io.github.jmorille.zapette.model.fetchString
 import io.github.jmorille.zapette.model.requireKey
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import okhttp3.HttpUrl
@@ -48,8 +49,12 @@ class AirPlayController(
         .header("X-Apple-Session-ID", sessionId)
 
     override suspend fun playUrl(url: String, title: String?) {
-        // Le corps text/parameters est analysé ligne à ligne : un retour à la ligne injecterait un paramètre.
-        require(url.none { it == '\r' || it == '\n' }) { "URL invalide : retour à la ligne interdit" }
+        // Le corps text/parameters est analysé ligne à ligne : un retour à la ligne (y compris
+        // NEL U+0085, LS U+2028, PS U+2029) injecterait un paramètre ; NUL et les autres
+        // caractères de contrôle tronqueraient ou corrompraient la valeur.
+        require(url.none { it.isISOControl() || it == ' ' || it == ' ' }) {
+            "URL invalide : retour à la ligne ou caractère de contrôle interdit"
+        }
         val body = "Content-Location: $url\nStart-Position: 0.000000\n"
         http.fetchString(request("/play").post(body.toRequestBody(TEXT_PARAMETERS)).build())
         playing = true
@@ -102,7 +107,8 @@ class AirPlayController(
                 val (position, duration) = parseScrub(text)
                 emit(PlaybackState(isPlaying = playing, positionMs = position, durationMs = duration))
             }
-            delay(pollIntervalMs)
+            // delay(0) rend la main sans suspendre : yield() évite une boucle active non annulable.
+            if (pollIntervalMs > 0) delay(pollIntervalMs) else yield()
         }
     }
 

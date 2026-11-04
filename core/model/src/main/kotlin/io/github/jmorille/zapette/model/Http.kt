@@ -32,10 +32,20 @@ suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
     })
 }
 
-/** Exécute la requête et renvoie le corps ; lève [RemoteException] si le statut n'est pas 2xx. */
-suspend fun OkHttpClient.fetchString(request: Request): String {
+/** Taille maximale par défaut d'un corps de réponse lu en mémoire (4 Mio). */
+const val DEFAULT_MAX_BODY_BYTES: Long = 4L * 1024 * 1024
+
+/**
+ * Exécute la requête et renvoie le corps ; lève [RemoteException] si le statut n'est pas 2xx,
+ * si la connexion échoue ou si le corps dépasse [maxBodyBytes] (lu au plus `maxBodyBytes + 1`
+ * octets, jamais en entier).
+ */
+suspend fun OkHttpClient.fetchString(request: Request, maxBodyBytes: Long = DEFAULT_MAX_BODY_BYTES): String {
+    require(maxBodyBytes >= 0) { "maxBodyBytes doit être positif ou nul" }
     val response = try {
         newCall(request).await()
+    } catch (e: RedirectRefusedException) {
+        throw RemoteException(e.message ?: "Redirection refusée", e)
     } catch (e: IOException) {
         throw RemoteException("Appareil injoignable (${request.url.host})", e)
     }
@@ -43,14 +53,28 @@ suspend fun OkHttpClient.fetchString(request: Request): String {
         if (!it.isSuccessful) {
             throw HttpStatusException(it.code, "HTTP ${it.code} sur ${request.url.encodedPath}")
         }
+        val tooLarge = { RemoteException("Réponse trop volumineuse (plus de $maxBodyBytes octets) de ${request.url.host}") }
+        val body = it.body
+        // Taille annoncée : refus immédiat, sans rien lire.
+        if (body.contentLength() > maxBodyBytes) throw tooLarge()
         // La lecture du corps peut elle aussi échouer (connexion coupée, délai dépassé).
         return try {
-            it.body.string()
+            val source = body.source()
+            // request() renvoie vrai si au moins maxBodyBytes + 1 octets sont disponibles :
+            // le corps est alors trop gros (cas d'un corps sans Content-Length ou mensonger).
+            if (source.request(maxBodyBytes + 1)) throw tooLarge()
+            val buffer = source.buffer
+            val charset = body.contentType()?.charset() ?: Charsets.UTF_8
+            // Marque d'ordre d'octets UTF-8 ignorée, comme le fait ResponseBody.string().
+            if (charset == Charsets.UTF_8 && buffer.size >= 3 && buffer.rangeEquals(0, UTF8_BOM)) buffer.skip(3)
+            buffer.readString(charset)
         } catch (e: IOException) {
             throw RemoteException("Réponse interrompue (${request.url.host})", e)
         }
     }
 }
+
+private val UTF8_BOM = okio.ByteString.of(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
 
 class HttpStatusException(val code: Int, message: String) : RemoteException(message)
 

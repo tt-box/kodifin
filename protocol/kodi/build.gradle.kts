@@ -6,6 +6,7 @@ plugins {
 dependencies {
     api(project(":core:model"))
     testImplementation(libs.junit)
+    testImplementation(testFixtures(project(":core:model")))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.turbine)

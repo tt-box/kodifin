@@ -7,9 +7,12 @@ import org.junit.Test
 class CastMediaTest {
     @Test
     fun `content type ignores query and fragment`() {
-        assertEquals("application/x-mpegURL", CastMedia.contentType("https://cdn/live/index.m3u8?token=1"))
+        assertEquals("application/vnd.apple.mpegurl", CastMedia.contentType("https://cdn/live/index.m3u8?token=1"))
         assertEquals("audio/mpeg", CastMedia.contentType("http://nas/a.MP3#t=10"))
         assertEquals("video/mp4", CastMedia.contentType("http://nas/stream"))
+        // Hôte pointé sans extension de chemin : type par défaut, pas « local ».
+        assertEquals("video/mp4", CastMedia.contentType("http://nas.local/stream"))
+        assertEquals("video/x-matroska", CastMedia.contentType("http://nas/film.MKV?x=1"))
         assertTrue(CastMedia.isAudio(CastMedia.contentType("x.flac")))
     }
 

@@ -3,6 +3,7 @@ package io.github.jmorille.zapette.upnp
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.MediaTypes
 import io.github.jmorille.zapette.model.PlaybackState
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteException
@@ -16,7 +17,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -160,26 +160,7 @@ class UpnpRendererController(
                 "</item></DIDL-Lite>"
         }
 
-        fun guessMime(url: String): String {
-            val ext = runCatching { url.toHttpUrl().encodedPath }.getOrDefault(url)
-                .substringAfterLast('.', "").lowercase()
-            return when (ext) {
-                "mp3" -> "audio/mpeg"
-                "wav" -> "audio/wav"
-                "flac" -> "audio/flac"
-                "aac", "m4a" -> "audio/mp4"
-                "ogg", "opus" -> "audio/ogg"
-                "jpg", "jpeg" -> "image/jpeg"
-                "png" -> "image/png"
-                "mkv" -> "video/x-matroska"
-                "webm" -> "video/webm"
-                "avi" -> "video/x-msvideo"
-                "mov" -> "video/quicktime"
-                "ts" -> "video/mp2t"
-                "m3u8" -> "application/vnd.apple.mpegurl"
-                else -> "video/mp4"
-            }
-        }
+        fun guessMime(url: String): String = MediaTypes.forUrl(url) ?: "video/mp4"
 
         /** Booléen UPnP (UDA 1.1 : « 0 », « 1 », « false », « true », « no », « yes »). */
         internal fun parseUpnpBoolean(value: String?): Boolean? = when (value?.trim()?.lowercase()) {

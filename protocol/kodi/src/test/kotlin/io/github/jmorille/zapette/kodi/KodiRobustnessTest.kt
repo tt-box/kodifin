@@ -4,9 +4,12 @@ import io.github.jmorille.zapette.model.Device
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.HttpStatusException
 import io.github.jmorille.zapette.model.RemoteException
+import io.github.jmorille.zapette.testing.assertFailsWithMessage
+import io.github.jmorille.zapette.testing.awaitRequest
+import io.github.jmorille.zapette.testing.release
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
@@ -22,12 +25,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
+import java.net.UnknownHostException
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** Transport factice : réponses brutes par méthode, ou exception à lever. */
 private class ScriptedTransport(
@@ -48,16 +52,6 @@ private class ScriptedTransport(
     }
 }
 
-private inline fun <reified T : Throwable> expect(block: () -> Unit): T {
-    try {
-        block()
-    } catch (e: Throwable) {
-        if (e is T) return e
-        throw AssertionError("${T::class.simpleName} attendue, ${e::class.simpleName} reçue", e)
-    }
-    throw AssertionError("${T::class.simpleName} attendue")
-}
-
 class KodiClientRobustnessTest {
     private val device = Device("k", "Salon", DeviceKind.KODI, "10.0.0.2")
 
@@ -73,20 +67,20 @@ class KodiClientRobustnessTest {
                 ),
             ),
         )
-        expect<RemoteException> { client.activePlayers() }
-        expect<RemoteException> { client.playerItem(1) }
-        expect<RemoteException> { client.apiVersion() }
-        expect<RemoteException> { client.appProperties() }
+        assertFailsWithMessage<RemoteException>(KodiMethod.PLAYER_GET_ACTIVE) { client.activePlayers() }
+        assertFailsWithMessage<RemoteException>(KodiMethod.PLAYER_GET_ITEM) { client.playerItem(1) }
+        assertFailsWithMessage<RemoteException>(KodiMethod.VERSION) { client.apiVersion() }
+        assertFailsWithMessage<RemoteException>(KodiMethod.APP_GET_PROPERTIES) { client.appProperties() }
     }
 
     @Test
     fun `players without usable id are skipped`() = runTest {
         val client = KodiClient(
             ScriptedTransport(
-                mapOf(KodiMethod.PLAYER_GET_ACTIVE to """[{"type":"video"},"x",{"playerid":0,"type":"audio"}]"""),
+                mapOf(KodiMethod.PLAYER_GET_ACTIVE to """[{"type":"video"},"x",{"playerid":0,"type":"audio"},{"playerid":2}]"""),
             ),
         )
-        assertEquals(listOf(KodiPlayer(0, "audio")), client.activePlayers())
+        assertEquals(listOf(KodiPlayer(0, "audio"), KodiPlayer(2, "unknown")), client.activePlayers())
     }
 
     @Test
@@ -99,10 +93,8 @@ class KodiClientRobustnessTest {
                 ),
             ),
         )
-        val props = client.playerProperties(1)
-        assertEquals(0, props.speed)
-        assertEquals(0, props.timeMs)
-        assertEquals("21.0", client.appProperties().version)
+        assertEquals(KodiPlayerProperties(speed = 0, timeMs = 0, totalTimeMs = 0, percentage = 0.0), client.playerProperties(1))
+        assertEquals(KodiAppProperties(volume = 0, muted = false, version = "21.0"), client.appProperties())
     }
 
     @Test
@@ -110,14 +102,17 @@ class KodiClientRobustnessTest {
         val transport = ScriptedTransport()
         KodiClient(transport).seekTo(1, -5_000)
         val time = transport.calls.single().second!!["value"]!!.jsonObject["time"]!!.jsonObject
+        assertEquals(setOf("hours", "minutes", "seconds", "milliseconds"), time.keys)
         assertTrue(time.values.all { it.jsonPrimitive.int == 0 })
     }
 
     @Test
     fun `connect fails when ping does not answer pong`() = runTest {
         val controller = KodiController(device, KodiClient(ScriptedTransport(mapOf(KodiMethod.PING to "\"nope\""))))
-        expect<RemoteException> { controller.connect() }
-        KodiController(device, KodiClient(ScriptedTransport(mapOf(KodiMethod.PING to "\"pong\"")))).connect()
+        assertFailsWithMessage<RemoteException>("serveur Kodi") { controller.connect() }
+        val ok = ScriptedTransport(mapOf(KodiMethod.PING to "\"pong\""))
+        KodiController(device, KodiClient(ok)).connect()
+        assertEquals(listOf(KodiMethod.PING), ok.calls.map { it.first })
     }
 
     @Test
@@ -138,6 +133,18 @@ class KodiClientRobustnessTest {
     }
 
     @Test
+    fun `transport errors other than JSON-RPC errors propagate from snapshot`() = runTest {
+        val transport = ScriptedTransport(
+            responses = mapOf(
+                KodiMethod.APP_GET_PROPERTIES to """{"volume":30,"muted":true}""",
+                KodiMethod.PLAYER_GET_ACTIVE to """[{"playerid":1,"type":"video"}]""",
+            ),
+            errors = mapOf(KodiMethod.PLAYER_GET_PROPERTIES to RemoteException("coupure réseau")),
+        )
+        assertFailsWithMessage<RemoteException>("coupure réseau") { KodiController(device, KodiClient(transport)).snapshot() }
+    }
+
+    @Test
     fun `disconnect closes the transport`() = runTest {
         val transport = ScriptedTransport()
         KodiController(device, KodiClient(transport)).disconnect()
@@ -154,8 +161,7 @@ class KodiHttpTransportRobustnessTest {
             block(server, client)
         } finally {
             server.close()
-            client.dispatcher.executorService.shutdown()
-            client.connectionPool.evictAll()
+            client.release()
         }
     }
 
@@ -163,24 +169,41 @@ class KodiHttpTransportRobustnessTest {
     fun `invalid JSON body raises RemoteException`() = withServer { server, http ->
         server.enqueue(MockResponse.Builder().body("<html>pas du JSON</html>").build())
         val transport = KodiHttpTransport(http, server.url("/").toString())
-        val e = expect<RemoteException> { transport.call(KodiMethod.PING) }
+        val e = assertFailsWithMessage<RemoteException>("Réponse Kodi invalide") { transport.call(KodiMethod.PING) }
         assertFalse(e is KodiRpcException)
+        assertTrue(e.cause is IllegalArgumentException, "cause : ${e.cause}")
     }
 
     @Test
     fun `malformed error member still raises KodiRpcException`() = withServer { server, http ->
         server.enqueue(MockResponse.Builder().body("""{"id":1,"jsonrpc":"2.0","error":"boom"}""").build())
         val transport = KodiHttpTransport(http, server.url("/").toString())
-        assertEquals(-1, expect<KodiRpcException> { transport.call(KodiMethod.PING) }.code)
+        val e = assertFailsWithMessage<KodiRpcException>("erreur inconnue") { transport.call(KodiMethod.PING) }
+        assertEquals(-1, e.code)
+    }
+
+    @Test
+    fun `null result is returned as JsonNull`() = withServer { server, http ->
+        server.enqueue(MockResponse.Builder().body("""{"id":1,"jsonrpc":"2.0","error":null}""").build())
+        val transport = KodiHttpTransport(http, server.url("/").toString())
+        assertEquals(kotlinx.serialization.json.JsonNull, transport.call(KodiMethod.PING))
     }
 
     @Test
     fun `401 gives a clear message without leaking credentials`() = withServer { server, http ->
         server.enqueue(MockResponse.Builder().code(401).build())
         val transport = KodiHttpTransport(http, server.url("/").toString(), "kodi", "s3cr3t")
-        val e = expect<HttpStatusException> { transport.call(KodiMethod.PING) }
+        val e = assertFailsWithMessage<HttpStatusException>("Identifiants Kodi refusés") { transport.call(KodiMethod.PING) }
         assertEquals(401, e.code)
         assertFalse(e.message!!.contains("s3cr3t"))
+    }
+
+    @Test
+    fun `other HTTP errors are propagated unchanged`() = withServer { server, http ->
+        server.enqueue(MockResponse.Builder().code(503).build())
+        val transport = KodiHttpTransport(http, server.url("/").toString())
+        val e = assertFailsWithMessage<HttpStatusException>("HTTP 503") { transport.call(KodiMethod.PING) }
+        assertEquals(503, e.code)
     }
 
     @Test
@@ -188,13 +211,30 @@ class KodiHttpTransportRobustnessTest {
         server.enqueue(MockResponse.Builder().body("""{"id":1,"jsonrpc":"2.0","result":"pong"}""").build())
         KodiHttpTransport(http, server.url("/").toString(), "kodi", "été").call(KodiMethod.PING)
         // base64("kodi:été") encodé en UTF-8
-        assertEquals("Basic a29kaTrDqXTDqQ==", server.takeRequest().headers["Authorization"])
+        assertEquals("Basic a29kaTrDqXTDqQ==", server.awaitRequest().headers["Authorization"])
+    }
+
+    @Test
+    fun `no Authorization header without username`() = withServer { server, http ->
+        server.enqueue(MockResponse.Builder().body("""{"id":1,"jsonrpc":"2.0","result":"pong"}""").build())
+        KodiHttpTransport(http, server.url("/").toString(), "", "ignoré").call(KodiMethod.PING)
+        assertNull(server.awaitRequest().headers["Authorization"])
+    }
+
+    @Test
+    fun `request ids increase across calls`() = withServer { server, http ->
+        repeat(2) { server.enqueue(MockResponse.Builder().body("""{"jsonrpc":"2.0","result":"pong"}""").build()) }
+        val transport = KodiHttpTransport(http, server.url("/").toString())
+        transport.call(KodiMethod.PING)
+        transport.call(KodiMethod.PING)
+        val ids = List(2) { Json.parseToJsonElement(server.awaitRequest().body!!.utf8()).jsonObject["id"]!!.jsonPrimitive.int }
+        assertEquals(listOf(1, 2), ids)
     }
 
     @Test
     fun `invalid base url raises RemoteException`() = runTest {
         val transport = KodiHttpTransport(OkHttpClient(), "http://hôte invalide:8080")
-        expect<RemoteException> { transport.call(KodiMethod.PING) }
+        assertFailsWithMessage<RemoteException>("Adresse Kodi invalide") { transport.call(KodiMethod.PING) }
     }
 }
 
@@ -211,8 +251,7 @@ class KodiWebSocketTransportRobustnessTest {
                 withTimeout(5_000) { block(transport) }
             } finally {
                 transport.close()
-                http.dispatcher.executorService.shutdown()
-                http.connectionPool.evictAll()
+                http.release()
                 server.close()
             }
         }
@@ -228,7 +267,7 @@ class KodiWebSocketTransportRobustnessTest {
 
     @Test
     fun `timeout surfaces as RemoteException, not as a cancellation`() = wsTest(SilentServer(), 300) { transport ->
-        val e = expect<RemoteException> { transport.call(KodiMethod.PING) }
+        val e = assertFailsWithMessage<RemoteException>("délai imparti") { transport.call(KodiMethod.PING) }
         assertTrue(e.message!!.contains(KodiMethod.PING))
     }
 
@@ -242,31 +281,46 @@ class KodiWebSocketTransportRobustnessTest {
         timeoutMs = 60_000,
     ) { transport ->
         // Sans traitement de onClosing, l'appel attendrait le délai de 60 s (le test échoue à 5 s).
-        expect<RemoteException> { transport.call(KodiMethod.PING) }
+        assertFailsWithMessage<RemoteException>("WebSocket Kodi fermée") { transport.call(KodiMethod.PING) }
     }
 
     @Test
-    fun `close fails in-flight calls and rejects later ones`() = wsTest(SilentServer(), 60_000) { transport ->
-        val inFlight = async { runCatching { transport.call(KodiMethod.PING) } }
-        delay(200)
-        transport.close()
-        assertTrue(inFlight.await().exceptionOrNull() is RemoteException)
-        expect<RemoteException> { transport.call(KodiMethod.PING) }
+    fun `close fails in-flight calls and rejects later ones`() {
+        // Signal du serveur : la requête est bien partie, l'appel est donc en cours d'attente.
+        val received = CompletableDeferred<String>()
+        val listener = object : SilentServer() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                received.complete(text)
+            }
+        }
+        wsTest(listener, 60_000) { transport ->
+            val inFlight = async { runCatching { transport.call(KodiMethod.PING) } }
+            val sent = Json.parseToJsonElement(received.await()).jsonObject
+            assertEquals(KodiMethod.PING, sent["method"]!!.jsonPrimitive.content)
+            assertTrue(inFlight.isActive, "l'appel doit encore attendre sa réponse")
+            transport.close()
+            val error = inFlight.await().exceptionOrNull()
+            assertIs<RemoteException>(error)
+            assertTrue(error.message!!.contains("fermée"), error.message)
+            assertFailsWithMessage<RemoteException>("fermée") { transport.call(KodiMethod.PING) }
+        }
     }
 
     @Test
-    fun `unexpected message shapes are ignored`() {
-        val http = OkHttpClient()
-        val transport = KodiWebSocketTransport(http, "ws://127.0.0.1:1/jsonrpc")
+    fun `unexpected message shapes are ignored`() = runBlocking<Unit> {
+        // Nom réservé (RFC 2606) et résolveur qui échoue : aucune connexion réelle n'est tentée.
+        val http = OkHttpClient.Builder().dns { throw UnknownHostException(it) }.build()
+        val transport = KodiWebSocketTransport(http, "ws://kodi.invalid/jsonrpc", timeoutMs = 2_000)
         try {
             transport.handle("""{"id":{"x":1},"method":42}""")
             transport.handle("""[1,2,3]""")
             transport.handle("""pas du json""")
-        } catch (e: Exception) {
-            fail("handle ne doit pas lever : $e")
+            transport.handle("""{"id":12345,"result":"orphelin"}""")
+            // L'échec de connexion est remonté aux appels, sans attendre le délai.
+            assertFailsWithMessage<RemoteException>("WebSocket Kodi fermée") { transport.call(KodiMethod.PING) }
         } finally {
             transport.close()
-            http.dispatcher.executorService.shutdown()
+            http.release()
         }
     }
 }

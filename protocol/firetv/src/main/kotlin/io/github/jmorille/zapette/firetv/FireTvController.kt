@@ -2,6 +2,7 @@ package io.github.jmorille.zapette.firetv
 
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.Device
+import io.github.jmorille.zapette.model.MediaTypes
 import io.github.jmorille.zapette.model.RemoteController
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.RemoteKey
@@ -129,11 +130,14 @@ class FireTvController(
 
         private val COMBINING_MARKS = Regex("\\p{Mn}+")
 
-        fun mimeFor(url: String): String =
-            when (url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()) {
-                "mp3", "aac", "m4a", "flac", "ogg" -> "audio/*"
-                "jpg", "jpeg", "png" -> "image/*"
+        // Type générique (audio, image ou vidéo, sous-type joker) attendu par l'intention VIEW.
+        fun mimeFor(url: String): String {
+            val mime = MediaTypes.forUrl(url)
+            return when {
+                MediaTypes.isAudio(mime) -> "audio/*"
+                MediaTypes.isImage(mime) -> "image/*"
                 else -> "video/*"
             }
+        }
     }
 }
