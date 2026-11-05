@@ -1,5 +1,11 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.CloseFullscreen
+import io.github.jmorille.zapette.ui.devices.deviceIcon
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.activity.result.contract.ActivityResultContracts
@@ -118,6 +124,8 @@ fun RemoteScreen(
     sharedUrl: String?,
     onBack: () -> Unit,
     onEdit: () -> Unit = {},
+    /** Ouvre directement la télécommande d'un autre appareil enregistré. */
+    onSwitch: (String) -> Unit = {},
     /** Réglage global « Garder l'écran allumé » sur la télécommande (fourni par l'appelant). */
     keepScreenOn: Boolean = false,
 ) {
@@ -139,6 +147,8 @@ fun RemoteScreen(
         onDispose { view.keepScreenOn = previous }
     }
     val state by vm.state.collectAsStateWithLifecycle()
+    val saved by context.container.devices.saved.collectAsStateWithLifecycle(emptyList())
+    val switchable = remember(saved, deviceId) { RemoteSwitcher.entries(saved, deviceId) }
     val snackbar = remember { SnackbarHostState() }
     // Survivent à la rotation (énumérations sérialisables dans le Bundle).
     var dialog by rememberSaveable { mutableStateOf<RemoteDialog?>(null) }
@@ -188,6 +198,8 @@ fun RemoteScreen(
                 onOpenTargets = vm::refreshTargets,
                 onSelectTarget = vm::selectTarget,
                 onMore = { sheet = true },
+                switchable = switchable,
+                onSwitch = onSwitch,
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -342,6 +354,8 @@ private fun RemoteTopBar(
     onOpenTargets: () -> Unit,
     onSelectTarget: (String) -> Unit,
     onMore: () -> Unit,
+    switchable: List<SwitchEntry> = emptyList(),
+    onSwitch: (String) -> Unit = {},
 ) {
     val status = when {
         state.connecting -> "Connexion…"
@@ -350,12 +364,7 @@ private fun RemoteTopBar(
     }
     TopAppBar(
         title = {
-            Column {
-                Text(state.device?.name ?: "Télécommande", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                status?.let {
-                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                }
-            }
+            DeviceSwitcher(state.device?.name ?: "Télécommande", status, switchable, onSwitch)
         },
         navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
@@ -372,6 +381,63 @@ private fun RemoteTopBar(
             IconButton(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Plus d'actions") }
         },
     )
+}
+
+/**
+ * Titre de la barre : nom de l'appareil et, s'il y en a d'autres, menu des télécommandes
+ * enregistrées pour passer de l'une à l'autre sans revenir à l'accueil.
+ */
+@Composable
+private fun DeviceSwitcher(name: String, status: String?, entries: List<SwitchEntry>, onSwitch: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val others = entries.count { !it.current }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = if (others > 0) {
+                Modifier.clip(MaterialTheme.shapes.small)
+                    .clickable(onClickLabel = "Changer de télécommande") { open = true }
+                    .padding(end = 4.dp)
+            } else {
+                Modifier
+            },
+        ) {
+            Column(Modifier.weight(1f, fill = false)) {
+                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                status?.let {
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+            }
+            if (others > 0) Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Télécommandes",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            entries.forEach { entry ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(entry.device.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                entry.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    },
+                    leadingIcon = { Icon(deviceIcon(entry.device.kind), contentDescription = null) },
+                    trailingIcon = if (entry.current) ({ Icon(Icons.Filled.Check, contentDescription = "Télécommande actuelle") }) else null,
+                    enabled = !entry.current,
+                    onClick = { open = false; onSwitch(entry.device.id) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -591,9 +657,16 @@ private fun TabletPortraitLayout(content: RemoteContent) {
     val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_PORTRAIT, content.features)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = expanded && tabs.isNotEmpty()) { expanded = false }
     PanelsEffect(content, RemoteLayout.TABLET_PORTRAIT, selected)
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     ProgressFor(content)
+    if (expanded && tabs.isNotEmpty()) {
+        if (content.playbackRows) TransportFor(content)
+        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true) { expanded = false }
+        return@Column
+    }
     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)) {
         val remoteModifier = if (tabs.isEmpty()) Modifier.widthIn(max = 560.dp) else Modifier.weight(1f)
         Column(remoteModifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -602,7 +675,7 @@ private fun TabletPortraitLayout(content: RemoteContent) {
             VolumeFor(content)
         }
         if (tabs.isNotEmpty()) {
-            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight())
+            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight()) { expanded = true }
         }
     }
     }
@@ -614,9 +687,20 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
     val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, content.features)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = expanded && tabs.isNotEmpty()) { expanded = false }
     PanelsEffect(content, RemoteLayout.TABLET_LANDSCAPE, selected)
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     ProgressFor(content)
+    if (expanded && tabs.isNotEmpty()) {
+        // Volet agrandi : transport et volume sur une ligne, le reste pour les séries et films.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (content.playbackRows) Box(Modifier.weight(1f)) { TransportFor(content) }
+            Box(Modifier.weight(1f)) { VolumeFor(content) }
+        }
+        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true) { expanded = false }
+        return@Column
+    }
     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(
             Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
@@ -636,12 +720,16 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
             }
         }
         if (tabs.isNotEmpty()) {
-            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight())
+            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight()) { expanded = true }
         }
     }
     }
 }
 
+/**
+ * Volet à onglets (lecture, file, série, bibliothèque). [onToggleExpand] : bouton qui l'agrandit
+ * à toute la largeur de la page pour mieux parcourir les séries et films, ou le réduit.
+ */
 @Composable
 private fun SidePane(
     content: RemoteContent,
@@ -649,19 +737,35 @@ private fun SidePane(
     selected: RemoteTab?,
     onSelect: (RemoteTab) -> Unit,
     modifier: Modifier,
+    expanded: Boolean = false,
+    onToggleExpand: () -> Unit,
 ) {
     Surface(modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.88f)) {
         Column {
-            if (tabs.size > 1) {
-                PrimaryTabRow(selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0)) {
-                    tabs.forEach { tab ->
-                        Tab(
-                            selected = tab == selected,
-                            onClick = { onSelect(tab) },
-                            text = { Text(tab.short, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (tabs.size > 1) {
+                    PrimaryTabRow(selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0), modifier = Modifier.weight(1f)) {
+                        tabs.forEach { tab ->
+                            Tab(
+                                selected = tab == selected,
+                                onClick = { onSelect(tab) },
+                                text = { Text(tab.short, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                icon = { Icon(tab.icon, contentDescription = tab.label) },
+                            )
+                        }
                     }
+                } else {
+                    Text(
+                        selected?.label.orEmpty(),
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f).padding(start = 16.dp),
+                    )
+                }
+                IconButton(onClick = onToggleExpand) {
+                    Icon(
+                        if (expanded) Icons.Filled.CloseFullscreen else Icons.Filled.OpenInFull,
+                        contentDescription = if (expanded) "Réduire le volet" else "Agrandir le volet en plein écran",
+                    )
                 }
             }
             Box(Modifier.weight(1f)) {

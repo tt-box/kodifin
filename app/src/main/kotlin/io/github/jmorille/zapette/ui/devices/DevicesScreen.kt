@@ -233,7 +233,7 @@ private fun SectionTitle(text: String) {
 private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)? = null, onShare: (() -> Unit)? = null, onDelete: (() -> Unit)? = null) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         ListItem(
-            leadingContent = { Icon(iconFor(device.kind), contentDescription = null) },
+            leadingContent = { Icon(deviceIcon(device.kind), contentDescription = null) },
             headlineContent = { Text(device.name) },
             supportingContent = { Text("${device.kind.label} · ${device.host}") },
             trailingContent = if (onEdit == null && onDelete == null) null else {
@@ -249,7 +249,8 @@ private fun DeviceRow(device: Device, onClick: () -> Unit, onEdit: (() -> Unit)?
     }
 }
 
-private fun iconFor(kind: DeviceKind): ImageVector = when (kind) {
+/** Icône de la nature d'un appareil (accueil, sélecteur de télécommandes). */
+internal fun deviceIcon(kind: DeviceKind): ImageVector = when (kind) {
     DeviceKind.CHROMECAST, DeviceKind.AIRPLAY -> Icons.Filled.Cast
     DeviceKind.UPNP_RENDERER -> Icons.Filled.Speaker
     DeviceKind.JELLYFIN, DeviceKind.EMBY, DeviceKind.PLEX -> Icons.Filled.Videocam

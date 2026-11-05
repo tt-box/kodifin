@@ -1,5 +1,10 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,9 +15,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.MoreVert
@@ -177,22 +179,36 @@ private fun SeriesMessage(text: String, actionLabel: String? = null, onAction: (
 
 @Composable
 private fun EpisodeList(series: SeriesState, playback: PlaybackState?, actions: SeriesActions, modifier: Modifier) {
-    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val current = series.episodes.indexOfFirst { isCurrentEpisode(it, series, playback) }
     // Épisode en cours amené à l'écran (à l'ouverture, au changement de saison ou d'épisode).
     LaunchedEffect(series.seasonId, current, series.episodes.size) {
-        if (current >= 0) listState.animateScrollToItem((current - 1).coerceAtLeast(0))
+        if (current >= 0) gridState.animateScrollToItem((current - 1).coerceAtLeast(0))
     }
-    LazyColumn(state = listState, modifier = modifier) {
-        itemsIndexed(series.episodes, key = { index, e -> "$index:${e.id}" }) { index, episode ->
-            EpisodeRow(episode, index == current, actions)
+    BoxWithConstraints(modifier) {
+        // Volet étroit : une colonne ; volet agrandi : plusieurs colonnes, vignettes et résumés plus grands.
+        val wide = maxWidth >= WIDE_EPISODES
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(EPISODE_MIN_WIDTH),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            itemsIndexed(series.episodes, key = { index, e -> "$index:${e.id}" }) { index, episode ->
+                EpisodeRow(episode, index == current, actions, wide)
+            }
         }
     }
 }
 
+/** Largeur minimale d'une colonne d'épisodes. */
+private val EPISODE_MIN_WIDTH = 360.dp
+
+/** À partir de cette largeur de volet, les épisodes s'affichent en grand. */
+private val WIDE_EPISODES = 720.dp
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EpisodeRow(episode: MediaEntry, current: Boolean, actions: SeriesActions) {
+private fun EpisodeRow(episode: MediaEntry, current: Boolean, actions: SeriesActions, wide: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
     Surface(
         color = if (current) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface.copy(alpha = 0f),
@@ -209,7 +225,8 @@ private fun EpisodeRow(episode: MediaEntry, current: Boolean, actions: SeriesAct
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box {
-                MediaImage(episode, Modifier.size(width = 120.dp, height = 68.dp), iconSize = 28.dp)
+                val thumb = if (wide) Modifier.size(width = 176.dp, height = 99.dp) else Modifier.size(width = 120.dp, height = 68.dp)
+                MediaImage(episode, thumb, iconSize = 28.dp)
                 if (episode.watched == true && !current) WatchedBadge(Modifier.align(Alignment.TopEnd).padding(3.dp))
                 if (current) {
                     Surface(
@@ -255,7 +272,7 @@ private fun EpisodeRow(episode: MediaEntry, current: Boolean, actions: SeriesAct
                         it,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        maxLines = if (wide) 4 else 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 2.dp),
                     )

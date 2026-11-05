@@ -126,6 +126,10 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
             RemoteScreen(
                 keepScreenOn = keepScreenOn,
                 onEdit = { if (entry.isResumed) nav.navigate(EditRoute(route.deviceId)) },
+                // Autre télécommande : remplace celle-ci (Retour ramène toujours à l'accueil).
+                onSwitch = { id ->
+                    if (entry.isResumed && id != route.deviceId) nav.navigate(RemoteRoute(id)) { popUpTo(DevicesRoute) }
+                },
                 deviceId = route.deviceId,
                 sharedUrl = route.sharedUrl,
                 onBack = { if (entry.isResumed) nav.popBackStack() },
