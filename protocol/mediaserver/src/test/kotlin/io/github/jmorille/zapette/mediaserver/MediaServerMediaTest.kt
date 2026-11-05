@@ -121,7 +121,7 @@ class MediaServerMediaTest {
         assertEquals("sa2", r.url.queryParameter("seasonId"))
         assertEquals("u1", r.url.queryParameter("userId"))
         assertEquals("50", r.url.queryParameter("Limit"))
-        assertEquals("PrimaryImageAspectRatio", r.url.queryParameter("Fields"))
+        assertEquals("PrimaryImageAspectRatio,Overview", r.url.queryParameter("Fields"))
 
         // Dossier inconnu : parcours générique.
         json("""{"Items":[]}""")

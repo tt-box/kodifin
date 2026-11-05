@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.MediaItemInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -87,8 +88,11 @@ fun PlaybackDetails(
     actions: PlaybackActions,
     press: (RemoteKey) -> Unit,
     modifier: Modifier = Modifier,
+    /** Fiche du média en cours (résumé de l'épisode, distribution), en tête du volet. */
+    info: MediaItemInfo? = null,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        info?.let { NowPlayingInfoCard(it) }
         if (features.tracks) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Pistes et modes", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))

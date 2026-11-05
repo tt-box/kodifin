@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.kodi
 
+import kotlinx.serialization.json.doubleOrNull
+import io.github.jmorille.zapette.model.MediaItemInfo
 import io.github.jmorille.zapette.model.MediaEntry
 import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
@@ -178,6 +180,68 @@ internal class KodiLibrary(private val client: KodiClient) {
             season = s,
             episode = n,
             watched = watched(e),
+            overview = text(e["plot"])?.trim(),
+        )
+    }
+
+    /**
+     * Fiche détaillée d'un épisode ou d'un film (`GetEpisodeDetails` / `GetMovieDetails`) ;
+     * `null` pour les autres éléments (musique, chaînes, fichiers).
+     */
+    suspend fun itemInfo(entryId: String): MediaItemInfo? {
+        val id = runCatching { KodiEntryId.parse(entryId) }.getOrNull() ?: return null
+        val number = id.value.toIntOrNull() ?: return null
+        val episode = when (id.type) {
+            "episodeid" -> true
+            "movieid" -> false
+            else -> return null
+        }
+        val method = if (episode) KodiMethod.VIDEO_GET_EPISODE_DETAILS else KodiMethod.VIDEO_GET_MOVIE_DETAILS
+        val result = client.call(method, buildJsonObject {
+            put(id.type, number)
+            properties(if (episode) EPISODE_INFO_PROPERTIES else MOVIE_INFO_PROPERTIES)
+        }) as? JsonObject
+        val o = result?.get(if (episode) "episodedetails" else "moviedetails") as? JsonObject ?: return null
+        return info(entryId, o, episode)
+    }
+
+    private fun info(entryId: String, o: JsonObject, episode: Boolean): MediaItemInfo {
+        fun names(key: String) = (o[key] as? JsonArray)?.mapNotNull { text(it) }.orEmpty()
+        val cast = objects(o["cast"]).mapNotNull { c ->
+            val name = text(c["name"]) ?: return@mapNotNull null
+            text(c["role"])?.let { "$name ($it)" } ?: name
+        }
+        val streams = o["streamdetails"] as? JsonObject
+        val video = objects(streams?.get("video")).firstOrNull()?.let { v ->
+            val height = v["height"].primitive()?.intOrNull?.takeIf { it > 0 }
+            listOfNotNull(height?.let { "${it}p" }, text(v["codec"])?.uppercase()).joinToString(" · ").ifEmpty { null }
+        }
+        val audio = objects(streams?.get("audio")).firstOrNull()?.let { a ->
+            val channels = a["channels"].primitive()?.intOrNull?.takeIf { it > 0 }
+            listOfNotNull(text(a["language"]), text(a["codec"])?.uppercase(), channels?.let { if (it == 6) "5.1" else if (it == 8) "7.1" else "$it can." })
+                .joinToString(" · ").ifEmpty { null }
+        }
+        val date = text(if (episode) o["firstaired"] else o["premiered"])?.take(10)?.takeIf { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) }
+        return MediaItemInfo(
+            id = entryId,
+            title = label(o).orEmpty(),
+            overview = text(o["plot"])?.trim(),
+            seriesTitle = if (episode) text(o["showtitle"]) else null,
+            season = if (episode) o["season"].primitive()?.intOrNull?.takeIf { it >= 0 } else null,
+            episode = if (episode) o["episode"].primitive()?.intOrNull?.takeIf { it > 0 } else null,
+            airDate = date,
+            year = year(o) ?: date?.take(4)?.toIntOrNull(),
+            runtimeMs = o["runtime"].primitive()?.intOrNull?.takeIf { it > 0 }?.let { it * 1000L },
+            rating = o["rating"].primitive()?.doubleOrNull?.takeIf { it > 0 },
+            officialRating = text(o["mpaa"]),
+            genres = names("genre"),
+            studios = names("studio"),
+            directors = names("director"),
+            writers = names("writer"),
+            cast = cast,
+            video = video,
+            audio = audio,
+            imageKey = imageKey(o, preferThumb = episode),
         )
     }
 
@@ -454,7 +518,15 @@ internal class KodiLibrary(private val client: KodiClient) {
         val MOVIE_PROPERTIES = listOf("year", "playcount", "art", "thumbnail")
         val TV_SHOW_PROPERTIES = listOf("year", "playcount", "art", "thumbnail")
         val SEASON_PROPERTIES = listOf("season", "showtitle", "playcount", "art", "thumbnail")
-        val EPISODE_PROPERTIES = listOf("season", "episode", "playcount", "runtime", "art", "thumbnail")
+        val EPISODE_PROPERTIES = listOf("season", "episode", "playcount", "runtime", "art", "thumbnail", "plot")
+        val EPISODE_INFO_PROPERTIES = listOf(
+            "title", "plot", "showtitle", "season", "episode", "firstaired", "rating", "runtime",
+            "director", "writer", "cast", "art", "thumbnail", "streamdetails",
+        )
+        val MOVIE_INFO_PROPERTIES = listOf(
+            "title", "plot", "year", "premiered", "rating", "runtime", "genre", "studio", "director", "writer",
+            "cast", "mpaa", "art", "thumbnail", "streamdetails",
+        )
         val EPISODE_SEARCH_PROPERTIES = EPISODE_PROPERTIES + "showtitle"
         val ARTIST_PROPERTIES = listOf("thumbnail", "fanart")
         val ALBUM_PROPERTIES = listOf("artist", "year", "playcount", "art", "thumbnail")

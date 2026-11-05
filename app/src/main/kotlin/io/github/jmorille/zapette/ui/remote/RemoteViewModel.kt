@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.SupportsItemInfo
+import io.github.jmorille.zapette.model.MediaItemInfo
 import kotlinx.coroutines.flow.first
 import io.github.jmorille.zapette.model.RemoteException
 import io.github.jmorille.zapette.model.DeviceKind
@@ -82,6 +84,10 @@ data class RemoteUiState(
     val series: SeriesState = SeriesState(),
     val search: SearchState = SearchState(),
     val transfer: TransferState = TransferState(),
+    /** Fiche du média en cours (résumé, distribution), si le contrôleur en fournit. */
+    val nowPlayingInfo: MediaItemInfo? = null,
+    /** Fiche ouverte depuis la liste des épisodes. */
+    val itemInfo: ItemInfoState = ItemInfoState(),
     /** Un fichier du téléphone est servi sur le réseau local. */
     val sharing: Boolean = false,
 )
@@ -272,6 +278,8 @@ class RemoteViewModel(
                 }
                 connectWithRetry(c, attempts)
                 _state.update { it.copy(connecting = false, connected = true) }
+                // Connu après la connexion seulement (client Jellyfin choisi, commandes acceptées).
+                refreshAbilities(c)
                 persistCredentials(device, c)
                 consumeSharedUrl()?.let(::playUrl)
                 if (Capability.NOW_PLAYING in c.capabilities) playbackJob = observePlayback(c)
@@ -330,6 +338,7 @@ class RemoteViewModel(
             try {
                 c.playbackState().collect { s ->
                     _state.update { it.copy(playback = s) }
+                    refreshAbilities(c)
                     onTitle(s.title)
                 }
             } catch (e: CancellationException) {
@@ -510,11 +519,63 @@ class RemoteViewModel(
     }
 
     /** Changement de média : recharge les volets visibles qui en dépendent. */
+    /**
+     * Fonctions, touches et capacités relues sur le contrôleur : elles peuvent changer avec le
+     * client piloté (autre session Jellyfin) ; l'état n'est mis à jour que s'il y a une différence.
+     */
+    private fun refreshAbilities(c: RemoteController) {
+        if (c !== controller) return
+        val keys = c.supportedKeys
+        val capabilities = c.capabilities
+        _state.update { s ->
+            val features = RemoteFeatures.of(c).copy(powerActions = s.features.powerActions)
+            if (features == s.features && keys == s.supportedKeys && capabilities == s.capabilities) s
+            else s.copy(features = features, supportedKeys = keys, capabilities = capabilities)
+        }
+    }
+
+    /** Fiche du média en cours, rechargée au changement de titre (sans message en cas d'échec). */
+    private fun refreshNowPlayingInfo(title: String?) {
+        val c = connectedAs<SupportsItemInfo>()
+        infoJob?.cancel()
+        if (c == null || title == null) {
+            _state.update { it.copy(nowPlayingInfo = null) }
+            return
+        }
+        infoJob = viewModelScope.launch {
+            val info = try {
+                withContext(io) { c.nowPlayingInfo() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            _state.update { it.copy(nowPlayingInfo = info) }
+        }
+    }
+
+    private var infoJob: Job? = null
+
+    /** Ouvre la fiche d'un épisode (ou d'un film) de la liste. */
+    fun openItemInfo(entry: MediaEntry) {
+        val c = connectedAs<SupportsItemInfo>() ?: return run { _messages.trySend(NOT_SUPPORTED) }
+        _state.update { it.copy(itemInfo = ItemInfoState(entry = entry, loading = true)) }
+        viewModelScope.launch {
+            val info = load { c.itemInfo(entry.id) }
+            _state.update { s ->
+                if (s.itemInfo.entry?.id != entry.id) s else s.copy(itemInfo = s.itemInfo.copy(loading = false, info = info))
+            }
+        }
+    }
+
+    fun closeItemInfo() = _state.update { it.copy(itemInfo = ItemInfoState()) }
+
     private fun onTitle(title: String?) {
         if (titleSeen && title == lastTitle) return
         val changed = titleSeen
         titleSeen = true
         lastTitle = title
+        refreshNowPlayingInfo(title)
         viewModelScope.launch {
             // Pistes et chapitres : nécessaires à la barre d'avancement même volet fermé.
             if (title != null) refreshDetails()

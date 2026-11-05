@@ -476,7 +476,7 @@ class KodiControlsTest {
         assertEquals(
             call(
                 KodiMethod.VIDEO_GET_EPISODES,
-                """{"tvshowid":3,"season":1,"properties":["season","episode","playcount","runtime","art","thumbnail"],"limits":{"start":0,"end":50}}""",
+                """{"tvshowid":3,"season":1,"properties":["season","episode","playcount","runtime","art","thumbnail","plot"],"limits":{"start":0,"end":50}}""",
             ),
             calls[2],
         )

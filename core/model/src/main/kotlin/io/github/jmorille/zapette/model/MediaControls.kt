@@ -155,6 +155,8 @@ data class MediaEntry(
     val episode: Int? = null,
     /** Déjà vu (si le serveur le publie). */
     val watched: Boolean? = null,
+    /** Résumé (épisode, film), si le serveur le fournit dans la liste. */
+    val overview: String? = null,
 )
 
 /** Série du média en cours : ses saisons (navigables via [SupportsLibrary.browse]) et la position courante. */
@@ -188,6 +190,55 @@ interface SupportsSearch {
 interface SupportsImages {
     /** Octets de l'image (JPEG/PNG/WebP) redimensionnée côté serveur si possible, ou `null`. */
     suspend fun image(imageKey: String, maxWidth: Int): ByteArray?
+}
+
+/** Fiche détaillée d'un élément : résumé, diffusion, note, genres, équipe, flux. */
+data class MediaItemInfo(
+    val id: String,
+    val title: String,
+    val overview: String? = null,
+    val seriesTitle: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    /** Date de première diffusion ou de sortie, `AAAA-MM-JJ`. */
+    val airDate: String? = null,
+    val year: Int? = null,
+    val runtimeMs: Long? = null,
+    /** Note du public sur 10. */
+    val rating: Double? = null,
+    /** Classification (« TV-14 », « 12 »…). */
+    val officialRating: String? = null,
+    val genres: List<String> = emptyList(),
+    val studios: List<String> = emptyList(),
+    val directors: List<String> = emptyList(),
+    val writers: List<String> = emptyList(),
+    /** Distribution : « Acteur (Rôle) ». */
+    val cast: List<String> = emptyList(),
+    /** Résumés techniques : « 1080p · HEVC », « Français · AAC 5.1 ». */
+    val video: String? = null,
+    val audio: String? = null,
+    val imageKey: String? = null,
+)
+
+/** Fiches détaillées (résumé d'épisode, distribution…). */
+interface SupportsItemInfo {
+    /** Fiche de l'élément [entryId] (identifiant de [MediaEntry]) ; `null` s'il est inconnu. */
+    suspend fun itemInfo(entryId: String): MediaItemInfo?
+
+    /** Fiche du média en cours ; `null` si rien n'est en lecture. */
+    suspend fun nowPlayingInfo(): MediaItemInfo?
+}
+
+/** Fonctions facultatives dont la disponibilité dépend de l'appareil ou du client piloté. */
+enum class ControlFeature { NOTIFY, SCAN_LIBRARY, CLEAN_LIBRARY, QUEUE_EDIT, PLAY_MODE, TRACKS, SPEED, CHAPTERS }
+
+/**
+ * Le contrôleur sait dire qu'une fonction de ses interfaces `Supports*` est impossible avec
+ * l'appareil courant (client Jellyfin qui n'accepte pas la commande, par exemple) : l'interface
+ * la masque au lieu d'afficher un bouton qui échouerait. Réévalué à chaque mise à jour de l'état.
+ */
+interface DeclaresAvailability {
+    fun isAvailable(feature: ControlFeature): Boolean
 }
 
 /** Rubrique racine de la bibliothèque (films, séries, musique, chaînes TV, favoris, add-ons…). */

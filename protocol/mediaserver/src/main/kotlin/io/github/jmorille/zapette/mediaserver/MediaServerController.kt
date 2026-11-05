@@ -1,5 +1,9 @@
 package io.github.jmorille.zapette.mediaserver
 
+import io.github.jmorille.zapette.model.SupportsItemInfo
+import io.github.jmorille.zapette.model.MediaItemInfo
+import io.github.jmorille.zapette.model.DeclaresAvailability
+import io.github.jmorille.zapette.model.ControlFeature
 import io.github.jmorille.zapette.model.TransferableMedia
 import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.Chapter
@@ -67,7 +71,36 @@ class MediaServerController(
 ) : RemoteController, PersistsCredentials, DescribesServer,
     SupportsTargets, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsChapters,
     SupportsUiCommands, SupportsNotify, SupportsLibraryMaintenance, SupportsLibrary, SupportsQueue,
-    SupportsSeries, SupportsSearch, SupportsImages, SupportsTransferOut {
+    SupportsSeries, SupportsSearch, SupportsImages, SupportsTransferOut, SupportsItemInfo, DeclaresAvailability {
+
+    /**
+     * Fonctions masquées quand le client piloté ne les accepte pas (`SupportedCommands`), et
+     * celles que le serveur ne permet jamais (nettoyage, édition de la file d'un autre client).
+     */
+    override fun isAvailable(feature: ControlFeature): Boolean {
+        val commands = knownCommands()
+        return when (feature) {
+            ControlFeature.NOTIFY -> accepts(commands, "DisplayMessage")
+            ControlFeature.CLEAN_LIBRARY, ControlFeature.QUEUE_EDIT -> false
+            ControlFeature.PLAY_MODE -> accepts(commands, "SetRepeatMode") || accepts(commands, "SetShuffleQueue")
+            ControlFeature.TRACKS -> accepts(commands, "SetAudioStreamIndex") || accepts(commands, "SetSubtitleStreamIndex")
+            ControlFeature.SCAN_LIBRARY, ControlFeature.SPEED, ControlFeature.CHAPTERS -> true
+        }
+    }
+
+    override suspend fun itemInfo(entryId: String): MediaItemInfo? {
+        val uid = requireUserId()
+        return try {
+            withAuth { client.item(uid, entryId) }.toInfo()
+        } catch (e: HttpStatusException) {
+            if (e.code == 404 || e.code == 400) null else throw e
+        }
+    }
+
+    override suspend fun nowPlayingInfo(): MediaItemInfo? {
+        val id = withCurrent { it.nowPlaying?.id }?.takeIf { it.isNotBlank() } ?: return null
+        return itemInfo(id)
+    }
 
     /**
      * Média en cours lu directement depuis le serveur (`/Videos/{id}/stream.<conteneur>?static=true`),
@@ -120,10 +153,16 @@ class MediaServerController(
     /** Chemin de base trouvé automatiquement à la connexion (ex. `/jellyfin`), à enregistrer. */
     @Volatile private var detectedBasePath: String? = null
 
-    override val capabilities = setOf(
-        Capability.NAVIGATION, Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK,
-        Capability.TEXT_INPUT, Capability.NOW_PLAYING,
-    )
+    /** Navigation et saisie seulement si le client les accepte (lecteur sans interface : ni l'une ni l'autre). */
+    override val capabilities: Set<Capability>
+        get() {
+            val commands = knownCommands()
+            return buildSet {
+                add(Capability.PLAYBACK); add(Capability.VOLUME); add(Capability.SEEK); add(Capability.NOW_PLAYING)
+                if (accepts(commands, "MoveUp") || accepts(commands, "Select")) add(Capability.NAVIGATION)
+                if (accepts(commands, "SendString")) add(Capability.TEXT_INPUT)
+            }
+        }
 
     /** Dernier état connu de la session cible (capacités, lecture en cours) ; `null` : inconnu. */
     @Volatile private var lastSession: SessionDto? = null
@@ -909,6 +948,38 @@ class MediaServerController(
                 season = if (isEpisode) parentIndexNumber else null,
                 episode = if (isEpisode) indexNumber else null,
                 watched = userData?.played,
+                overview = overview?.trim()?.takeIf { it.isNotEmpty() },
+            )
+        }
+
+        /** Fiche détaillée d'un élément (`/Items/{id}` renvoie résumé, équipe et flux). */
+        internal fun ItemDto.toInfo(): MediaItemInfo {
+            val isEpisode = type == "Episode"
+            fun people(vararg types: String) = people.orEmpty()
+                .filter { p -> types.any { it.equals(p.type, ignoreCase = true) } && p.name.isNotBlank() }
+            val streams = mediaStreams ?: mediaSources?.firstOrNull()?.mediaStreams
+            val video = streams?.firstOrNull { it.type == "Video" }?.displayTitle
+            val audio = streams?.filter { it.type == "Audio" }?.let { a -> a.firstOrNull { it.isDefault == true } ?: a.firstOrNull() }?.displayTitle
+            return MediaItemInfo(
+                id = id,
+                title = name.ifBlank { id },
+                overview = overview?.trim()?.takeIf { it.isNotEmpty() },
+                seriesTitle = seriesName?.takeIf { isEpisode && it.isNotBlank() },
+                season = if (isEpisode) parentIndexNumber else null,
+                episode = if (isEpisode) indexNumber else null,
+                airDate = premiereDate?.take(10)?.takeIf { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) },
+                year = productionYear?.takeIf { it > 0 },
+                runtimeMs = runTimeTicks?.takeIf { it > 0 }?.div(TICKS_PER_MS),
+                rating = communityRating?.takeIf { it > 0 },
+                officialRating = officialRating?.takeIf { it.isNotBlank() },
+                genres = genres.orEmpty().filter { it.isNotBlank() },
+                studios = studios.orEmpty().map { it.name }.filter { it.isNotBlank() },
+                directors = people("Director").map { it.name },
+                writers = people("Writer").map { it.name },
+                cast = people("Actor", "GuestStar").map { p -> p.role?.takeIf { it.isNotBlank() }?.let { "${p.name} ($it)" } ?: p.name },
+                video = video?.takeIf { it.isNotBlank() },
+                audio = audio?.takeIf { it.isNotBlank() },
+                imageKey = imageKey(),
             )
         }
 
@@ -959,7 +1030,7 @@ class MediaServerController(
         }
 
         /** Champs demandés en plus des champs par défaut (images, `UserData`, année, numéros). */
-        internal val ITEM_FIELDS = mapOf("Fields" to "PrimaryImageAspectRatio", "EnableUserData" to "true")
+        internal val ITEM_FIELDS = mapOf("Fields" to "PrimaryImageAspectRatio,Overview", "EnableUserData" to "true")
 
         /** Natures interrogeables et `BaseItemKind` correspondants (ARTIST : route `/Artists`). */
         internal val SEARCH_TYPES = linkedMapOf(

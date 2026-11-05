@@ -267,7 +267,7 @@ class KodiMediaTest {
             paramsOf(KodiMethod.VIDEO_GET_TV_SHOWS),
         )
         assertEquals(
-            json("""{${filter("title")},"properties":["season","episode","playcount","runtime","art","thumbnail","showtitle"],$limits,$sort}"""),
+            json("""{${filter("title")},"properties":["season","episode","playcount","runtime","art","thumbnail","plot","showtitle"],$limits,$sort}"""),
             paramsOf(KodiMethod.VIDEO_GET_EPISODES),
         )
         assertEquals(json("""{${filter("artist")},"properties":["thumbnail","fanart"],$limits,$sort}"""), paramsOf(KodiMethod.AUDIO_GET_ARTISTS))

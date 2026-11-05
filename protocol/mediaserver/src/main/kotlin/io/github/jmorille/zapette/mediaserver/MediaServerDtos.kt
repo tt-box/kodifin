@@ -123,6 +123,7 @@ data class MediaStreamDto(
     @SerialName("DisplayTitle") val displayTitle: String? = null,
     @SerialName("Title") val title: String? = null,
     @SerialName("Language") val language: String? = null,
+    @SerialName("IsDefault") val isDefault: Boolean? = null,
 )
 
 @Serializable
@@ -160,6 +161,25 @@ data class ItemDto(
     /** Épisode ou saison : affiche de la série, à défaut d'image propre. */
     @SerialName("SeriesPrimaryImageTag") val seriesPrimaryImageTag: String? = null,
     @SerialName("UserData") val userData: UserDataDto? = null,
+    @SerialName("Overview") val overview: String? = null,
+    @SerialName("CommunityRating") val communityRating: Double? = null,
+    @SerialName("OfficialRating") val officialRating: String? = null,
+    /** Date ISO 8601 (`2017-04-08T00:00:00.0000000Z`). */
+    @SerialName("PremiereDate") val premiereDate: String? = null,
+    @SerialName("Genres") val genres: List<String>? = null,
+    @SerialName("Studios") val studios: List<NameDto>? = null,
+    @SerialName("People") val people: List<PersonDto>? = null,
+)
+
+@Serializable
+data class NameDto(@SerialName("Name") val name: String = "")
+
+/** Membre de l'équipe : `Type` vaut `Actor`, `Director`, `Writer`, `GuestStar`… */
+@Serializable
+data class PersonDto(
+    @SerialName("Name") val name: String = "",
+    @SerialName("Role") val role: String? = null,
+    @SerialName("Type") val type: String? = null,
 )
 
 /** Données propres à l'utilisateur (`UserItemDataDto`) : seul l'état « vu » est utilisé. */

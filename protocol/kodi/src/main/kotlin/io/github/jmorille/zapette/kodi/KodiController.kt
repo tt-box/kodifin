@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.SupportsItemInfo
+import io.github.jmorille.zapette.model.MediaItemInfo
 import io.github.jmorille.zapette.model.TransferableMedia
 import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.Chapter
@@ -84,6 +86,7 @@ class KodiController(
     private val webBaseUrl: String? = null,
 ) : RemoteController,
     SupportsTransferOut,
+    SupportsItemInfo,
     DescribesServer,
     SupportsTracks,
     SupportsSeekStep,
@@ -102,6 +105,32 @@ class KodiController(
     SupportsImages {
 
     private val library = KodiLibrary(client)
+
+    override suspend fun itemInfo(entryId: String): MediaItemInfo? = translatingRpc { library.itemInfo(entryId) }
+
+    /** Fiche du média en cours (épisode ou film de la bibliothèque). */
+    override suspend fun nowPlayingInfo(): MediaItemInfo? {
+        val player = client.activePlayers().firstOrNull() ?: return null
+        val item = try {
+            client.playerItem(player.id)
+        } catch (_: KodiRpcException) {
+            return null
+        }
+        val id = item.id ?: return null
+        val type = when (item.type) {
+            "episode" -> "episodeid"
+            "movie" -> "movieid"
+            else -> return null
+        }
+        return itemInfo("$type:$id")
+    }
+
+    /** Élément inconnu de Kodi (supprimé entre-temps) : pas de fiche plutôt qu'une erreur. */
+    private suspend fun <T> translatingRpc(block: suspend () -> T?): T? = try {
+        block()
+    } catch (_: KodiRpcException) {
+        null
+    }
 
     /**
      * Média en cours, servi par le serveur web de Kodi (`Files.PrepareDownload`) ; un flux déjà

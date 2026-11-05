@@ -57,6 +57,7 @@ object KodiMethod {
     // VideoLibrary
     const val VIDEO_GET_MOVIES = "VideoLibrary.GetMovies"
     const val VIDEO_GET_MOVIE_DETAILS = "VideoLibrary.GetMovieDetails"
+    const val VIDEO_GET_EPISODE_DETAILS = "VideoLibrary.GetEpisodeDetails"
     const val VIDEO_GET_RECENT_MOVIES = "VideoLibrary.GetRecentlyAddedMovies"
     const val VIDEO_GET_TV_SHOWS = "VideoLibrary.GetTVShows"
     const val VIDEO_GET_SEASONS = "VideoLibrary.GetSeasons"

@@ -97,7 +97,11 @@ fun QueueTabPanel(
             if (seriesSelected) {
                 SeriesPanel(series, playback, seriesActions)
             } else {
-                QueuePanel(queue, queueActions.refresh, queueActions.play, queueActions.remove, queueActions.clear)
+                // Retirer / vider seulement si l'appareil le permet (pas sur un client Jellyfin piloté).
+                QueuePanel(
+                    queue, queueActions.refresh, queueActions.play,
+                    queueActions.remove.takeIf { features.queueEdit }, queueActions.clear.takeIf { features.queueEdit },
+                )
             }
         }
     }
@@ -115,6 +119,8 @@ class SeriesActions(
     val selectSeason: (String) -> Unit,
     val play: (MediaEntry) -> Unit,
     val enqueue: (MediaEntry, Boolean) -> Unit,
+    /** Fiche de l'épisode (résumé, distribution) ; `null` si l'appareil n'en fournit pas. */
+    val info: ((MediaEntry) -> Unit)? = null,
 )
 
 @Composable
@@ -244,12 +250,25 @@ private fun EpisodeRow(episode: MediaEntry, current: Boolean, actions: SeriesAct
                 status?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                 }
+                episode.overview?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menu = true }) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "Actions pour ${episode.title}")
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    actions.info?.let { open ->
+                        DropdownMenuItem(text = { Text("Résumé et informations") }, onClick = { menu = false; open(episode) })
+                    }
                     DropdownMenuItem(text = { Text("Lire maintenant") }, onClick = { menu = false; actions.play(episode) })
                     DropdownMenuItem(text = { Text("Lire ensuite") }, onClick = { menu = false; actions.enqueue(episode, true) })
                     DropdownMenuItem(text = { Text("Ajouter à la file d'attente") }, onClick = { menu = false; actions.enqueue(episode, false) })

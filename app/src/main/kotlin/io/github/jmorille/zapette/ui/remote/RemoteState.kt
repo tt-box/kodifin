@@ -1,5 +1,9 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.MediaItemInfo
+import io.github.jmorille.zapette.model.SupportsItemInfo
+import io.github.jmorille.zapette.model.DeclaresAvailability
+import io.github.jmorille.zapette.model.ControlFeature
 import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.MediaEntry
 import io.github.jmorille.zapette.model.MediaKind
@@ -56,22 +60,38 @@ data class RemoteFeatures(
     val images: Boolean = false,
     /** Le média en cours peut être repris par un autre appareil. */
     val transferOut: Boolean = false,
+    /** Nettoyage de la bibliothèque possible (sinon seule la mise à jour est proposée). */
+    val cleanLibrary: Boolean = false,
+    /** Retirer un élément de la file, la vider. */
+    val queueEdit: Boolean = false,
+    /** Fiches détaillées (résumé d'épisode, distribution). */
+    val itemInfo: Boolean = false,
 ) {
     /** Le volet « Lecture en cours » a quelque chose à montrer au-delà du bandeau. */
     val hasPlaybackDetails: Boolean get() = tracks || speed || syncOffset || playMode || chapters
 
     companion object {
-        fun of(c: RemoteController): RemoteFeatures = RemoteFeatures(
-            tracks = c is SupportsTracks,
+        /**
+         * Fonctions affichées : interfaces implémentées par le contrôleur, moins celles qu'il
+         * déclare impossibles avec l'appareil courant ([DeclaresAvailability]).
+         */
+        fun of(c: RemoteController): RemoteFeatures {
+            val availability = c as? DeclaresAvailability
+            fun available(feature: ControlFeature) = availability?.isAvailable(feature) ?: true
+            return RemoteFeatures(
+            tracks = c is SupportsTracks && available(ControlFeature.TRACKS),
             seekStep = c is SupportsSeekStep,
-            speed = c is SupportsSpeed,
+            speed = c is SupportsSpeed && available(ControlFeature.SPEED),
             syncOffset = c is SupportsSyncOffset,
-            playMode = c is SupportsPlayMode,
-            chapters = c is SupportsChapters,
+            playMode = c is SupportsPlayMode && available(ControlFeature.PLAY_MODE),
+            chapters = c is SupportsChapters && available(ControlFeature.CHAPTERS),
             uiCommands = (c as? SupportsUiCommands)?.uiCommands.orEmpty(),
             power = c is SupportsPower,
-            notify = c is SupportsNotify,
-            libraryMaintenance = c is SupportsLibraryMaintenance,
+            notify = c is SupportsNotify && available(ControlFeature.NOTIFY),
+            libraryMaintenance = c is SupportsLibraryMaintenance && available(ControlFeature.SCAN_LIBRARY),
+            cleanLibrary = c is SupportsLibraryMaintenance && available(ControlFeature.CLEAN_LIBRARY),
+            queueEdit = c is SupportsQueue && available(ControlFeature.QUEUE_EDIT),
+            itemInfo = c is SupportsItemInfo,
             library = c is SupportsLibrary,
             queue = c is SupportsQueue,
             targets = c is SupportsTargets,
@@ -80,9 +100,17 @@ data class RemoteFeatures(
             searchKinds = (c as? SupportsSearch)?.searchKinds.orEmpty(),
             images = c is SupportsImages,
             transferOut = c is SupportsTransferOut,
-        )
+            )
+        }
     }
 }
+
+/** Fiche d'un élément ouverte depuis une liste ; [entry] `null` : fermée. */
+data class ItemInfoState(
+    val entry: MediaEntry? = null,
+    val loading: Boolean = false,
+    val info: MediaItemInfo? = null,
+)
 
 /** Volets de contenu dont l'affichage déclenche un chargement réseau. */
 enum class RemotePanel { DETAILS, QUEUE, LIBRARY }

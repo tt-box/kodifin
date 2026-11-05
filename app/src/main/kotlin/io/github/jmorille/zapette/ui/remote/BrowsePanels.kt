@@ -87,15 +87,18 @@ fun QueuePanel(
     queue: QueueState,
     onRefresh: () -> Unit,
     onPlay: (Int) -> Unit,
-    onRemove: (Int) -> Unit,
-    onClear: () -> Unit,
+    /** `null` : l'appareil ne permet pas de modifier la file (bouton masqué). */
+    onRemove: ((Int) -> Unit)?,
+    onClear: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize()) {
         PanelHeader("File d'attente (${queue.items.size})") {
             IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser la file d'attente") }
-            IconButton(onClick = onClear, enabled = queue.items.isNotEmpty()) {
-                Icon(Icons.Filled.ClearAll, contentDescription = "Vider la file d'attente")
+            if (onClear != null) {
+                IconButton(onClick = onClear, enabled = queue.items.isNotEmpty()) {
+                    Icon(Icons.Filled.ClearAll, contentDescription = "Vider la file d'attente")
+                }
             }
         }
         if (queue.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -116,9 +119,11 @@ fun QueuePanel(
                             Text("${index + 1}", style = MaterialTheme.typography.labelLarge)
                         }
                     },
-                    trailingContent = {
-                        IconButton(onClick = { onRemove(index) }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Retirer ${item.title} de la file")
+                    trailingContent = onRemove?.let { remove ->
+                        {
+                            IconButton(onClick = { remove(index) }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Retirer ${item.title} de la file")
+                            }
                         }
                     },
                     colors = if (current) {

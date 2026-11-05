@@ -255,6 +255,15 @@ fun RemoteScreen(
         )
     }
 
+    if (state.itemInfo.entry != null) {
+        ItemInfoSheet(
+            state = state.itemInfo,
+            onDismiss = vm::closeItemInfo,
+            onPlay = vm::playEntry,
+            onEnqueue = if (state.features.library) { entry, next -> vm.enqueue(entry, next) } else null,
+        )
+    }
+
     if (state.transfer.open) {
         TransferDialog(
             transfer = state.transfer,
@@ -450,6 +459,8 @@ private fun MoreSheet(
             }
             if (state.features.libraryMaintenance) {
                 SheetItem(Icons.Filled.Sync, "Mettre à jour la bibliothèque", onScan)
+            }
+            if (state.features.cleanLibrary) {
                 SheetItem(Icons.Filled.CleaningServices, "Nettoyer la bibliothèque") { onDialog(RemoteDialog.CleanLibrary) }
             }
             if (state.features.uiCommands.isNotEmpty()) {
@@ -536,7 +547,7 @@ private fun PhoneLayout(content: RemoteContent) {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     PlaybackHeader(content)
-                    PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
+                    PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
                 }
                 RemoteTab.QUEUE -> QueueContent(content)
                 RemoteTab.LIBRARY -> LibraryContent(content)
@@ -613,7 +624,7 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
         ) {
             if (content.playbackRows) TransportFor(content)
             VolumeFor(content)
-            PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
+            PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
         }
         Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             NavigationFor(content, Modifier.weight(1f).fillMaxWidth())
@@ -656,7 +667,7 @@ private fun SidePane(
             Box(Modifier.weight(1f)) {
                 when (selected) {
                     RemoteTab.NOW_PLAYING -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-                        PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
+                        PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
                     }
                     RemoteTab.QUEUE -> QueueContent(content)
                     RemoteTab.LIBRARY -> LibraryContent(content)
@@ -792,7 +803,11 @@ private fun QueueContent(content: RemoteContent) {
         QueueActions(vm::refreshQueue, vm::playQueueItem, vm::removeQueueItem, content.onClearQueue)
     }
     val seriesActions = remember(vm) {
-        SeriesActions(vm::refreshSeries, vm::selectSeason, vm::playEntry) { entry, next -> vm.enqueue(entry, next) }
+        SeriesActions(
+            vm::refreshSeries, vm::selectSeason, vm::playEntry,
+            enqueue = { entry, next -> vm.enqueue(entry, next) },
+            info = vm::openItemInfo,
+        )
     }
     QueueTabPanel(
         features = content.features,
