@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -72,8 +74,20 @@ fun castSummary(cast: List<String>, max: Int = 8): String? {
 /** Contenu d'une fiche : repères, résumé, genres, équipe et flux. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ItemInfoContent(info: MediaItemInfo, modifier: Modifier = Modifier, showTitle: Boolean = true) {
+fun ItemInfoContent(
+    info: MediaItemInfo,
+    modifier: Modifier = Modifier,
+    showTitle: Boolean = true,
+    /** Image de la fiche (vignette d'épisode, affiche) en tête, si le contrôleur en fournit une. */
+    showImage: Boolean = false,
+) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showImage && info.imageKey != null) {
+            KeyedImage(
+                info.imageKey,
+                Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(MaterialTheme.shapes.medium),
+            )
+        }
         if (showTitle) {
             info.seriesTitle?.let { Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
             Text(info.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -112,7 +126,7 @@ private fun InfoLine(label: String, value: String?) {
 fun NowPlayingInfoCard(info: MediaItemInfo, modifier: Modifier = Modifier) {
     val summary = infoFacts(info) ?: info.overview?.take(80)
     CollapsibleCard("Résumé et informations", summary = summary, modifier = modifier.fillMaxWidth()) {
-        ItemInfoContent(info, showTitle = false)
+        ItemInfoContent(info, showTitle = false, showImage = true)
     }
 }
 
@@ -135,7 +149,8 @@ fun ItemInfoSheet(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MediaImage(entry, Modifier.fillMaxWidth().height(200.dp), iconSize = 48.dp)
+            val image = entry.imageKey ?: state.info?.imageKey
+            MediaImage(entry.copy(imageKey = image), Modifier.fillMaxWidth().height(200.dp), iconSize = 48.dp)
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             val info = state.info
             if (info != null) {
