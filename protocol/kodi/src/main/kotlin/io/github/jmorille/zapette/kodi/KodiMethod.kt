@@ -90,6 +90,7 @@ object KodiMethod {
     // Files / PVR / Addons / Favourites / Settings / XBMC
     const val FILES_GET_SOURCES = "Files.GetSources"
     const val FILES_GET_DIRECTORY = "Files.GetDirectory"
+    const val FILES_PREPARE_DOWNLOAD = "Files.PrepareDownload"
     const val PVR_GET_CHANNEL_GROUPS = "PVR.GetChannelGroups"
     const val PVR_GET_CHANNELS = "PVR.GetChannels"
     const val PVR_RECORD = "PVR.Record"

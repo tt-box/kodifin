@@ -22,6 +22,13 @@
       installable sur les appareils sans caméra (TV, boîtiers), où le scan est masqué.
     -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!--
+      Partage d'un fichier du téléphone vers la télévision : service au premier plan (type
+      lecture multimédia) tant que le fichier est servi, avec sa notification « Arrêter ».
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <!--
@@ -44,6 +51,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Zapette"
         tools:targetApi="36">
+
+        <service
+            android:name=".data.LocalShareService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <activity
             android:name=".MainActivity"

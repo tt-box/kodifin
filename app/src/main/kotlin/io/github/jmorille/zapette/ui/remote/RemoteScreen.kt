@@ -1,5 +1,9 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import io.github.jmorille.zapette.model.DeviceKind
 import io.github.jmorille.zapette.model.PlaybackState
 import androidx.compose.material.icons.filled.Speaker
@@ -232,6 +236,11 @@ fun RemoteScreen(
         )
     }
 
+    // Sélecteur de documents Android : aucun accès global au stockage, seul le fichier choisi est lu.
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { vm.sendLocalFile(it.toString()) }
+    }
+
     if (sheet) {
         MoreSheet(
             state = state,
@@ -240,6 +249,18 @@ fun RemoteScreen(
             onCommand = vm::uiCommand,
             onScan = { sheet = false; vm.scanLibrary() },
             onEdit = { sheet = false; onEdit() },
+            onSendFile = { sheet = false; pickFile.launch(arrayOf("video/*", "audio/*", "image/*")) },
+            onTransfer = { sheet = false; vm.openTransfer() },
+            onStopSharing = { sheet = false; vm.stopSharing() },
+        )
+    }
+
+    if (state.transfer.open) {
+        TransferDialog(
+            transfer = state.transfer,
+            sourceName = state.device?.name ?: "cet appareil",
+            onDismiss = vm::closeTransfer,
+            onTransfer = vm::transferTo,
         )
     }
 
@@ -399,6 +420,9 @@ private fun MoreSheet(
     onCommand: (UiCommand) -> Unit,
     onScan: () -> Unit,
     onEdit: () -> Unit,
+    onSendFile: () -> Unit,
+    onTransfer: () -> Unit,
+    onStopSharing: () -> Unit,
 ) {
     // Contenu figé à l'ouverture : l'état (position, commandes de la session) change chaque
     // seconde ; sans cela la hauteur de la feuille varie et elle saute de haut en bas.
@@ -413,6 +437,13 @@ private fun MoreSheet(
             }
             if (Capability.PLAY_URL in state.capabilities) {
                 SheetItem(Icons.Filled.Link, "Lire une URL") { onDialog(RemoteDialog.Url) }
+                SheetItem(Icons.Filled.FileUpload, "Envoyer un fichier du téléphone", onSendFile)
+            }
+            if (state.sharing) {
+                SheetItem(Icons.Filled.StopScreenShare, "Arrêter le partage de fichier", onStopSharing)
+            }
+            if (state.features.transferOut) {
+                SheetItem(Icons.Filled.Devices, "Transférer la lecture vers…", onTransfer)
             }
             if (state.features.notify) {
                 SheetItem(Icons.AutoMirrored.Filled.Message, "Message à l'écran") { onDialog(RemoteDialog.Notify) }

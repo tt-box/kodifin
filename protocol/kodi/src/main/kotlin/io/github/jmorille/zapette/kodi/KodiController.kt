@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.TransferableMedia
+import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.Chapter
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.DescribesServer
@@ -75,7 +77,13 @@ class KodiController(
     private val eventServer: KodiEventServer? = null,
     private val fallbackPollIntervalMs: Long = 10_000,
     imageFetcher: (suspend (String) -> ByteArray?)? = null,
+    /**
+     * Racine du serveur web de Kodi telle qu'un autre lecteur peut la joindre (identifiants
+     * inclus s'il en faut), pour le transfert de la lecture ; `null` : transfert impossible.
+     */
+    private val webBaseUrl: String? = null,
 ) : RemoteController,
+    SupportsTransferOut,
     DescribesServer,
     SupportsTracks,
     SupportsSeekStep,
@@ -94,6 +102,33 @@ class KodiController(
     SupportsImages {
 
     private val library = KodiLibrary(client)
+
+    /**
+     * Média en cours, servi par le serveur web de Kodi (`Files.PrepareDownload`) ; un flux déjà
+     * en HTTP est repris tel quel. Extensions, PVR et entrées sans fichier : `null`.
+     */
+    override suspend fun currentMedia(): TransferableMedia? {
+        val player = client.activePlayers().firstOrNull() ?: return null
+        val (file, state) = try {
+            client.playerFile(player.id) to snapshot()
+        } catch (_: KodiRpcException) {
+            return null
+        }
+        file ?: return null
+        val url = when {
+            file.startsWith("http://") || file.startsWith("https://") -> file
+            webBaseUrl == null -> return null
+            else -> {
+                val path = try {
+                    client.prepareDownload(file)
+                } catch (_: KodiRpcException) {
+                    null
+                } ?: return null
+                webBaseUrl.trimEnd('/') + "/" + path.trimStart('/')
+            }
+        }
+        return TransferableMedia(url = url, title = state.title, positionMs = state.positionMs)
+    }
 
     private val images: (suspend (String) -> ByteArray?)? = imageFetcher ?: client.httpImages?.let { it::fetch }
 

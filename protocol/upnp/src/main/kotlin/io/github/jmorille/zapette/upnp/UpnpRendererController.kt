@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.upnp
 
+import io.github.jmorille.zapette.model.TransferableMedia
+import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.fetchImage
 import io.github.jmorille.zapette.model.SupportsSeekStep
 import io.github.jmorille.zapette.model.SupportsPlayMode
@@ -36,7 +38,7 @@ class UpnpRendererController(
     private val http: OkHttpClient,
     private val soap: SoapClient = SoapClient(http),
     private val pollIntervalMs: Long = 1_000,
-) : RemoteController, SupportsMediaDetails, SupportsPlayMode, SupportsSeekStep, SupportsImages {
+) : RemoteController, SupportsMediaDetails, SupportsPlayMode, SupportsSeekStep, SupportsImages, SupportsTransferOut {
 
     override val capabilities = setOf(
         Capability.PLAYBACK, Capability.VOLUME, Capability.SEEK, Capability.PLAY_URL, Capability.NOW_PLAYING,
@@ -208,6 +210,15 @@ class UpnpRendererController(
         }
     }
 
+    /** Média en cours (`GetMediaInfo` → CurrentURI) et position, si c'est une adresse HTTP. */
+    override suspend fun currentMedia(): TransferableMedia? {
+        val info = avTransport("GetMediaInfo")
+        val uri = info["CurrentURI"]?.trim()?.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: return null
+        val position = avTransport("GetPositionInfo")
+        val title = (position["TrackMetaData"] ?: info["CurrentURIMetaData"])?.let(::didlInfo)?.title
+        return TransferableMedia(uri, title, positionMs = parseHms(position["RelTime"]))
+    }
+
     /** Pochette annoncée par le renderer (`upnp:albumArtURI`), téléchargée sans authentification. */
     override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? = http.fetchImage(imageKey)
 
@@ -266,6 +277,19 @@ class UpnpRendererController(
 
     companion object {
         const val EXTRA_LOCATION = "location"
+
+        /** Fabricant et modèle annoncés dans la description (repérage des renderers BubbleUPnP Server). */
+        const val EXTRA_MANUFACTURER = "upnp_manufacturer"
+        const val EXTRA_MODEL = "upnp_model"
+
+        /**
+         * Renderer exposé par BubbleUPnP Server (Chromecast ou autre lecteur présenté en DLNA, avec
+         * conversion à la volée par le serveur) : repéré au fabricant, au modèle ou au nom.
+         */
+        fun isBubbleUpnpServer(device: Device): Boolean =
+            device.kind == DeviceKind.UPNP_RENDERER &&
+                listOfNotNull(device.extras[EXTRA_MANUFACTURER], device.extras[EXTRA_MODEL], device.name)
+                    .any { it.contains("bubbleupnp", ignoreCase = true) }
 
         /** Extra « DLNA alternatif » (valeur `true`). */
         const val EXTRA_ALT_DIDL = "upnp_alt_didl"
@@ -350,7 +374,11 @@ class UpnpRendererController(
                 kind = DeviceKind.UPNP_RENDERER,
                 host = url.host,
                 port = url.port,
-                extras = mapOf(EXTRA_LOCATION to url.toString()),
+                extras = buildMap {
+                    put(EXTRA_LOCATION, url.toString())
+                    description.manufacturer?.takeIf { it.isNotBlank() }?.let { put(EXTRA_MANUFACTURER, it.take(80)) }
+                    description.modelName?.takeIf { it.isNotBlank() }?.let { put(EXTRA_MODEL, it.take(80)) }
+                },
             )
         }
     }

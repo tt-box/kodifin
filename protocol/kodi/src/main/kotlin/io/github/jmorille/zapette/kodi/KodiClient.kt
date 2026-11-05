@@ -204,6 +204,28 @@ class KodiClient(private val transport: KodiTransport) {
         }
     }
 
+    /** Chemin du fichier en cours (`smb://…`, `/storage/…`, `plugin://…`) ; `null` si inconnu. */
+    suspend fun playerFile(playerId: Int): String? {
+        val item = call(
+            KodiMethod.PLAYER_GET_ITEM,
+            buildJsonObject {
+                put("playerid", playerId)
+                putJsonArray("properties") { add(JsonPrimitive("file")) }
+            },
+        ).obj(KodiMethod.PLAYER_GET_ITEM)["item"] as? JsonObject
+        return item?.get("file").primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Chemin HTTP relatif (`vfs/…`) par lequel le serveur web de Kodi sert [path]
+     * (`Files.PrepareDownload`) ; `null` si Kodi ne le propose pas en HTTP.
+     */
+    suspend fun prepareDownload(path: String): String? {
+        val result = call(KodiMethod.FILES_PREPARE_DOWNLOAD, buildJsonObject { put("path", path) }) as? JsonObject
+        if (result?.get("protocol").primitive()?.contentOrNull != "http") return null
+        return (result?.get("details") as? JsonObject)?.get("path").primitive()?.contentOrNull?.takeIf { it.isNotBlank() }
+    }
+
     // --- Application -----------------------------------------------------
     suspend fun appProperties(): KodiAppProperties {
         val o = call(

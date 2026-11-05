@@ -15,6 +15,8 @@ import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -28,6 +30,7 @@ class UpnpMediaTest {
     @Volatile private var playMode: String? = "REPEAT_ALL"
     @Volatile private var rejectPlayMode = false
     @Volatile private var trackMeta: String = ""
+    @Volatile private var currentUri: String = "http://nas/film.mkv"
 
     private fun soap(action: String, body: String) =
         """<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>""" +
@@ -74,7 +77,8 @@ class UpnpMediaTest {
                     "GetPositionInfo" -> MockResponse.Builder().body(
                         soap(action, "<RelTime>00:00:50</RelTime><TrackDuration>00:01:00</TrackDuration><TrackMetaData>${xmlEscape(trackMeta)}</TrackMetaData>"),
                     ).build()
-                    "GetVolume" -> MockResponse.Builder().body(soap(action, "<CurrentVolume>20</CurrentVolume>")).build()
+                    "GetMediaInfo" -> MockResponse.Builder().body(soap(action, "<CurrentURI>${xmlEscape(currentUri)}</CurrentURI>")).build()
+                    "GetVolume" ->MockResponse.Builder().body(soap(action, "<CurrentVolume>20</CurrentVolume>")).build()
                     "GetMute" -> MockResponse.Builder().body(soap(action, "<CurrentMute>0</CurrentMute>")).build()
                     else -> MockResponse.Builder().body(soap(action, "")).build()
                 }
@@ -163,6 +167,28 @@ class UpnpMediaTest {
         rejectPlayMode = true
         val error = expectFailure<RemoteException> { c.setShuffle(true) }
         assertEquals("Enceinte ne gère pas ce mode de lecture", error.message)
+    }
+
+    @Test
+    fun `current media is the transport uri with title and position`() = runTest {
+        trackMeta = didl("")
+        val media = controller().currentMedia()!!
+        assertEquals("http://nas/film.mkv", media.url)
+        assertEquals("Chanson", media.title)
+        assertEquals(50_000L, media.positionMs)
+        currentUri = "x-rincon-stream:123"
+        assertNull(controller().currentMedia())
+    }
+
+    @Test
+    fun `bubbleupnp renderers are recognised by manufacturer, model or name`() {
+        fun dev(name: String, extras: Map<String, String> = emptyMap(), kind: DeviceKind = DeviceKind.UPNP_RENDERER) =
+            Device("u", name, kind, "h", extras = extras)
+        assertTrue(UpnpRendererController.isBubbleUpnpServer(dev("Salon", mapOf(UpnpRendererController.EXTRA_MANUFACTURER to "Bubblesoft BubbleUPnP"))))
+        assertTrue(UpnpRendererController.isBubbleUpnpServer(dev("Salon", mapOf(UpnpRendererController.EXTRA_MODEL to "BubbleUPnP Media Renderer"))))
+        assertTrue(UpnpRendererController.isBubbleUpnpServer(dev("Chromecast (BubbleUPnP)")))
+        assertFalse(UpnpRendererController.isBubbleUpnpServer(dev("TV Samsung")))
+        assertFalse(UpnpRendererController.isBubbleUpnpServer(dev("BubbleUPnP", kind = DeviceKind.KODI)))
     }
 
     @Test

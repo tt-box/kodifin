@@ -73,6 +73,8 @@ data class NowPlayingDto(
     @SerialName("ImageTags") val imageTags: Map<String, String>? = null,
     @SerialName("BackdropImageTags") val backdropImageTags: List<String>? = null,
     @SerialName("ParentBackdropItemId") val parentBackdropItemId: String? = null,
+    /** Conteneur du fichier (`mkv`, `mov,mp4,m4a`…). */
+    @SerialName("Container") val container: String? = null,
 ) {
     val isEpisode: Boolean get() = type.equals("Episode", ignoreCase = true)
     val isAudio: Boolean get() = type.equals("Audio", ignoreCase = true)

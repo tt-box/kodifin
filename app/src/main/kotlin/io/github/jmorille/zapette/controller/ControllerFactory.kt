@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.controller
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import io.github.jmorille.zapette.model.fetchImage
 import io.github.jmorille.zapette.data.SettingsRepository
 import io.github.jmorille.zapette.kodi.KodiEventServer
@@ -95,7 +96,18 @@ class ControllerFactory(
             device, KodiClient(transport),
             eventServer = KodiEventServer.fromDevice(device),
             imageFetcher = images,
+            webBaseUrl = kodiWebBase(DeviceOptions.httpBaseUrl(device), user, pass),
         )
+    }
+
+    /**
+     * Racine du serveur web de Kodi pour un autre lecteur (transfert de lecture) : identifiants
+     * dans l'adresse s'il y en a, car le lecteur cible ne connaît pas l'authentification de Kodi.
+     */
+    internal fun kodiWebBase(base: String, user: String?, pass: String?): String? {
+        val url = base.toHttpUrlOrNull() ?: return null
+        if (user.isNullOrEmpty()) return url.toString()
+        return url.newBuilder().username(user).password(pass.orEmpty()).build().toString()
     }
 
     private suspend fun createOther(device: Device, http: OkHttpClient): RemoteController = when (device.kind) {

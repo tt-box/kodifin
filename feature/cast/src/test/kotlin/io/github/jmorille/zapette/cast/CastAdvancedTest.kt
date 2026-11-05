@@ -44,6 +44,8 @@ private class RichMedia : CastMediaPort {
         CastQueueItem(12, "Trois", null, null),
     )
     override var currentItemId: Int? = 11
+    override var contentUrl: String? = "http://nas/film.mp4"
+    override val contentType: String? = "video/mp4"
     val calls = mutableListOf<String>()
 
     override fun togglePlayback() { calls += "toggle" }
@@ -234,6 +236,19 @@ class CastAdvancedTest {
             fail("index hors file")
         } catch (_: RemoteException) {
         }
+    }
+
+    @Test
+    fun `current media is transferable only when it is an http address`() = runTest {
+        val media = controller.currentMedia()!!
+        assertEquals("http://nas/film.mp4", media.url)
+        assertEquals("Pilote", media.title)
+        assertEquals("video/mp4", media.mimeType)
+        assertEquals(50_000L, media.positionMs)
+        this@CastAdvancedTest.media.contentUrl = "yt:dQw4w9WgXcQ"
+        assertNull(controller.currentMedia())
+        session.media = null
+        assertNull(controller.currentMedia())
     }
 
     @Test

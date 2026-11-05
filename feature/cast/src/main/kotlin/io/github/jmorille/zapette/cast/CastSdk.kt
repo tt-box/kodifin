@@ -234,6 +234,11 @@ private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPor
             )
         }
 
+    override val contentUrl: String?
+        get() = client.mediaInfo?.let { it.contentUrl ?: it.contentId }
+
+    override val contentType: String? get() = client.mediaInfo?.contentType
+
     override val tracks: List<CastTrack>
         get() = client.mediaInfo?.mediaTracks.orEmpty().map { t ->
             val type = when (t.type) {

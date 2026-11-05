@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.MediaEntry
 import io.github.jmorille.zapette.model.MediaKind
 import io.github.jmorille.zapette.model.MediaSection
@@ -53,6 +54,8 @@ data class RemoteFeatures(
     val searchKinds: Set<MediaKind> = emptySet(),
     /** Affiches et vignettes fournies par le contrôleur. */
     val images: Boolean = false,
+    /** Le média en cours peut être repris par un autre appareil. */
+    val transferOut: Boolean = false,
 ) {
     /** Le volet « Lecture en cours » a quelque chose à montrer au-delà du bandeau. */
     val hasPlaybackDetails: Boolean get() = tracks || speed || syncOffset || playMode || chapters
@@ -76,6 +79,7 @@ data class RemoteFeatures(
             search = c is SupportsSearch,
             searchKinds = (c as? SupportsSearch)?.searchKinds.orEmpty(),
             images = c is SupportsImages,
+            transferOut = c is SupportsTransferOut,
         )
     }
 }

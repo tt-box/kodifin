@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.mediaserver
 
+import io.github.jmorille.zapette.model.TransferableMedia
+import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.Chapter
 import io.github.jmorille.zapette.model.Capability
 import io.github.jmorille.zapette.model.DescribesServer
@@ -65,7 +67,46 @@ class MediaServerController(
 ) : RemoteController, PersistsCredentials, DescribesServer,
     SupportsTargets, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsChapters,
     SupportsUiCommands, SupportsNotify, SupportsLibraryMaintenance, SupportsLibrary, SupportsQueue,
-    SupportsSeries, SupportsSearch, SupportsImages {
+    SupportsSeries, SupportsSearch, SupportsImages, SupportsTransferOut {
+
+    /**
+     * Média en cours lu directement depuis le serveur (`/Videos/{id}/stream.<conteneur>?static=true`),
+     * et une variante convertie par le serveur (H.264/AAC en MP4, MP3 pour la musique) pour les
+     * lecteurs qui ne savent pas lire l'original. Le jeton est dans l'adresse (`api_key`) : le
+     * lecteur cible doit pouvoir télécharger le média.
+     */
+    override suspend fun currentMedia(): TransferableMedia? = withCurrent { s ->
+        val item = s.nowPlaying ?: return@withCurrent null
+        val id = item.id?.takeIf { it.isNotBlank() } ?: return@withCurrent null
+        val token = client.requireToken()
+        val audio = item.isAudio
+        val kind = if (audio) "Audio" else "Videos"
+        val container = item.container?.substringBefore(',')?.trim()?.lowercase()
+            ?.takeIf { it.matches(Regex("[a-z0-9]{1,8}")) }
+        val common = buildMap {
+            put("api_key", token)
+            s.playState?.mediaSourceId?.takeIf { it.isNotBlank() }?.let { put("MediaSourceId", it) }
+        }
+        val position = s.playState?.positionTicks ?: 0
+        val startAt = if (position > 0) mapOf("StartTimeTicks" to position.toString()) else emptyMap()
+        val direct = client.url(kind, id, if (container != null) "stream.$container" else "stream", query = common + ("static" to "true"))
+        val converted = if (audio) {
+            mapOf("AudioCodec" to "mp3", "MaxStreamingBitrate" to "320000")
+        } else {
+            mapOf("VideoCodec" to "h264", "AudioCodec" to "aac", "MaxStreamingBitrate" to "20000000", "AudioChannels" to "2")
+        }
+        val transcoded = client.url(
+            kind, id, if (audio) "stream.mp3" else "stream.mp4",
+            query = common + converted + startAt +
+                mapOf("static" to "false", "DeviceId" to TRANSFER_DEVICE_ID, "PlaySessionId" to java.util.UUID.randomUUID().toString()),
+        )
+        TransferableMedia(
+            url = direct.toString(),
+            title = item.name.ifBlank { null },
+            positionMs = position / TICKS_PER_MS,
+            transcodedUrl = transcoded.toString(),
+        )
+    }
 
     override fun persistableExtras(): Map<String, String> = buildMap {
         putAll(device.extras - EXTRA_PASSWORD - EXTRA_SESSION_ID - EXTRA_TOKEN - EXTRA_USER_ID)
@@ -749,6 +790,9 @@ class MediaServerController(
     }
 
     companion object {
+        /** Identifiant d'appareil des conversions lancées pour un transfert de lecture. */
+        internal const val TRANSFER_DEVICE_ID = "zapette-transfert"
+
         const val EXTRA_USERNAME = "username"
         const val EXTRA_PASSWORD = "password"
         const val EXTRA_USER_ID = "userId"

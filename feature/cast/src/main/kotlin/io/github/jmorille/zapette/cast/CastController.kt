@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.cast
 
+import io.github.jmorille.zapette.model.TransferableMedia
+import io.github.jmorille.zapette.model.SupportsTransferOut
 import io.github.jmorille.zapette.model.UnsupportedActionException
 import io.github.jmorille.zapette.model.SupportsTracks
 import io.github.jmorille.zapette.model.SupportsSpeed
@@ -51,7 +53,7 @@ class CastController internal constructor(
     /** Téléchargement des pochettes (adresses publiées par l'application émettrice) ; `null` : sans image. */
     private val imageFetcher: (suspend (String) -> ByteArray?)? = null,
 ) : RemoteController, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsQueue,
-    SupportsImages, SupportsPower {
+    SupportsImages, SupportsPower, SupportsTransferOut {
 
     constructor(
         device: Device,
@@ -415,6 +417,13 @@ class CastController internal constructor(
     override suspend fun clearQueue() = onMain { s ->
         val media = s.media()
         media.removeItems(media.queueItems.map { it.itemId }.filter { it != media.currentItemId })
+    }
+
+    /** Média en cours s'il est désigné par une adresse HTTP (pas un identifiant propre à l'application). */
+    override suspend fun currentMedia(): TransferableMedia? = onMain { s ->
+        val media = s.media ?: return@onMain null
+        val url = media.contentUrl?.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: return@onMain null
+        TransferableMedia(url, media.nowPlaying?.title ?: media.title, media.contentType, media.positionMs)
     }
 
     // --- Images et fin de diffusion -----------------------------------------------------------

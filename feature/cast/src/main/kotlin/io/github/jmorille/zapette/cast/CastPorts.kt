@@ -47,6 +47,10 @@ interface CastMediaPort {
     val queueItems: List<CastQueueItem> get() = emptyList()
     val currentItemId: Int? get() = null
 
+    /** Adresse du média en cours (contentUrl, sinon contentId s'il s'agit d'une URL). */
+    val contentUrl: String? get() = null
+    val contentType: String? get() = null
+
     fun setActiveTracks(ids: Set<Long>) {}
     fun setPlaybackRate(rate: Double) {}
     fun setRepeat(mode: CastRepeat) {}

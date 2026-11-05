@@ -1,5 +1,10 @@
 package io.github.jmorille.zapette.ui.remote
 
+import kotlinx.coroutines.flow.first
+import io.github.jmorille.zapette.model.RemoteException
+import io.github.jmorille.zapette.model.DeviceKind
+import io.github.jmorille.zapette.model.SupportsTransferOut
+import io.github.jmorille.zapette.data.LocalShare
 import io.github.jmorille.zapette.model.SupportsMediaDetails
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -76,6 +81,9 @@ data class RemoteUiState(
     val targets: TargetsState = TargetsState(),
     val series: SeriesState = SeriesState(),
     val search: SearchState = SearchState(),
+    val transfer: TransferState = TransferState(),
+    /** Un fichier du téléphone est servi sur le réseau local. */
+    val sharing: Boolean = false,
 )
 
 /** Dépendances du ViewModel, isolées pour les tests JVM (pas de Context Android). */
@@ -92,6 +100,12 @@ interface RemoteDependencies {
 
     /** Portée qui survit au ViewModel : sert à fermer la connexion après sa destruction. */
     val backgroundScope: CoroutineScope
+
+    /** Appareils enregistrés (destinations d'un transfert de lecture). */
+    suspend fun allDevices(): List<Device> = emptyList()
+
+    /** Partage des fichiers du téléphone ; `null` : indisponible. */
+    val localShare: LocalShare? get() = null
 }
 
 fun AppContainer.remoteDependencies(networkInfo: NetworkInfo? = null): RemoteDependencies = object : RemoteDependencies {
@@ -103,6 +117,8 @@ fun AppContainer.remoteDependencies(networkInfo: NetworkInfo? = null): RemoteDep
         DeviceOptions.wakeTarget(device)?.let { WakeOnLan.send(it) }
     }
     override val backgroundScope: CoroutineScope get() = appScope
+    override suspend fun allDevices(): List<Device> = devices.saved.first()
+    override val localShare: LocalShare get() = this@remoteDependencies.localShare
 }
 
 class RemoteViewModel(
@@ -158,6 +174,8 @@ class RemoteViewModel(
     @Volatile private var titleSeen = false
 
     init {
+        // Partage lancé depuis une autre télécommande : « Arrêter le partage » reste proposé.
+        if (deps.localShare?.isSharing == true) _state.update { it.copy(sharing = true) }
         connect()
     }
 
@@ -368,6 +386,76 @@ class RemoteViewModel(
 
     private inline fun <reified T : Any> connectedAs(): T? =
         controller?.takeIf { _state.value.connected } as? T
+
+    // --- Fichiers du téléphone et transfert de lecture --------------------------------------
+
+    /** Sert le document [uri] sur le réseau local et le fait lire par l'appareil. */
+    fun sendLocalFile(uri: String) {
+        val share = deps.localShare ?: return run { _messages.trySend("Partage de fichiers indisponible") }
+        run { c ->
+            val file = share.share(uri)
+            _state.update { it.copy(sharing = true) }
+            c.playUrl(file.url, file.title)
+            _messages.trySend("« ${file.title} » envoyé à ${_state.value.device?.name ?: "l'appareil"}")
+        }
+    }
+
+    fun stopSharing() {
+        deps.localShare?.stop()
+        _state.update { it.copy(sharing = false) }
+        _messages.trySend("Partage de fichier arrêté")
+    }
+
+    /** Ouvre « Transférer la lecture vers… » : média en cours et destinations possibles. */
+    fun openTransfer() {
+        val c = connectedAs<SupportsTransferOut>() ?: return run { _messages.trySend(NOT_SUPPORTED) }
+        _state.update { it.copy(transfer = TransferState(open = true, loading = true)) }
+        viewModelScope.launch {
+            val media = load { c.currentMedia() }
+            val devices = load { deps.allDevices() }.orEmpty()
+            if (media == null) _messages.trySend("Aucun média transférable en cours de lecture")
+            _state.update {
+                it.copy(transfer = TransferState(open = media != null, media = media, targets = transferTargets(devices, deviceId)))
+            }
+        }
+    }
+
+    fun closeTransfer() = _state.update { it.copy(transfer = TransferState()) }
+
+    /**
+     * Reprend le média sur [targetId] (à la même position), puis l'arrête ici si [stopHere].
+     * La connexion à la cible est refermée ensuite, sauf pour un Chromecast : fermer sa session
+     * pourrait interrompre la lecture qui vient d'y démarrer.
+     */
+    fun transferTo(targetId: String, transcode: Boolean, stopHere: Boolean) {
+        val media = _state.value.transfer.media ?: return
+        _state.update { it.copy(transfer = it.transfer.copy(busy = true)) }
+        viewModelScope.launch {
+            try {
+                val name = withContext(io) {
+                    val device = deps.loadDevice(targetId) ?: throw RemoteException("Appareil introuvable")
+                    val target = deps.createController(device)
+                    try {
+                        transferPlayback(media, target, transcode)
+                    } finally {
+                        if (device.kind != DeviceKind.CHROMECAST) runCatching { target.disconnect() }
+                    }
+                    val source = controller
+                    if (stopHere && source != null && RemoteKey.STOP in source.supportedKeys) {
+                        runCatching { source.send(RemoteKey.STOP) }
+                    }
+                    device.name
+                }
+                _state.update { it.copy(transfer = TransferState()) }
+                _messages.trySend("Lecture transférée vers $name")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(transfer = it.transfer.copy(busy = false)) }
+                _messages.trySend(errorMessage(e))
+            }
+        }
+    }
 
     fun press(key: RemoteKey) = run { it.send(key) }
     fun playUrl(url: String) = run { it.playUrl(url.trim()) }

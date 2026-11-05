@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette
 
+import io.github.jmorille.zapette.data.LocalShare
+import io.github.jmorille.zapette.data.AndroidLocalShare
 import android.app.Application
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStoreFile
@@ -47,6 +49,9 @@ class AppContainer(context: Context) {
     )
     val discovery = DiscoveryManager(appContext, http)
     val controllers = ControllerFactory(http, devices, secrets, AndroidPlatformControllers(appContext, settings, http))
+
+    /** Partage de fichiers du téléphone vers les lecteurs du réseau local (serveur HTTP local). */
+    val localShare: LocalShare by lazy { AndroidLocalShare(appContext) }
 }
 
 class ZapetteApp : Application() {
