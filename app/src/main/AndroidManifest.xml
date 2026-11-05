@@ -29,6 +29,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      Clavier Bluetooth (profil standard HID Device) : la tablette se déclare comme clavier
+      auprès de la TV. CONNECT : déclaration, connexion, envoi des touches ; ADVERTISE : rendre
+      la tablette visible pour l'appairage. Demandées à l'exécution, depuis l'écran dédié.
+      Aucune recherche d'appareils (pas de BLUETOOTH_SCAN) ni de position.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <!--

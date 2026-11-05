@@ -86,6 +86,8 @@ kover {
                     "io.github.jmorille.zapette.discovery.DiscoveryManager\$Companion*",
                     // Lien ADB réel (dadb, connexion TCP) ; DadbShell lui-même reste mesuré.
                     "io.github.jmorille.zapette.firetv.DadbShell\$Companion\$dadbLink\$1",
+                    // Profil Bluetooth HID Device d'Android (pile Bluetooth réelle).
+                    "io.github.jmorille.zapette.bluetooth.AndroidHidKeyboard*",
                 )
             }
         }

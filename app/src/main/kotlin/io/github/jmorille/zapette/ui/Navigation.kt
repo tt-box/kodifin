@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui
 
+import io.github.jmorille.zapette.ui.bluetooth.BluetoothKeyboardScreen
 import io.github.jmorille.zapette.ui.adb.AdbPairingScreen
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +50,10 @@ object PlexLinkRoute
 @Serializable
 object AdbPairingRoute
 
+/** Essai du pilotage par Bluetooth (la tablette se déclare comme clavier). */
+@Serializable
+object BluetoothKeyboardRoute
+
 /** Réglages globaux (écran allumé, Chromecast). */
 @Serializable
 object SettingsRoute
@@ -94,7 +99,11 @@ fun ZapetteNavHost(sharedUrl: String?, onSharedUrlConsumed: () -> Unit) {
                 onPlexLink = { if (entry.isResumed) nav.navigate(PlexLinkRoute) },
                 onSettings = { if (entry.isResumed) nav.navigate(SettingsRoute) },
                 onTransfer = { id -> if (entry.isResumed) nav.navigate(TransferRoute(id)) },
+                onBluetooth = { if (entry.isResumed) nav.navigate(BluetoothKeyboardRoute) },
             )
+        }
+        composable<BluetoothKeyboardRoute> { entry ->
+            BluetoothKeyboardScreen(onBack = { if (entry.isResumed) nav.popBackStack() })
         }
         composable<ConfigRoute> { entry ->
             DeviceConfigScreen(

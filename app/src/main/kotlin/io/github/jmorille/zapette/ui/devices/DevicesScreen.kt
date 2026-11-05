@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.devices
 
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ImportExport
@@ -144,6 +145,7 @@ fun DevicesScreen(
     onEdit: (String) -> Unit = {},
     onSettings: () -> Unit = {},
     onTransfer: (String?) -> Unit = {},
+    onBluetooth: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val vm: DevicesViewModel = viewModel(factory = viewModelFactory { initializer { DevicesViewModel(context.container.devicesDependencies()) } })
@@ -175,6 +177,7 @@ fun DevicesScreen(
                     IconButton(onClick = { onTransfer(null) }) {
                         Icon(Icons.Filled.ImportExport, contentDescription = "Importer / exporter les appareils")
                     }
+                    IconButton(onClick = onBluetooth) { Icon(Icons.Filled.Bluetooth, contentDescription = "Clavier Bluetooth (essai)") }
                     IconButton(onClick = onPlexLink) { Icon(Icons.Filled.Link, contentDescription = "Lier un compte Plex") }
                     IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = "Réglages") }
                 },
