@@ -20,8 +20,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -97,37 +95,6 @@ fun PlaybackDetails(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Pistes et modes", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 WithTooltip("Actualiser les pistes") { IconButton(onClick = actions.refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser les pistes") } }
-            }
-        }
-        val fastKeys = RemoteKey.REWIND in keys || RemoteKey.FAST_FORWARD in keys
-        if (features.speed || features.chapters || (features.seekStep && fastKeys)) {
-            val speedSummary = speedText(details).let { if (it == "En pause") it else "Vitesse : ${it.lowercase()}" }
-            Section("Vitesse et chapitres", summary = speedSummary) {
-                if (features.speed) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextAction("Plus lent", actions.slower)
-                        val speedLabel = speedText(details)
-                        Text(
-                            speedLabel,
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.semantics { contentDescription = "Vitesse : $speedLabel" },
-                        )
-                        TextAction("Plus vite", actions.faster)
-                    }
-                } else if (features.seekStep && fastKeys) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextAction("Retour rapide", { press(RemoteKey.REWIND) }, enabled = RemoteKey.REWIND in keys)
-                        TextAction("Avance rapide", { press(RemoteKey.FAST_FORWARD) }, enabled = RemoteKey.FAST_FORWARD in keys)
-                    }
-                }
-                if (features.chapters) {
-                    val count = details?.chapterCount ?: 0
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        RemoteIconButton(Icons.Filled.SkipPrevious, "Chapitre précédent", actions.previousChapter, size = 48.dp)
-                        Text(if (count > 0) "Chapitres ($count)" else "Chapitres", style = MaterialTheme.typography.bodyMedium)
-                        RemoteIconButton(Icons.Filled.SkipNext, "Chapitre suivant", actions.nextChapter, size = 48.dp)
-                    }
-                }
             }
         }
         if (features.tracks) {
