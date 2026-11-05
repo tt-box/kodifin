@@ -51,7 +51,9 @@ fun TransferDialog(
     onTransfer: (targetId: String, transcode: Boolean, stopHere: Boolean) -> Unit,
 ) {
     val media = transfer.media
-    var selected by rememberSaveable { mutableStateOf(transfer.targets.firstOrNull()?.device?.id) }
+    // Destinations chargées après l'ouverture : la première est proposée tant qu'aucune n'est choisie.
+    var chosen by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = chosen?.takeIf { id -> transfer.targets.any { it.device.id == id } } ?: transfer.targets.firstOrNull()?.device?.id
     var transcode by rememberSaveable { mutableStateOf(false) }
     var stopHere by rememberSaveable { mutableStateOf(true) }
     AlertDialog(
@@ -78,7 +80,7 @@ fun TransferDialog(
                         Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
-                            .selectable(selected = id == selected, enabled = !transfer.busy, role = Role.RadioButton) { selected = id },
+                            .selectable(selected = id == selected, enabled = !transfer.busy, role = Role.RadioButton) { chosen = id },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(selected = id == selected, onClick = null)
