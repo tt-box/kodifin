@@ -361,6 +361,19 @@ class KodiClient(private val transport: KodiTransport) {
     suspend fun setFullscreen(value: String = "toggle") =
         call(KodiMethod.GUI_SET_FULLSCREEN, buildJsonObject { put("fullscreen", value) })
 
+    /** Plein écran explicite (`GUI.SetFullscreen` accepte un booléen ou « toggle »). */
+    suspend fun setFullscreen(enabled: Boolean) =
+        call(KodiMethod.GUI_SET_FULLSCREEN, buildJsonObject { put("fullscreen", enabled) })
+
+    /** État du plein écran (`GUI.GetProperties`), `null` si absent de la réponse. */
+    suspend fun isFullscreen(): Boolean? {
+        val o = call(
+            KodiMethod.GUI_GET_PROPERTIES,
+            buildJsonObject { putJsonArray("properties") { add(JsonPrimitive("fullscreen")) } },
+        ).obj(KodiMethod.GUI_GET_PROPERTIES)
+        return o["fullscreen"].primitive()?.booleanOrNull
+    }
+
     suspend fun activateWindow(window: String, parameters: List<String>) = call(
         KodiMethod.GUI_ACTIVATE_WINDOW,
         buildJsonObject {

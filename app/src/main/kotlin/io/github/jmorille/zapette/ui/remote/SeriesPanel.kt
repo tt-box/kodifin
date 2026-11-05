@@ -138,7 +138,7 @@ fun SeriesPanel(series: SeriesState, playback: PlaybackState?, actions: SeriesAc
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).semantics { heading() },
             )
-            IconButton(onClick = actions.refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser la série") }
+            WithTooltip("Actualiser la série") { IconButton(onClick = actions.refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser la série") } }
         }
         if (context != null && context.seasons.isNotEmpty()) {
             val selected = context.seasons.indexOfFirst { it.id == series.seasonId }.coerceAtLeast(0)

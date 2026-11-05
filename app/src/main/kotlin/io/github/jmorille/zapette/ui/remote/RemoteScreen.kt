@@ -1,5 +1,7 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.CloseFullscreen
 import io.github.jmorille.zapette.ui.devices.deviceIcon
@@ -259,6 +261,8 @@ fun RemoteScreen(
             onDismiss = { sheet = false },
             onDialog = { sheet = false; dialog = it },
             onCommand = vm::uiCommand,
+            fullscreen = state.fullscreen,
+            onFullscreen = vm::setFullscreen,
             onScan = { sheet = false; vm.scanLibrary() },
             onEdit = { sheet = false; onEdit() },
             onSendFile = { sheet = false; pickFile.launch(arrayOf("video/*", "audio/*", "image/*")) },
@@ -367,7 +371,9 @@ private fun RemoteTopBar(
             DeviceSwitcher(state.device?.name ?: "Télécommande", status, switchable, onSwitch)
         },
         navigationIcon = {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
+            WithTooltip("Retour à l'accueil") {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour") }
+            }
         },
         actions = {
             if (state.features.targets && state.connected) TargetsMenu(state.targets, onOpenTargets, onSelectTarget)
@@ -376,9 +382,13 @@ private fun RemoteTopBar(
                 PowerMenu(canWake, state.features.powerActions, onWake, onPower)
             }
             if (!state.connected && !state.connecting) {
-                IconButton(onClick = onRetry) { Icon(Icons.Filled.Refresh, contentDescription = "Reconnecter") }
+                WithTooltip("Reconnecter") {
+                    IconButton(onClick = onRetry) { Icon(Icons.Filled.Refresh, contentDescription = "Reconnecter") }
+                }
             }
-            IconButton(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Plus d'actions") }
+            WithTooltip("Plus d'actions") {
+                IconButton(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Plus d'actions") }
+            }
         },
     )
 }
@@ -444,7 +454,9 @@ private fun DeviceSwitcher(name: String, status: String?, entries: List<SwitchEn
 private fun TargetsMenu(targets: TargetsState, onOpen: () -> Unit, onSelect: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = true; onOpen() }) { Icon(Icons.Filled.Devices, contentDescription = "Cible de lecture") }
+        WithTooltip("Cible de lecture") {
+            IconButton(onClick = { open = true; onOpen() }) { Icon(Icons.Filled.Devices, contentDescription = "Cible de lecture") }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             if (targets.items.isEmpty()) {
                 DropdownMenuItem(text = { Text("Aucune session active") }, onClick = { open = false }, enabled = false)
@@ -474,7 +486,9 @@ private fun TargetsMenu(targets: TargetsState, onOpen: () -> Unit, onSelect: (St
 private fun PowerMenu(canWake: Boolean, actions: Set<PowerAction>, onWake: () -> Unit, onPower: (PowerAction) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = true }) { Icon(Icons.Filled.PowerSettingsNew, contentDescription = "Alimentation") }
+        WithTooltip("Alimentation") {
+            IconButton(onClick = { open = true }) { Icon(Icons.Filled.PowerSettingsNew, contentDescription = "Alimentation") }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             if (canWake) {
                 DropdownMenuItem(text = { Text("Allumer (Wake-on-LAN)") }, onClick = { open = false; onWake() })
@@ -493,6 +507,8 @@ private fun MoreSheet(
     onDismiss: () -> Unit,
     onDialog: (RemoteDialog) -> Unit,
     onCommand: (UiCommand) -> Unit,
+    fullscreen: Boolean?,
+    onFullscreen: (Boolean) -> Unit,
     onScan: () -> Unit,
     onEdit: () -> Unit,
     onSendFile: () -> Unit,
@@ -536,7 +552,11 @@ private fun MoreSheet(
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-                UiCommandChips(state.features.uiCommands, onCommand, Modifier.padding(horizontal = 16.dp))
+                UiCommandChips(
+                    state.features.uiCommands, onCommand, Modifier.padding(horizontal = 16.dp),
+                    fullscreen = fullscreen,
+                    onFullscreen = onFullscreen.takeIf { state.features.fullscreen },
+                )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
             }
             SheetItem(Icons.Filled.Edit, "Modifier la configuration", onEdit)
@@ -656,15 +676,16 @@ private fun RemotePage(content: RemoteContent) {
 private fun TabletPortraitLayout(content: RemoteContent) {
     val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_PORTRAIT, content.features)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
+    val hidden = PanePreferences.hidden && tabs.isNotEmpty()
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
     var expanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = expanded && tabs.isNotEmpty()) { expanded = false }
-    PanelsEffect(content, RemoteLayout.TABLET_PORTRAIT, selected)
+    PanelsEffect(content, RemoteLayout.TABLET_PORTRAIT, selected.takeUnless { hidden })
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     ProgressFor(content)
-    if (expanded && tabs.isNotEmpty()) {
+    if (expanded && !hidden && tabs.isNotEmpty()) {
         if (content.playbackRows) TransportFor(content)
-        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true) { expanded = false }
+        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true, onHide = { expanded = false; PanePreferences.hidden = true }) { expanded = false }
         return@Column
     }
     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)) {
@@ -674,8 +695,10 @@ private fun TabletPortraitLayout(content: RemoteContent) {
             if (content.playbackRows) TransportFor(content)
             VolumeFor(content)
         }
-        if (tabs.isNotEmpty()) {
-            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight()) { expanded = true }
+        if (hidden) {
+            PaneRail(tabs) { selectedIndex = tabs.indexOf(it); PanePreferences.hidden = false }
+        } else if (tabs.isNotEmpty()) {
+            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight(), onHide = { PanePreferences.hidden = true }) { expanded = true }
         }
     }
     }
@@ -686,19 +709,20 @@ private fun TabletPortraitLayout(content: RemoteContent) {
 private fun TabletLandscapeLayout(content: RemoteContent) {
     val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, content.features)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
+    val hidden = PanePreferences.hidden && tabs.isNotEmpty()
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
     var expanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = expanded && tabs.isNotEmpty()) { expanded = false }
-    PanelsEffect(content, RemoteLayout.TABLET_LANDSCAPE, selected)
+    PanelsEffect(content, RemoteLayout.TABLET_LANDSCAPE, selected.takeUnless { hidden })
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     ProgressFor(content)
-    if (expanded && tabs.isNotEmpty()) {
+    if (expanded && !hidden && tabs.isNotEmpty()) {
         // Volet agrandi : transport et volume sur une ligne, le reste pour les séries et films.
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
             if (content.playbackRows) Box(Modifier.weight(1f)) { TransportFor(content) }
             Box(Modifier.weight(1f)) { VolumeFor(content) }
         }
-        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true) { expanded = false }
+        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true, onHide = { expanded = false; PanePreferences.hidden = true }) { expanded = false }
         return@Column
     }
     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -715,14 +739,46 @@ private fun TabletLandscapeLayout(content: RemoteContent) {
             val extra = content.features.uiCommands - setOf(UiCommand.OSD, UiCommand.CONTEXT_MENU)
             if (extra.isNotEmpty()) {
                 CollapsibleCard("Plus de commandes", summary = "${extra.size} commandes de l'appareil", modifier = Modifier.fillMaxWidth()) {
-                    UiCommandChips(extra, content.actions.uiCommand, Modifier.fillMaxWidth())
+                    UiCommandChips(
+                        extra, content.actions.uiCommand, Modifier.fillMaxWidth(),
+                        fullscreen = content.state.fullscreen,
+                        onFullscreen = content.vm::setFullscreen.takeIf { content.features.fullscreen },
+                    )
                 }
             }
         }
-        if (tabs.isNotEmpty()) {
-            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight()) { expanded = true }
+        if (hidden) {
+            PaneRail(tabs) { selectedIndex = tabs.indexOf(it); PanePreferences.hidden = false }
+        } else if (tabs.isNotEmpty()) {
+            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight(), onHide = { PanePreferences.hidden = true }) { expanded = true }
         }
     }
+    }
+}
+
+/**
+ * Choix « volet masqué », commun à toutes les télécommandes ouvertes pendant la session (passer
+ * d'un appareil à l'autre le garde masqué).
+ */
+private object PanePreferences {
+    var hidden by mutableStateOf(false)
+}
+
+/** Volet masqué : une colonne d'icônes, une par onglet, pour le rouvrir directement. */
+@Composable
+private fun PaneRail(tabs: List<RemoteTab>, onShow: (RemoteTab) -> Unit) {
+    Surface(
+        Modifier.fillMaxHeight().width(64.dp),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.88f),
+    ) {
+        Column(Modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            tabs.forEach { tab ->
+                WithTooltip("Afficher : ${tab.label}") {
+                    IconButton(onClick = { onShow(tab) }) { Icon(tab.icon, contentDescription = "Afficher : ${tab.label}") }
+                }
+            }
+        }
     }
 }
 
@@ -738,6 +794,8 @@ private fun SidePane(
     onSelect: (RemoteTab) -> Unit,
     modifier: Modifier,
     expanded: Boolean = false,
+    /** Masque le volet (la télécommande reprend la place). */
+    onHide: () -> Unit,
     onToggleExpand: () -> Unit,
 ) {
     Surface(modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.88f)) {
@@ -761,11 +819,16 @@ private fun SidePane(
                         modifier = Modifier.weight(1f).padding(start = 16.dp),
                     )
                 }
-                IconButton(onClick = onToggleExpand) {
-                    Icon(
-                        if (expanded) Icons.Filled.CloseFullscreen else Icons.Filled.OpenInFull,
-                        contentDescription = if (expanded) "Réduire le volet" else "Agrandir le volet en plein écran",
-                    )
+                val expandLabel = if (expanded) "Réduire le volet" else "Agrandir le volet en plein écran"
+                WithTooltip(expandLabel) {
+                    IconButton(onClick = onToggleExpand) {
+                        Icon(if (expanded) Icons.Filled.CloseFullscreen else Icons.Filled.OpenInFull, contentDescription = expandLabel)
+                    }
+                }
+                WithTooltip("Masquer la file et les médias") {
+                    IconButton(onClick = onHide) {
+                        Icon(Icons.Filled.VisibilityOff, contentDescription = "Masquer la file et les médias")
+                    }
                 }
             }
             Box(Modifier.weight(1f)) {

@@ -96,7 +96,7 @@ fun PlaybackDetails(
         if (features.tracks) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Pistes et modes", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                IconButton(onClick = actions.refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser les pistes") }
+                WithTooltip("Actualiser les pistes") { IconButton(onClick = actions.refresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser les pistes") } }
             }
         }
         val fastKeys = RemoteKey.REWIND in keys || RemoteKey.FAST_FORWARD in keys
@@ -289,11 +289,40 @@ private fun RepeatSelector(current: RepeatMode?, onSelect: (RepeatMode) -> Unit)
 /** Commandes d'interface secondaires de l'appareil (plein écran, guide, chaînes…). */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun UiCommandChips(commands: Set<UiCommand>, onCommand: (UiCommand) -> Unit, modifier: Modifier = Modifier) {
+fun UiCommandChips(
+    commands: Set<UiCommand>,
+    onCommand: (UiCommand) -> Unit,
+    modifier: Modifier = Modifier,
+    /** État du plein écran, si le lecteur sait le lire (`null` : inconnu). */
+    fullscreen: Boolean? = null,
+    /** Plein écran explicite ; `null` : simple bascule [UiCommand.FULLSCREEN]. */
+    onFullscreen: ((Boolean) -> Unit)? = null,
+) {
     if (commands.isEmpty()) return
     val haptic = LocalHapticFeedback.current
+    val explicitFullscreen = onFullscreen != null && UiCommand.FULLSCREEN in commands
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        UiCommand.entries.filter { it in commands }.forEach { command ->
+        if (explicitFullscreen) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    fullscreenLabel(fullscreen),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                listOf(true to "Activé", false to "Désactivé").forEach { (value, label) ->
+                    FilterChip(
+                        selected = fullscreen == value,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
+                            onFullscreen?.invoke(value)
+                        },
+                        label = { Text(label) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    )
+                }
+            }
+        }
+        UiCommand.entries.filter { it in commands && !(explicitFullscreen && it == UiCommand.FULLSCREEN) }.forEach { command ->
             AssistChip(
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
@@ -304,4 +333,11 @@ fun UiCommandChips(commands: Set<UiCommand>, onCommand: (UiCommand) -> Unit, mod
             )
         }
     }
+}
+
+/** Libellé du plein écran : état connu ou non. */
+fun fullscreenLabel(fullscreen: Boolean?): String = when (fullscreen) {
+    true -> "Plein écran (activé) :"
+    false -> "Plein écran (désactivé) :"
+    null -> "Plein écran :"
 }

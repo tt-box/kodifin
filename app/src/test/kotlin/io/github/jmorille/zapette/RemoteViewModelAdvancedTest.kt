@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette
 
+import io.github.jmorille.zapette.model.SupportsFullscreen
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
@@ -85,8 +86,11 @@ class RemoteViewModelAdvancedTest {
     private class Full(device: Device) :
         Basic(device), SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsSyncOffset, SupportsPlayMode,
         SupportsChapters, SupportsUiCommands, SupportsPower, SupportsNotify, SupportsLibraryMaintenance,
-        SupportsLibrary, SupportsQueue, SupportsTargets {
+        SupportsLibrary, SupportsQueue, SupportsTargets, SupportsFullscreen {
         val calls = mutableListOf<String>()
+        var fullscreenState: Boolean? = true
+        override suspend fun isFullscreen() = fullscreenState
+        override suspend fun setFullscreen(enabled: Boolean) { calls += "fullscreen:$enabled"; fullscreenState = enabled }
         var detailsCalls = 0
         var details = MediaDetails(audioTracks = listOf(MediaTrack(0, "Français", "fra")), currentAudio = 0)
         var queueItems = mutableListOf(MediaEntry("1", "Un"), MediaEntry("2", "Deux"), MediaEntry("3", "Trois"))
@@ -180,6 +184,22 @@ class RemoteViewModelAdvancedTest {
     }
 
     private fun Deps.fake() = controllers.single() as Full
+
+    @Test
+    fun `fullscreen state is read on connect and set explicitly`() = runTest(dispatcher) {
+        val (vm, deps, store) = connected()
+        assertTrue(vm.state.value.features.fullscreen)
+        assertEquals(true, vm.state.value.fullscreen)
+        vm.setFullscreen(false)
+        advanceUntilIdle()
+        assertTrue("fullscreen:false" in deps.fake().calls)
+        assertEquals(false, vm.state.value.fullscreen)
+        vm.setFullscreen(true)
+        advanceUntilIdle()
+        assertEquals(true, vm.state.value.fullscreen)
+        store.clear()
+        advanceUntilIdle()
+    }
 
     @Test
     fun `features mirror implemented interfaces and power actions are loaded`() = runTest(dispatcher) {

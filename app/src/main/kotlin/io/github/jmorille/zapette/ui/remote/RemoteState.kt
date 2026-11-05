@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.SupportsFullscreen
 import io.github.jmorille.zapette.model.MediaItemInfo
 import io.github.jmorille.zapette.model.SupportsItemInfo
 import io.github.jmorille.zapette.model.DeclaresAvailability
@@ -43,6 +44,8 @@ data class RemoteFeatures(
     val playMode: Boolean = false,
     val chapters: Boolean = false,
     val uiCommands: Set<UiCommand> = emptySet(),
+    /** Plein écran avec état : « Activé / Désactivé » au lieu de la bascule. */
+    val fullscreen: Boolean = false,
     val power: Boolean = false,
     /** Actions d'alimentation annoncées par l'appareil (chargées après la connexion). */
     val powerActions: Set<PowerAction> = emptySet(),
@@ -86,6 +89,7 @@ data class RemoteFeatures(
             playMode = c is SupportsPlayMode && available(ControlFeature.PLAY_MODE),
             chapters = c is SupportsChapters && available(ControlFeature.CHAPTERS),
             uiCommands = (c as? SupportsUiCommands)?.uiCommands.orEmpty(),
+            fullscreen = c is SupportsFullscreen,
             power = c is SupportsPower,
             notify = c is SupportsNotify && available(ControlFeature.NOTIFY),
             libraryMaintenance = c is SupportsLibraryMaintenance && available(ControlFeature.SCAN_LIBRARY),

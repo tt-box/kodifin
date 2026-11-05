@@ -94,10 +94,12 @@ fun QueuePanel(
 ) {
     Column(modifier.fillMaxSize()) {
         PanelHeader("File d'attente (${queue.items.size})") {
-            IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser la file d'attente") }
+            WithTooltip("Actualiser la file d'attente") { IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = "Actualiser la file d'attente") } }
             if (onClear != null) {
-                IconButton(onClick = onClear, enabled = queue.items.isNotEmpty()) {
-                    Icon(Icons.Filled.ClearAll, contentDescription = "Vider la file d'attente")
+                WithTooltip("Vider la file d'attente") {
+                    IconButton(onClick = onClear, enabled = queue.items.isNotEmpty()) {
+                        Icon(Icons.Filled.ClearAll, contentDescription = "Vider la file d'attente")
+                    }
                 }
             }
         }
@@ -163,13 +165,13 @@ fun LibraryPanel(
         PanelHeader(
             title = level?.title ?: "Bibliothèque",
             navigation = if (level != null) {
-                { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Dossier parent") } }
+                { WithTooltip("Dossier parent") { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Dossier parent") } } }
             } else {
                 null
             },
         ) {
             if (level == null && !library.sectionsLoaded && !library.loading) {
-                IconButton(onClick = onRetry) { Icon(Icons.Filled.Refresh, contentDescription = "Recharger la bibliothèque") }
+                WithTooltip("Recharger la bibliothèque") { IconButton(onClick = onRetry) { Icon(Icons.Filled.Refresh, contentDescription = "Recharger la bibliothèque") } }
             }
         }
         if (library.path.size > 1) {

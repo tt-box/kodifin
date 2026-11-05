@@ -1,5 +1,11 @@
 package io.github.jmorille.zapette.ui.remote
 
+import androidx.compose.material3.rememberTooltipState
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -82,7 +88,22 @@ class RemoteActions(
 /** Saut relatif des touches −30 s / +30 s. */
 const val SEEK_STEP_MS = 30_000L
 
-/** Bouton d'action avec retour haptique, cible tactile ≥ 48 dp. */
+/**
+ * Info-bulle [text] sur [content] : au survol (souris, stylet) ou à l'appui long au doigt, pour
+ * connaître la fonction d'un bouton à icône.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WithTooltip(text: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+        tooltip = { PlainTooltip { Text(text) } },
+        state = rememberTooltipState(),
+        modifier = modifier,
+    ) { content() }
+}
+
+/** Bouton d'action avec retour haptique, cible tactile ≥ 48 dp, et son info-bulle. */
 @Composable
 fun RemoteIconButton(
     icon: ImageVector,
@@ -98,14 +119,16 @@ fun RemoteIconButton(
         haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
         onClick()
     }
-    val buttonModifier = modifier.size(size.coerceAtLeast(48.dp))
-    if (emphasized) {
-        FilledIconButton(onClick = click, enabled = enabled, modifier = buttonModifier) {
-            Icon(icon, contentDescription = label, modifier = Modifier.size(size * 0.5f))
-        }
-    } else {
-        FilledTonalIconButton(onClick = click, enabled = enabled, modifier = buttonModifier) {
-            Icon(icon, contentDescription = label)
+    val buttonModifier = Modifier.size(size.coerceAtLeast(48.dp))
+    WithTooltip(label, modifier) {
+        if (emphasized) {
+            FilledIconButton(onClick = click, enabled = enabled, modifier = buttonModifier) {
+                Icon(icon, contentDescription = label, modifier = Modifier.size(size * 0.5f))
+            }
+        } else {
+            FilledTonalIconButton(onClick = click, enabled = enabled, modifier = buttonModifier) {
+                Icon(icon, contentDescription = label)
+            }
         }
     }
 }

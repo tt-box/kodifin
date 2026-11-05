@@ -155,6 +155,19 @@ class KodiControlsTest {
     }
 
     @Test
+    fun `fullscreen is read and set explicitly`() = runTest {
+        stub.results[KodiMethod.GUI_GET_PROPERTIES] = """{"fullscreen":true}"""
+        assertEquals(true, controller.isFullscreen())
+        assertEquals(call(KodiMethod.GUI_GET_PROPERTIES, """{"properties":["fullscreen"]}"""), stub.commands().last())
+        stub.results[KodiMethod.GUI_GET_PROPERTIES] = "{}"
+        assertNull(controller.isFullscreen())
+        assertEquals(
+            listOf(call(KodiMethod.GUI_SET_FULLSCREEN, """{"fullscreen":false}""")),
+            commandsOf { controller.setFullscreen(false) },
+        )
+    }
+
+    @Test
     fun `ui commands map to Kodi methods and actions`() = runTest {
         val expected = mapOf(
             UiCommand.OSD to call(KodiMethod.INPUT_SHOW_OSD),

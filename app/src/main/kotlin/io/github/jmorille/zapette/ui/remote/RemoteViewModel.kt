@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.ui.remote
 
+import io.github.jmorille.zapette.model.SupportsFullscreen
 import io.github.jmorille.zapette.model.SupportsItemInfo
 import io.github.jmorille.zapette.model.MediaItemInfo
 import kotlinx.coroutines.flow.first
@@ -90,6 +91,8 @@ data class RemoteUiState(
     val itemInfo: ItemInfoState = ItemInfoState(),
     /** Un fichier du téléphone est servi sur le réseau local. */
     val sharing: Boolean = false,
+    /** Plein écran du lecteur (contrôleurs [SupportsFullscreen]) ; `null` : inconnu. */
+    val fullscreen: Boolean? = null,
 )
 
 /** Dépendances du ViewModel, isolées pour les tests JVM (pas de Context Android). */
@@ -280,6 +283,7 @@ class RemoteViewModel(
                 _state.update { it.copy(connecting = false, connected = true) }
                 // Connu après la connexion seulement (client Jellyfin choisi, commandes acceptées).
                 refreshAbilities(c)
+                refreshFullscreen(force = true)
                 persistCredentials(device, c)
                 consumeSharedUrl()?.let(::playUrl)
                 if (Capability.NOW_PLAYING in c.capabilities) playbackJob = observePlayback(c)
@@ -340,6 +344,7 @@ class RemoteViewModel(
                     _state.update { it.copy(playback = s) }
                     refreshAbilities(c)
                     onTitle(s.title)
+                    refreshFullscreen()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -615,6 +620,38 @@ class RemoteViewModel(
     // --- Interface de l'appareil, alimentation, message, maintenance -----------------------
 
     fun uiCommand(command: UiCommand) = runOn<SupportsUiCommands> { it.uiCommand(command) }
+
+    /** Dernière lecture de l'état du plein écran (horloge monotone, ms). */
+    @Volatile private var fullscreenCheckedAt = Long.MIN_VALUE / 2
+
+    /**
+     * Relit l'état du plein écran : à la connexion, après un changement, puis au plus toutes les
+     * [FULLSCREEN_REFRESH_MS] pendant la lecture (l'état peut changer depuis la télécommande de la TV).
+     */
+    private fun refreshFullscreen(force: Boolean = false) {
+        val c = connectedAs<SupportsFullscreen>() ?: return
+        val now = System.nanoTime() / 1_000_000
+        if (!force && now - fullscreenCheckedAt < FULLSCREEN_REFRESH_MS) return
+        fullscreenCheckedAt = now
+        viewModelScope.launch {
+            val value = try {
+                withContext(io) { c.isFullscreen() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            _state.update { if (it.fullscreen == value) it else it.copy(fullscreen = value) }
+        }
+    }
+
+    /** Entre ou sort du plein écran (action explicite, pas une bascule). */
+    fun setFullscreen(enabled: Boolean) = runOn<SupportsFullscreen>(
+        after = {
+            _state.update { it.copy(fullscreen = enabled) }
+            refreshFullscreen(force = true)
+        },
+    ) { it.setFullscreen(enabled) }
 
     private fun loadPowerActions(c: RemoteController) {
         if (c !is SupportsPower) return
@@ -999,3 +1036,6 @@ class RemoteViewModel(
         const val WAKE_RETRY_DELAY_MS = 5_000L
     }
 }
+
+/** Intervalle minimal entre deux lectures de l'état du plein écran pendant la lecture. */
+const val FULLSCREEN_REFRESH_MS = 5_000L

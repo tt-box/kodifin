@@ -1,5 +1,6 @@
 package io.github.jmorille.zapette.kodi
 
+import io.github.jmorille.zapette.model.SupportsFullscreen
 import io.github.jmorille.zapette.model.SupportsItemInfo
 import io.github.jmorille.zapette.model.MediaItemInfo
 import io.github.jmorille.zapette.model.TransferableMedia
@@ -95,6 +96,7 @@ class KodiController(
     SupportsPlayMode,
     SupportsChapters,
     SupportsUiCommands,
+    SupportsFullscreen,
     SupportsPower,
     SupportsNotify,
     SupportsLibraryMaintenance,
@@ -452,6 +454,12 @@ class KodiController(
 
     /** Kodi n'a pas de fenêtre de recherche globale publique : SEARCH n'est pas proposé. */
     override val uiCommands: Set<UiCommand> = UiCommand.entries.toSet() - UiCommand.SEARCH
+
+    override suspend fun isFullscreen(): Boolean? = client.isFullscreen()
+
+    override suspend fun setFullscreen(enabled: Boolean) {
+        client.setFullscreen(enabled)
+    }
 
     override suspend fun uiCommand(command: UiCommand) {
         when (command) {

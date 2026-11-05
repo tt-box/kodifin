@@ -30,6 +30,13 @@ class ItemInfoTextTest {
     }
 
     @Test
+    fun `fullscreen label shows the known state`() {
+        assertEquals("Plein écran (activé) :", fullscreenLabel(true))
+        assertEquals("Plein écran (désactivé) :", fullscreenLabel(false))
+        assertEquals("Plein écran :", fullscreenLabel(null))
+    }
+
+    @Test
     fun `cast summary is shortened`() {
         assertNull(castSummary(emptyList()))
         assertEquals("A, B", castSummary(listOf("A", "B")))

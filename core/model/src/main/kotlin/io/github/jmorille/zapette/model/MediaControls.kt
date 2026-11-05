@@ -92,6 +92,16 @@ enum class UiCommand(val label: String) {
     GUIDE("Guide TV"),
 }
 
+/**
+ * Plein écran du lecteur avec état lisible : entrer ou sortir explicitement plutôt qu'une
+ * bascule, qui ferait l'inverse de l'attendu si l'état affiché est périmé.
+ */
+interface SupportsFullscreen {
+    /** `null` : état inconnu. */
+    suspend fun isFullscreen(): Boolean?
+    suspend fun setFullscreen(enabled: Boolean)
+}
+
 interface SupportsUiCommands {
     val uiCommands: Set<UiCommand>
     suspend fun uiCommand(command: UiCommand)
