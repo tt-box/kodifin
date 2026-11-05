@@ -18,6 +18,8 @@ class RemoteSwitcherTest {
         assertEquals(listOf("thor", "ko", "Salon"), entries.map { it.device.name })
         assertEquals(listOf(false, true, false), entries.map { it.current })
         assertEquals("Jellyfin · 192.168.30.30", entries[0].detail)
+        // Chromecast sans adresse enregistrée : pas de séparateur orphelin.
+        assertEquals("Chromecast", RemoteSwitcher.entries(listOf(thor, salon.copy(host = "")), "j")[1].detail)
     }
 
     @Test

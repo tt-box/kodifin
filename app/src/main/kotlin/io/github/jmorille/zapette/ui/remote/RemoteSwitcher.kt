@@ -15,7 +15,8 @@ object RemoteSwitcher {
         val unique = saved.distinctBy { it.id }
         if (unique.none { it.id != currentId }) return emptyList()
         return unique.map { device ->
-            SwitchEntry(device, "${device.kind.label} · ${device.host}", current = device.id == currentId)
+            val detail = listOf(device.kind.label, device.host).filter { it.isNotBlank() }.joinToString(" · ")
+            SwitchEntry(device, detail, current = device.id == currentId)
         }
     }
 }
