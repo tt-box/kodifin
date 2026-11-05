@@ -18,7 +18,7 @@ dadb = "2.0.0"
 junit = "4.13.2"
 turbine = "1.2.1"
 material-icons = "1.7.8"
-zxing = "3.5.3"
+zxing = "3.5.4"
 zxing-android-embedded = "4.3.0"
 
 [libraries]
