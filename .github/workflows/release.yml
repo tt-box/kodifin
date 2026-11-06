@@ -118,9 +118,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Tag $TAG -> version $VERSION (versionCode $VERSION_CODE, prerelease $PRERELEASE)"
 
-      # On ne publie jamais une version qui ne passe pas les tests.
-      - name: Tests unitaires et lint
-        run: ./gradlew test testDebugUnitTest lint --stacktrace
+      # On ne publie jamais une version qui ne passe pas les tests. L'APK debug (non
+      # obfusqué) sert au contrôle anti-pistage des classes embarquées.
+      - name: Tests unitaires, lint et APK debug
+        run: ./gradlew test testDebugUnitTest lint assembleDebug --stacktrace
 
       - name: Aucune dépendance de pistage
         run: bash scripts/check-no-trackers.sh
