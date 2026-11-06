@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -5,6 +6,26 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// Identifiants de signature, hors du dépôt : `keystore.properties` à la racine en local
+// (ignoré par git), variables d'environnement ZAPETTE_* en CI. Sans eux, la config release
+// est absente et assembleRelease produit un APK non signé (suffisant pour vérifier R8).
+val keystoreProperties =
+    Properties().apply {
+        val file = rootProject.file("keystore.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+
+fun signingValue(key: String, environmentVariable: String): String? =
+    keystoreProperties.getProperty(key) ?: System.getenv(environmentVariable)
+
+val releaseStoreFile = signingValue("storeFile", "ZAPETTE_STORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "ZAPETTE_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "ZAPETTE_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "ZAPETTE_KEY_PASSWORD")
+val hasReleaseSigning =
+    listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+        .all { !it.isNullOrBlank() }
 
 android {
     namespace = "io.github.jmorille.zapette"
@@ -15,8 +36,26 @@ android {
         applicationId = "io.github.jmorille.zapette"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Le workflow de release surcharge ces valeurs depuis le tag git.
+        versionCode = System.getenv("ZAPETTE_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("ZAPETTE_VERSION_NAME") ?: "0.1.0"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                // Clé ECDSA P-256. minSdk 26 : v1 (JAR) inutile, v2 couvre Android 7+,
+                // v3 / v3.1 permettent une future rotation de clé (Android 9+ / 13+).
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -24,6 +63,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

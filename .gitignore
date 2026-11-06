@@ -8,3 +8,10 @@ local.properties
 captures/
 *.jks
 *.keystore
+
+# Signature — jamais dans le dépôt
+keystore.properties
+*.p12
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

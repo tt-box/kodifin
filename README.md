@@ -79,10 +79,41 @@ Couverture de code (Kover, tous modules agrégés) :
 ./gradlew koverHtmlReport   # rapport : build/reports/kover/html/index.html
 ```
 
+## Release signée
+
+La clé de release est une clé **ECDSA P-256** (alias `zapette-release`, PKCS12), signée en
+v2 + v3/v3.1 (+ v4). En local, créer un `keystore.properties` à la racine (ignoré par git) :
+
+```properties
+storeFile=/chemin/vers/zapette-release.p12
+storePassword=…
+keyAlias=zapette-release
+keyPassword=…
+```
+
+En CI : variables `ZAPETTE_STORE_FILE`, `ZAPETTE_STORE_PASSWORD`, `ZAPETTE_KEY_ALIAS`,
+`ZAPETTE_KEY_PASSWORD`. Sans l'un ni l'autre, `assembleRelease` produit un APK non signé.
+
+**Publier une version** : `git tag v1.2.3 && git push origin v1.2.3` (ou créer la release
+depuis l'interface GitHub). Le workflow `.github/workflows/release.yml` rejoue tests et lint,
+construit l'APK et l'AAB signés, vérifie que leur certificat est bien celui attendu
+(empreinte SHA-256 épinglée dans le workflow), puis les publie sur la release avec leurs
+sommes SHA-256. Le tag donne le `versionName`, le nombre de commits le `versionCode`.
+
+Secrets requis (`Settings ▸ Secrets and variables ▸ Actions`) — sans eux, la release échoue :
+
+| Secret | Contenu |
+|---|---|
+| `KEYSTORE_BASE64` | `base64 -w0 zapette-release.p12` |
+| `KEYSTORE_PASSWORD` | mot de passe du keystore |
+| `KEY_ALIAS` | `zapette-release` |
+| `KEY_PASSWORD` | mot de passe de la clé (identique en PKCS12) |
+
 ## CI / sécurité
 
 - **CI** (`.github/workflows/ci.yml`) : tests unitaires, lint, build debug et release,
-  contrôle anti-pistage, scan CVE (inventaire CycloneDX analysé par OSV-Scanner,
+  contrôle anti-pistage (le build release y reste non signé : aucun secret n'est exposé
+  aux PR), scan CVE (inventaire CycloneDX analysé par OSV-Scanner,
   aussi lancé chaque jour), soumission du graphe de dépendances pour les alertes Dependabot.
 - **Couverture** : rapport Kover agrégé publié en artefact `coverage` ; sur `main`, le badge
   `.github/badges/coverage.svg` est recalculé et commité par la CI s'il change (aucun
