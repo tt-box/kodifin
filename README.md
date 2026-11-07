@@ -15,6 +15,18 @@
 Télécommande Android pour media centers et lecteurs réseau, **sans aucun traceur**.
 Cible Android 16 (API 36), compatible Android 8+.
 
+Kodifin pilote avec une seule application les appareils d'une maison : Kodi, Jellyfin, Emby,
+Plex, les renderers UPnP/DLNA, Chromecast, AirPlay 1, Roku, Fire TV et Android TV. Il les
+découvre sur le réseau local, puis offre la même télécommande pour tous : touches de
+navigation, lecture, volume, saisie de texte au clavier du téléphone, file d'attente,
+bibliothèque, recherche, lecture d'une adresse ou d'un fichier du téléphone, et transfert de
+la lecture d'un appareil à un autre. Les fonctions avancées n'apparaissent que si l'appareil
+les prend en charge.
+
+L'application ne parle qu'à l'appareil piloté, sans compte ni serveur intermédiaire. Elle est
+écrite en Kotlin avec Jetpack Compose (Material 3) ; chaque protocole est une bibliothèque
+Kotlin/JVM indépendante, testable sans émulateur.
+
 | Appareil | Protocole | Découverte | Fonctions |
 |---|---|---|---|
 | Kodi | JSON-RPC 2.0 : HTTP `/jsonrpc` (+ transport WebSocket port 9090) | mDNS `_xbmc-jsonrpc-h._tcp` | navigation, lecture, volume, recherche, lecture d'URL, saisie de texte, état de lecture, bibliothèques (84 méthodes cataloguées) |
