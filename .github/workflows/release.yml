@@ -41,11 +41,12 @@ jobs:
     permissions:
       contents: write
     env:
-      # Empreinte SHA-256 du certificat de release (ECDSA P-256, alias kodifin-release).
+      # Empreinte SHA-256 de la clé d'envoi (RSA 4096, alias kodifin-upload) qui signe l'AAB ;
+      # Google Play le re-signe avec sa propre clé avant distribution.
       # Publique : elle épingle la clé attendue. Un secret remplacé par erreur fait
       # échouer la release au lieu de publier un APK impossible à installer par-dessus
       # la version existante. À mettre à jour en cas de rotation de clé.
-      EXPECTED_CERT_SHA256: 29730e29dba665b2df40777410ae50f51d25b5c925edd147272711e62054715d
+      EXPECTED_CERT_SHA256: 9f692359907ab104698d9e0be9a4c2ed2991c057f24e525f5f3ac5246d14d2c3
     steps:
       # Un APK non signé ne s'installe pas : on échoue avant toute compilation.
       - name: Vérifier la présence des secrets de signature
