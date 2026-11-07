@@ -1,6 +1,7 @@
 name: Release
 
-# Construit l'APK et l'AAB signés (clé ECDSA P-256) et les publie sur une release GitHub.
+# Construit l'APK et l'AAB signés (clé ECDSA P-256) ainsi que leur variante non signée,
+# et les publie sur une release GitHub.
 #
 # Déclencheurs :
 # - `push` d'un tag (`git tag v1.2.3 && git push origin v1.2.3`, « v » facultatif,
@@ -125,6 +126,32 @@ jobs:
 
       - name: Aucune dépendance de pistage
         run: bash scripts/check-no-trackers.sh
+
+      # Variante non signée (APK + AAB), construite avant la restauration du keystore :
+      # aucun secret n'est accessible à cette étape. Utile pour une re-signature par un
+      # tiers (F-Droid, magasin d'applications, clé propre) ou une vérification de
+      # reproductibilité.
+      - name: Construire l'APK et l'AAB non signés
+        env:
+          ZAPETTE_VERSION_NAME: ${{ steps.version.outputs.name }}
+          ZAPETTE_VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          aab=app/build/outputs/bundle/release/app-release.aab
+          [ -f "$apk" ] && [ -f "$aab" ] || { echo "::error::Artefacts non signés introuvables"; exit 1; }
+          # Garde-fou : ces artefacts ne doivent porter aucune signature.
+          if "$APKSIGNER" verify "$apk" >/dev/null 2>&1; then echo "::error::$apk est signé"; exit 1; fi
+          if keytool -printcert -jarfile "$aab" 2>/dev/null | grep -q 'SHA256:'; then echo "::error::$aab est signé"; exit 1; fi
+          mkdir -p dist
+          cp "$apk" "dist/zapette-$VERSION-unsigned.apk"
+          cp "$aab" "dist/zapette-$VERSION-unsigned.aab"
+          # Les sorties signées sont produites au même endroit : on repart d'un dossier vide
+          # pour que la vérification de signature ne voie que les artefacts signés.
+          rm -rf app/build/outputs/apk/release app/build/outputs/bundle/release
 
       - name: Restaurer le keystore
         id: keystore

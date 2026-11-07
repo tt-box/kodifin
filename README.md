@@ -1,10 +1,10 @@
 # Zapette
 
-[![CI](https://github.com/jmorille/zapette/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmorille/zapette/actions/workflows/ci.yml)
-[![Fusion auto Dependabot](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/jmorille/zapette/actions/workflows/dependabot-automerge.yml)
-[![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/jmorille/zapette/security/dependabot)
+[![CI](https://github.com/tt-box/zapette/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tt-box/zapette/actions/workflows/ci.yml)
+[![Fusion auto Dependabot](https://github.com/tt-box/zapette/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/tt-box/zapette/actions/workflows/dependabot-automerge.yml)
+[![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/tt-box/zapette/security/dependabot)
 [![Scan CVE](https://img.shields.io/badge/CVE-OSV--Scanner-4285F4?logo=google&logoColor=white)](https://github.com/google/osv-scanner)
-[![Couverture](.github/badges/coverage.svg)](https://github.com/jmorille/zapette/actions/workflows/ci.yml)
+[![Couverture](.github/badges/coverage.svg)](https://github.com/tt-box/zapette/actions/workflows/ci.yml)
 [![Traceurs](https://img.shields.io/badge/traceurs-0-brightgreen)](scripts/check-no-trackers.sh)
 
 [![Android](https://img.shields.io/badge/Android-8%2B%20%E2%86%92%2016%20(API%2036)-3DDC84?logo=android&logoColor=white)](app/build.gradle.kts)
@@ -98,7 +98,16 @@ En CI : variables `ZAPETTE_STORE_FILE`, `ZAPETTE_STORE_PASSWORD`, `ZAPETTE_KEY_A
 depuis l'interface GitHub). Le workflow `.github/workflows/release.yml` rejoue tests et lint,
 construit l'APK et l'AAB signés, vérifie que leur certificat est bien celui attendu
 (empreinte SHA-256 épinglée dans le workflow), puis les publie sur la release avec leurs
-sommes SHA-256. Le tag donne le `versionName`, le nombre de commits le `versionCode`.
+sommes SHA-256. La release contient quatre artefacts :
+
+| Fichier | Usage |
+|---|---|
+| `zapette-X.Y.Z.apk` | Installation directe (signé) |
+| `zapette-X.Y.Z.aab` | Publication sur un store (Android App Bundle signé) |
+| `zapette-X.Y.Z-unsigned.apk` | Re-signature par un tiers, vérification de reproductibilité |
+| `zapette-X.Y.Z-unsigned.aab` | Bundle non signé, à signer avec sa propre clé d'envoi |
+
+La variante non signée est construite avant la restauration du keystore. Le tag donne le `versionName`, le nombre de commits le `versionCode`.
 
 Secrets requis (`Settings ▸ Secrets and variables ▸ Actions`) — sans eux, la release échoue :
 
