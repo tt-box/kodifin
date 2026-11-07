@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zapette – Règles de confidentialité</title>
+<meta name="description" content="Règles de confidentialité de l'application Android Zapette, télécommande pour media centers et lecteurs réseau.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d1d1f; --muted: #5f6368; --accent: #1a73e8;
+    --line: #e3e3e3; --soft: #f5f7fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121212; --fg: #e8eaed; --muted: #9aa0a6; --accent: #8ab4f8; --line: #2f3033; --soft: #1c1d1f; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.9rem; margin: 0 0 4px; }
+  h2 { font-size: 1.3rem; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 24px 0 4px; }
+  p, li { margin: 6px 0; }
+  .meta { color: var(--muted); margin: 0 0 16px; }
+  .lang { margin: 0 0 24px; }
+  a { color: var(--accent); }
+  .summary { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 0.95rem; }
+  th, td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  code { font-size: 0.9em; }
+</style>
+</head>
+<body>
+<main>
+
+<!-- ============================== FRANÇAIS ============================== -->
+<article id="fr" lang="fr">
+<h1>Règles de confidentialité de Zapette</h1>
+<p class="meta">Dernière mise à jour : 7 novembre 2026</p>
+<p class="lang"><a href="#en">English version below</a></p>
+
+<p>Zapette est une télécommande Android pour media centers et lecteurs réseau (Kodi, Jellyfin,
+Emby, Plex, UPnP/DLNA, Chromecast, AirPlay, Roku, Fire TV / Android TV). Ces règles décrivent
+les données que l'application traite, où elles sont conservées et avec qui elles sont échangées.
+Elles s'appliquent uniquement à l'application Zapette (identifiant
+<code>io.github.jmorille.zapette</code>), éditée par tt-box.</p>
+
+<div class="summary">
+<p><strong>En résumé</strong></p>
+<ul>
+  <li>L'éditeur ne collecte <strong>aucune</strong> donnée : pas de compte, pas de serveur, pas
+    d'analyse d'audience, pas de publicité, pas de rapport de plantage.</li>
+  <li>Les réglages (vos appareils, identifiants de connexion) restent <strong>sur votre
+    téléphone</strong>, dans le stockage privé de l'application, et sont exclus des sauvegardes.</li>
+  <li>L'application communique avec les appareils de <strong>votre réseau local</strong>. Le seul
+    service Internet contacté par Zapette elle-même est <strong>plex.tv</strong>, et uniquement si
+    vous liez un compte Plex.</li>
+  <li>Aucune donnée n'est vendue ni partagée à des fins publicitaires.</li>
+</ul>
+</div>
+
+<h2>1. Données collectées par l'éditeur</h2>
+<p>Aucune. Zapette n'intègre aucun kit d'analyse, de publicité, de mesure d'audience ni de
+rapport de plantage. Le module de télémétrie Google normalement embarqué par le SDK Google Cast
+est retiré de l'application, et un contrôle automatique empêche toute bibliothèque de pistage
+d'être ajoutée. L'éditeur n'exploite aucun serveur recevant des données de l'application.</p>
+
+<h2>2. Données conservées sur votre appareil</h2>
+<p>Pour fonctionner, Zapette enregistre localement, dans son stockage privé :</p>
+<ul>
+  <li><strong>La liste de vos appareils</strong> : nom, type, adresse IP ou nom d'hôte, port,
+    options de connexion, et le cas échéant l'empreinte du certificat d'un appareil auquel vous
+    avez fait confiance ;</li>
+  <li><strong>Les réseaux Wi-Fi autorisés</strong> (noms SSID) que vous saisissez pour limiter un
+    appareil à certains réseaux ;</li>
+  <li><strong>Les identifiants de connexion</strong> : mot de passe Kodi, jetons d'accès Jellyfin,
+    Emby et Plex, clé d'authentification ADB générée pour Fire TV / Android TV. Ces secrets sont
+    chiffrés avec une clé protégée par le Keystore Android. Les mots de passe Jellyfin et Emby ne
+    sont pas conservés : ils sont échangés contre un jeton puis supprimés ;</li>
+  <li><strong>Un identifiant d'installation</strong> aléatoire, utilisé uniquement pour se
+    présenter aux services Plex (voir section 4) ;</li>
+  <li><strong>Vos préférences</strong> d'affichage et d'utilisation.</li>
+</ul>
+<p>Ces données ne quittent pas votre appareil, sauf dans les cas décrits aux sections 3 et 4.
+La sauvegarde Android (sauvegarde cloud et transfert d'appareil à appareil) est désactivée pour
+l'application. Toutes ces données sont effacées lorsque vous supprimez un appareil dans
+l'application, videz les données de l'application ou la désinstallez.</p>
+
+<h2>3. Échanges avec les appareils de votre réseau local</h2>
+<p>Zapette envoie vos commandes directement aux appareils que vous contrôlez, sans passer par un
+intermédiaire :</p>
+<ul>
+  <li><strong>Découverte</strong> : l'application diffuse des requêtes de découverte standard
+    (mDNS, SSDP, GDM, UDP) sur le réseau local pour trouver les appareils compatibles ;</li>
+  <li><strong>Commandes</strong> : touches, volume, lecture, texte saisi au clavier, recherches ;</li>
+  <li><strong>Liens partagés</strong> : lorsque vous partagez un lien vers Zapette depuis une autre
+    application, ce lien est envoyé à l'appareil sélectionné pour y être lu ;</li>
+  <li><strong>Fichiers partagés</strong> : lorsque vous envoyez un fichier de votre téléphone vers
+    la télévision, Zapette le met temporairement à disposition sur votre réseau local, le temps
+    de la lecture. Une notification permanente l'indique et permet d'arrêter le partage ;</li>
+  <li><strong>Clavier Bluetooth</strong> : si vous l'activez, votre téléphone se déclare comme
+    clavier Bluetooth auprès de la télévision et lui transmet les touches saisies.</li>
+</ul>
+<p>Plusieurs protocoles (Kodi, UPnP/DLNA, Roku, AirPlay) ne proposent pas de chiffrement : ces
+échanges circulent en clair sur votre réseau local, comme avec les télécommandes officielles de
+ces appareils. Les appareils que vous contrôlez (Kodi, serveur Jellyfin/Emby, téléviseur…)
+traitent les commandes reçues selon leurs propres règles.</p>
+
+<h2>4. Services tiers</h2>
+<h3>Plex (plex.tv), uniquement si vous liez un compte Plex</h3>
+<p>La liaison se fait par un code à saisir sur <code>plex.tv/link</code> : Zapette ne voit jamais
+votre mot de passe Plex. Pour cette liaison et pour le contrôle des lecteurs Plex, l'application
+transmet à Plex, en HTTPS : l'identifiant d'installation aléatoire, le nom et la version de
+l'application, la plateforme (Android), la version d'Android et le modèle de votre téléphone
+(affiché dans la liste des « appareils autorisés » de votre compte Plex), ainsi que le jeton
+d'accès obtenu. Ces données sont traitées par Plex conformément à sa
+<a href="https://www.plex.tv/about/privacy-legal/" rel="noopener">politique de confidentialité</a>.
+Vous pouvez révoquer l'accès à tout moment depuis votre compte Plex.</p>
+
+<h3>Google Cast (Chromecast)</h3>
+<p>Le contrôle des Chromecast utilise le SDK officiel Google Cast, qui s'appuie sur les services
+Google Play installés sur votre téléphone. Zapette retire la télémétrie embarquée par ce SDK et ne
+transmet elle-même aucune donnée à Google. Les services Google Play sont un composant du système
+Android, régi par les <a href="https://policies.google.com/privacy" rel="noopener">règles de
+confidentialité de Google</a>.</p>
+
+<h3>Aucun autre tiers</h3>
+<p>Zapette ne partage aucune donnée avec des annonceurs, courtiers en données, fournisseurs
+d'analyse ou autres tiers.</p>
+
+<h2>5. Export et import d'appareils</h2>
+<p>Vous pouvez exporter votre liste d'appareils (fichier, texte ou QR code) pour la transférer sur
+un autre téléphone. L'export ne contient <strong>aucun mot de passe ni jeton</strong>, uniquement
+la description des appareils (nom, type, adresse, options). Il n'est partagé que si vous choisissez
+de l'envoyer. L'import par QR code utilise la caméra uniquement pendant le scan, et l'analyse de
+l'image se fait entièrement sur l'appareil.</p>
+
+<h2>6. Autorisations Android</h2>
+<p>Chaque autorisation sensible n'est demandée qu'au moment où la fonction correspondante est
+utilisée.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Autorisation</th><th>Utilisation</th></tr></thead>
+  <tbody>
+    <tr><td>Internet, état du réseau et du Wi-Fi, multicast</td><td>Découvrir et contrôler les appareils du réseau local ; joindre plex.tv si un compte est lié.</td></tr>
+    <tr><td>Position (précise et approximative)</td><td>Android l'exige pour lire le nom du réseau Wi-Fi (SSID), utilisé par l'option « réseaux autorisés ». Demandée seulement si vous utilisez cette option. <strong>Votre position n'est jamais lue.</strong></td></tr>
+    <tr><td>Caméra</td><td>Scanner un QR code d'import d'appareils. Aucune image n'est enregistrée ni transmise.</td></tr>
+    <tr><td>Bluetooth (connexion, visibilité)</td><td>Fonction clavier Bluetooth pour la télévision. Aucune recherche d'appareils Bluetooth environnants.</td></tr>
+    <tr><td>Notifications, service au premier plan</td><td>Indiquer qu'un fichier est en cours de partage vers la télévision et permettre de l'arrêter.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>7. Sécurité</h2>
+<p>Les identifiants sont chiffrés par une clé du Keystore Android et restent dans le stockage
+privé de l'application, inaccessible aux autres applications. Les échanges avec plex.tv sont
+obligatoirement chiffrés (HTTPS). Pour les appareils locaux, la sécurité dépend des protocoles
+qu'ils proposent (voir section 3).</p>
+
+<h2>8. Enfants</h2>
+<p>Zapette ne s'adresse pas spécifiquement aux enfants et ne collecte sciemment aucune donnée
+les concernant.</p>
+
+<h2>9. Vos droits</h2>
+<p>L'éditeur ne détenant aucune donnée vous concernant, il n'a rien à vous communiquer, rectifier
+ou supprimer. Vous gardez la maîtrise complète des données conservées sur votre téléphone : vous
+pouvez les modifier ou les supprimer dans l'application, ou les effacer en vidant les données de
+l'application ou en la désinstallant. Pour les données transmises à Plex ou Google, adressez-vous
+à ces services.</p>
+
+<h2>10. Modifications</h2>
+<p>Toute modification de ces règles sera publiée sur cette page, avec une nouvelle date de mise
+à jour. Si une version future de l'application devait traiter de nouvelles données, ces règles
+seraient mises à jour avant sa publication.</p>
+
+<h2>11. Contact</h2>
+<p>Pour toute question sur ces règles : <a href="mailto:CONTACT_EMAIL">CONTACT_EMAIL</a>.</p>
+</article>
+
+<!-- ============================== ENGLISH ============================== -->
+<article id="en" lang="en">
+<h2 style="font-size:1.9rem;border-top:2px solid var(--line);margin-top:64px;padding-top:24px">Zapette Privacy Policy</h2>
+<p class="meta">Last updated: November 7, 2026</p>
+
+<p>Zapette is an Android remote control for media centers and network players (Kodi, Jellyfin,
+Emby, Plex, UPnP/DLNA, Chromecast, AirPlay, Roku, Fire TV / Android TV). This policy describes the
+data the app processes, where it is stored and with whom it is exchanged. It applies only to the
+Zapette app (package <code>io.github.jmorille.zapette</code>), published by tt-box. The French
+version above prevails in case of discrepancy.</p>
+
+<div class="summary">
+<p><strong>In short</strong></p>
+<ul>
+  <li>The publisher collects <strong>no</strong> data: no account, no server, no analytics, no
+    ads, no crash reporting.</li>
+  <li>Settings (your devices, connection credentials) stay <strong>on your phone</strong>, in the
+    app's private storage, and are excluded from backups.</li>
+  <li>The app talks to devices on <strong>your local network</strong>. The only Internet service
+    Zapette itself contacts is <strong>plex.tv</strong>, and only if you link a Plex account.</li>
+  <li>No data is sold or shared for advertising.</li>
+</ul>
+</div>
+
+<h3>1. Data collected by the publisher</h3>
+<p>None. Zapette contains no analytics, advertising, audience measurement or crash reporting SDK.
+The Google telemetry module normally bundled with the Google Cast SDK is removed from the app, and
+an automated check prevents any tracking library from being added. The publisher runs no server
+that receives data from the app.</p>
+
+<h3>2. Data stored on your device</h3>
+<ul>
+  <li><strong>Your device list</strong>: name, type, IP address or host name, port, connection
+    options and, where applicable, the fingerprint of a certificate you chose to trust;</li>
+  <li><strong>Allowed Wi-Fi networks</strong> (SSID names) you enter to restrict a device to
+    certain networks;</li>
+  <li><strong>Connection credentials</strong>: Kodi password, Jellyfin, Emby and Plex access
+    tokens, and the ADB authentication key generated for Fire TV / Android TV. These secrets are
+    encrypted with a key protected by the Android Keystore. Jellyfin and Emby passwords are not
+    kept: they are exchanged for a token and then deleted;</li>
+  <li><strong>A random installation identifier</strong>, used only to identify the app to Plex
+    services (see section 4);</li>
+  <li><strong>Your display and usage preferences</strong>.</li>
+</ul>
+<p>This data does not leave your device except as described in sections 3 and 4. Android backup
+(cloud backup and device-to-device transfer) is disabled for the app. All of it is erased when you
+delete a device in the app, clear the app's data or uninstall it.</p>
+
+<h3>3. Communication with devices on your local network</h3>
+<ul>
+  <li><strong>Discovery</strong>: standard discovery requests (mDNS, SSDP, GDM, UDP) are broadcast
+    on the local network to find compatible devices;</li>
+  <li><strong>Commands</strong>: keys, volume, playback, typed text, searches;</li>
+  <li><strong>Shared links</strong>: a link you share to Zapette from another app is sent to the
+    selected device for playback;</li>
+  <li><strong>Shared files</strong>: when you send a file from your phone to the TV, Zapette makes
+    it temporarily available on your local network for playback. A persistent notification shows
+    this and lets you stop sharing;</li>
+  <li><strong>Bluetooth keyboard</strong>: if enabled, your phone registers as a Bluetooth keyboard
+    with the TV and sends it the keys you type.</li>
+</ul>
+<p>Several protocols (Kodi, UPnP/DLNA, Roku, AirPlay) do not support encryption, so these
+exchanges travel unencrypted over your local network, as with those devices' official remotes. The
+devices you control process the commands they receive under their own rules.</p>
+
+<h3>4. Third-party services</h3>
+<p><strong>Plex (plex.tv), only if you link a Plex account.</strong> Linking uses a code entered
+at <code>plex.tv/link</code>; Zapette never sees your Plex password. For linking and controlling
+Plex players, the app sends Plex, over HTTPS: the random installation identifier, the app name and
+version, the platform (Android), the Android version and your phone model (shown in your Plex
+account's "authorized devices" list), and the access token obtained. Plex processes this data under
+its <a href="https://www.plex.tv/about/privacy-legal/" rel="noopener">privacy policy</a>. You can
+revoke access at any time from your Plex account.</p>
+<p><strong>Google Cast (Chromecast).</strong> Chromecast control uses the official Google Cast SDK,
+which relies on the Google Play services installed on your phone. Zapette removes the telemetry
+bundled with this SDK and does not itself send any data to Google. Google Play services are an
+Android system component governed by the <a href="https://policies.google.com/privacy"
+rel="noopener">Google Privacy Policy</a>.</p>
+<p><strong>No other third parties.</strong> Zapette shares no data with advertisers, data brokers,
+analytics providers or any other third party.</p>
+
+<h3>5. Exporting and importing devices</h3>
+<p>You can export your device list (file, text or QR code) to move it to another phone. The export
+contains <strong>no passwords or tokens</strong>, only the device descriptions (name, type,
+address, options), and is shared only if you choose to send it. QR code import uses the camera only
+during the scan, and the image is analyzed entirely on the device.</p>
+
+<h3>6. Android permissions</h3>
+<p>Each sensitive permission is requested only when the related feature is used.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Permission</th><th>Use</th></tr></thead>
+  <tbody>
+    <tr><td>Internet, network and Wi-Fi state, multicast</td><td>Discover and control devices on the local network; reach plex.tv if an account is linked.</td></tr>
+    <tr><td>Location (precise and approximate)</td><td>Required by Android to read the Wi-Fi network name (SSID), used by the "allowed networks" option. Requested only if you use that option. <strong>Your location is never read.</strong></td></tr>
+    <tr><td>Camera</td><td>Scan a device import QR code. No image is stored or transmitted.</td></tr>
+    <tr><td>Bluetooth (connect, advertise)</td><td>Bluetooth keyboard feature for the TV. No scanning for nearby Bluetooth devices.</td></tr>
+    <tr><td>Notifications, foreground service</td><td>Show that a file is being shared to the TV and let you stop it.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>7. Security</h3>
+<p>Credentials are encrypted with an Android Keystore key and kept in the app's private storage,
+which other apps cannot access. Traffic to plex.tv is always encrypted (HTTPS). For local devices,
+security depends on the protocols they support (see section 3).</p>
+
+<h3>8. Children</h3>
+<p>Zapette is not specifically directed at children and does not knowingly collect any data about
+them.</p>
+
+<h3>9. Your rights</h3>
+<p>As the publisher holds no data about you, there is nothing to disclose, correct or delete on its
+side. You remain in full control of the data stored on your phone: you can edit or delete it in the
+app, or erase it by clearing the app's data or uninstalling it. For data sent to Plex or Google,
+contact those services.</p>
+
+<h3>10. Changes</h3>
+<p>Any change to this policy will be published on this page with a new update date. If a future
+version of the app were to process new data, this policy would be updated before that version is
+released.</p>
+
+<h3>11. Contact</h3>
+<p>Questions about this policy: <a href="mailto:CONTACT_EMAIL">CONTACT_EMAIL</a>.</p>
+</article>
+
+</main>
+</body>
+</html>
