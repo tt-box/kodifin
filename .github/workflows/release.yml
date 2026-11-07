@@ -41,7 +41,7 @@ jobs:
     permissions:
       contents: write
     env:
-      # Empreinte SHA-256 du certificat de release (ECDSA P-256, alias zapette-release).
+      # Empreinte SHA-256 du certificat de release (ECDSA P-256, alias kodifin-release).
       # Publique : elle épingle la clé attendue. Un secret remplacé par erreur fait
       # échouer la release au lieu de publier un APK impossible à installer par-dessus
       # la version existante. À mettre à jour en cas de rotation de clé.
@@ -133,8 +133,8 @@ jobs:
       # reproductibilité.
       - name: Construire l'APK et l'AAB non signés
         env:
-          ZAPETTE_VERSION_NAME: ${{ steps.version.outputs.name }}
-          ZAPETTE_VERSION_CODE: ${{ steps.version.outputs.code }}
+          KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
+          KODIFIN_VERSION_CODE: ${{ steps.version.outputs.code }}
           VERSION: ${{ steps.version.outputs.name }}
         run: |
           set -euo pipefail
@@ -147,8 +147,8 @@ jobs:
           if "$APKSIGNER" verify "$apk" >/dev/null 2>&1; then echo "::error::$apk est signé"; exit 1; fi
           if keytool -printcert -jarfile "$aab" 2>/dev/null | grep -q 'SHA256:'; then echo "::error::$aab est signé"; exit 1; fi
           mkdir -p dist
-          cp "$apk" "dist/zapette-$VERSION-unsigned.apk"
-          cp "$aab" "dist/zapette-$VERSION-unsigned.aab"
+          cp "$apk" "dist/kodifin-$VERSION-unsigned.apk"
+          cp "$aab" "dist/kodifin-$VERSION-unsigned.aab"
           # Les sorties signées sont produites au même endroit : on repart d'un dossier vide
           # pour que la vérification de signature ne voie que les artefacts signés.
           rm -rf app/build/outputs/apk/release app/build/outputs/bundle/release
@@ -163,12 +163,12 @@ jobs:
 
       - name: Construire l'APK et l'AAB signés
         env:
-          ZAPETTE_VERSION_NAME: ${{ steps.version.outputs.name }}
-          ZAPETTE_VERSION_CODE: ${{ steps.version.outputs.code }}
-          ZAPETTE_STORE_FILE: ${{ steps.keystore.outputs.path }}
-          ZAPETTE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          ZAPETTE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          ZAPETTE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
+          KODIFIN_VERSION_CODE: ${{ steps.version.outputs.code }}
+          KODIFIN_STORE_FILE: ${{ steps.keystore.outputs.path }}
+          KODIFIN_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KODIFIN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KODIFIN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
 
       - name: Effacer le keystore
@@ -203,13 +203,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/zapette-$VERSION.apk"
-          cp app/build/outputs/bundle/release/app-release.aab "dist/zapette-$VERSION.aab"
-          cd dist && sha256sum ./* | sed 's# \./# #' > "zapette-$VERSION.sha256" && cat "zapette-$VERSION.sha256"
+          cp app/build/outputs/apk/release/app-release.apk "dist/kodifin-$VERSION.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "dist/kodifin-$VERSION.aab"
+          cd dist && sha256sum ./* | sed 's# \./# #' > "kodifin-$VERSION.sha256" && cat "kodifin-$VERSION.sha256"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: zapette-${{ steps.version.outputs.name }}
+          name: kodifin-${{ steps.version.outputs.name }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -228,7 +228,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            flags=(--title "Zapette $VERSION" --generate-notes --verify-tag)
+            flags=(--title "Kodifin $VERSION" --generate-notes --verify-tag)
             [ "$PRERELEASE" = true ] && flags+=(--prerelease)
             gh release create "$TAG" "${flags[@]}" dist/*
           fi

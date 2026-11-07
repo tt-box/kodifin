@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lot B : configuration des appareils, comptes Jellyfin/Emby, Plex, appairage ADB. -->
+<resources>
+
+    <!-- Configuration d'un appareil : validation -->
+    <string name="config_error_upnp_location_required">URL de description UPnP requise</string>
+    <string name="config_error_invalid_address">Adresse invalide</string>
+    <string name="config_error_invalid_port">Port invalide</string>
+    <string name="config_save_failed">Enregistrement impossible&#160;: %1$s</string>
+    <string name="config_device_not_found">Appareil introuvable</string>
+
+    <!-- Configuration d'un appareil : réseau Wi-Fi -->
+    <string name="config_ssid_no_wifi">Aucun réseau Wi-Fi connecté</string>
+    <string name="config_ssid_enable_location">Activez la localisation pour lire le nom du réseau</string>
+    <string name="config_ssid_unreadable">Nom du réseau illisible</string>
+    <string name="config_ssid_permission_denied">Autorisation refusée&#160;: la restriction de réseau ne pourra pas être vérifiée</string>
+
+    <!-- Configuration d'un appareil : formulaire -->
+    <string name="config_title_edit">Modifier %1$s</string>
+    <string name="config_title_add">Ajouter un appareil</string>
+    <string name="config_back">Retour</string>
+    <string name="config_section_device">Appareil</string>
+    <string name="config_section_connection">Connexion</string>
+    <string name="config_section_credentials">Identifiants</string>
+    <string name="config_section_advanced">Options avancées</string>
+    <string name="config_collapse">Replier</string>
+    <string name="config_expand">Déplier</string>
+    <string name="config_name">Nom</string>
+    <string name="config_upnp_location">URL de description (http://…/description.xml)</string>
+    <string name="config_host">Adresse IP ou nom</string>
+    <string name="config_port">Port</string>
+    <string name="config_plex_legacy_https">Mode HTTPS hérité&#160;: l\'API de contrôle du lecteur Plex (port 32500) ne le prend pas en charge en pratique, et ce mode n\'est plus proposé.</string>
+    <string name="config_switch_to_http">Passer en HTTP</string>
+    <string name="config_hint_fire_tv_adb">Activez «&#160;Débogage ADB&#160;» dans les options développeur du téléviseur, puis acceptez la clé de Kodifin à la première connexion.</string>
+    <string name="config_adb_wireless_pairing">Android 11+&#160;: appairer en débogage sans fil (code à 6 chiffres)</string>
+    <string name="config_hint_airplay">Compatible AirPlay 1 (lecture d\'URL). Les récepteurs AirPlay 2 exigeant un appairage ne sont pas pris en charge.</string>
+    <string name="config_hint_chromecast">Saisie par adresse IP&#160;: le Chromecast doit aussi être visible par la découverte Cast (même réseau)&#160;; l\'adresse sert à le retrouver parmi les appareils découverts.</string>
+    <string name="config_username">Utilisateur</string>
+    <string name="config_password">Mot de passe</string>
+    <string name="config_unchanged_if_empty">Inchangé si laissé vide</string>
+    <string name="config_hide_password">Masquer le mot de passe</string>
+    <string name="config_show_password">Afficher le mot de passe</string>
+    <string name="config_hint_password_airplay">Facultatif&#160;: mot de passe AirPlay du récepteur. Conservé chiffré (Android Keystore).</string>
+    <string name="config_hint_password_kodi">Le mot de passe est conservé chiffré (Android Keystore) sur cet appareil.</string>
+    <string name="config_hint_password_media_server">Le mot de passe sert uniquement à obtenir un jeton&#160;; il n\'est pas conservé.</string>
+    <string name="config_testing">Test…</string>
+    <string name="config_test_connection">Tester la connexion</string>
+    <string name="config_save">Enregistrer</string>
+    <string name="config_save_and_open">Enregistrer et ouvrir</string>
+
+    <!-- Configuration d'un appareil : options avancées -->
+    <string name="config_timeout">Délai de connexion (s)</string>
+    <string name="config_timeout_help">De 1 à 60 s&#160;; 5 s par défaut. À augmenter pour un appareil lent à répondre.</string>
+    <string name="config_base_path">Chemin de base (ex. /jellyfin)</string>
+    <string name="config_base_path_help">Vide&#160;: détecté automatiquement à la connexion</string>
+    <string name="config_websocket">WebSocket</string>
+    <string name="config_websocket_help">Transport JSON-RPC par WebSocket, plus réactif («&#160;Autoriser le contrôle à distance&#160;» dans Kodi)</string>
+    <string name="config_websocket_port">Port WebSocket</string>
+    <string name="config_websocket_warning">Le serveur WebSocket de Kodi (port 9090) n\'a pas d\'authentification&#160;: le mot de passe HTTP n\'y est pas utilisé. Le flux n\'est pas chiffré, même en mode HTTPS&#160;: à réserver à un réseau de confiance.</string>
+    <string name="config_event_server">Event Server (UDP)</string>
+    <string name="config_event_server_help">Touches envoyées par l\'Event Server de Kodi («&#160;Autoriser le contrôle à distance par des applications&#160;»)</string>
+    <string name="config_event_server_port">Port Event Server</string>
+    <string name="config_plex_client_id">Identifiant client (clientIdentifier)</string>
+    <string name="config_plex_client_id_help">Vide&#160;: identifiant du lecteur détecté à la connexion</string>
+    <string name="config_plex_device_token">Jeton Plex propre à l\'appareil</string>
+    <string name="config_plex_device_token_help">Facultatif&#160;: prioritaire sur le jeton du compte lié. Conservé chiffré (Android Keystore).</string>
+    <string name="config_plex_delete_token">Supprimer le jeton enregistré</string>
+    <string name="config_plex_token_will_be_deleted">Le jeton enregistré sera supprimé.</string>
+    <string name="config_upnp_alt_didl">Métadonnées DLNA alternatives</string>
+    <string name="config_upnp_alt_didl_help">Pour les renderers capricieux qui refusent la lecture d\'une URL</string>
+    <string name="config_network">Réseau</string>
+    <string name="config_wifi_only">Wi-Fi uniquement</string>
+    <string name="config_wifi_only_help">Ne tente pas la connexion hors Wi-Fi (données mobiles, VPN…)</string>
+    <string name="config_wifi_ssids">Réseaux Wi-Fi autorisés (un par ligne)</string>
+    <string name="config_wifi_ssids_help">Vide&#160;: tous les réseaux. Renseigné&#160;: connexion seulement sur ces réseaux.</string>
+    <string name="config_use_current_network">Utiliser le réseau actuel</string>
+    <string name="config_location_rationale">Android ne donne le nom du réseau Wi-Fi qu\'aux applications autorisées à accéder à la localisation précise. Kodifin ne lit ni ne conserve votre position. Sans cette autorisation, la restriction ne peut pas être vérifiée et la connexion reste permise.</string>
+    <string name="config_allow">Autoriser</string>
+    <string name="config_location_disabled">Localisation désactivée&#160;: le nom du réseau ne peut pas être vérifié.</string>
+    <string name="config_wake_on_lan">Wake-on-LAN</string>
+    <string name="config_wol_mac">Adresse MAC (ex. 58:47:CA:7E:0D:48)</string>
+    <string name="config_wol_broadcast">Adresse de diffusion</string>
+    <string name="config_wol_auto">Réveil automatique</string>
+    <string name="config_wol_auto_help">Allume l\'appareil à l\'ouverture de la télécommande et patiente pendant son démarrage</string>
+
+    <!-- Configuration d'un appareil : mode de connexion et certificats -->
+    <string name="config_connection_mode">Mode de connexion</string>
+    <string name="config_insecure_mode_warning">Le certificat du serveur n\'est pas vérifié par une autorité&#160;: à réserver à un serveur domestique au certificat auto-signé. Testez la connexion, comparez l\'empreinte affichée avec celle du serveur, puis faites confiance à ce certificat&#160;: seul lui sera ensuite accepté.</string>
+    <string name="config_no_trusted_certificate">Aucun certificat de confiance enregistré&#160;: tout certificat est accepté, une interception reste possible. Testez la connexion puis choisissez «&#160;Faire confiance à ce certificat&#160;».</string>
+    <string name="config_trusted_certificate">Certificat de confiance (SHA-256)&#160;: %1$s</string>
+    <string name="config_forget_certificate">Oublier ce certificat</string>
+    <string name="config_certificate_fingerprint">Empreinte SHA-256 du certificat&#160;: %1$s</string>
+    <string name="config_trust_certificate_insecure">Faire confiance à ce certificat (mode non vérifié)</string>
+    <string name="config_trust_new_certificate">Faire confiance au nouveau certificat</string>
+    <string name="config_trust_certificate">Faire confiance à ce certificat</string>
+
+    <!-- Comptes Jellyfin/Emby : utilisateurs publics et Quick Connect -->
+    <string name="config_server_not_found_check_address">Serveur introuvable à cette adresse&#160;: vérifiez l\'hôte, le port et le chemin de base.</string>
+    <string name="config_server_unreachable">Serveur injoignable</string>
+    <string name="config_jellyfin_server_not_found">Serveur Jellyfin introuvable à cette adresse.</string>
+    <string name="config_users_refresh">Actualiser les utilisateurs</string>
+    <string name="config_users_choose_from_server">Choisir un utilisateur du serveur</string>
+    <string name="config_users_none_public">Aucun utilisateur public&#160;: saisissez le nom à la main.</string>
+    <string name="config_user_password_required">Mot de passe requis</string>
+    <string name="config_user_no_password">Sans mot de passe</string>
+    <string name="config_user_password_required_for">Mot de passe requis pour %1$s.</string>
+    <string name="config_user_no_password_leave_empty">%1$s n\'a pas de mot de passe&#160;: laissez le champ vide.</string>
+    <string name="config_quick_connect_sign_in">Se connecter avec Quick Connect</string>
+    <string name="config_quick_connect_instructions">Sur un appareil déjà connecté à Jellyfin, ouvrez Paramètres › Quick Connect et saisissez&#160;:</string>
+    <string name="config_quick_connect_code_description">Code Quick Connect %1$s</string>
+    <string name="config_quick_connect_waiting">En attente de validation…</string>
+    <string name="config_quick_connect_signed_in">Connecté en tant que %1$s, sans mot de passe.</string>
+    <string name="config_quick_connect_retry">Réessayer Quick Connect</string>
+    <string name="config_cancel">Annuler</string>
+
+    <!-- Liaison du compte Plex -->
+    <string name="plex_code_expired">Code expiré, recommencez.</string>
+    <string name="plex_unreachable">plex.tv injoignable</string>
+    <string name="plex_pin_required_for">Code PIN à 4 chiffres requis pour %1$s.</string>
+    <string name="plex_title">Compte Plex</string>
+    <string name="plex_back">Retour</string>
+    <string name="plex_intro">Certains lecteurs Plex exigent un jeton de compte. Kodifin utilise le code de liaison plex.tv&#160;: votre mot de passe n\'est jamais saisi dans l\'application.</string>
+    <string name="plex_get_code">Obtenir un code</string>
+    <string name="plex_enter_code">Saisissez ce code sur plex.tv/link&#160;:</string>
+    <string name="plex_no_browser">Aucun navigateur&#160;: ouvrez plex.tv/link sur un autre appareil.</string>
+    <string name="plex_open_link">Ouvrir plex.tv/link</string>
+    <string name="plex_linked">Compte Plex lié.</string>
+    <string name="plex_unlink">Délier</string>
+    <string name="plex_retry">Réessayer</string>
+    <string name="plex_choose_user">Choisir l\'utilisateur</string>
+    <string name="plex_home_explanation">Ce compte appartient à un foyer Plex&#160;: la télécommande utilisera le profil choisi.</string>
+    <string name="plex_user_admin">Administrateur</string>
+    <string name="plex_user_restricted">Profil restreint</string>
+    <string name="plex_user_pin_protected">Protégé par un PIN</string>
+    <string name="plex_user_profile">Profil</string>
+    <string name="plex_pin_of">PIN de %1$s</string>
+    <string name="plex_validate">Valider</string>
+    <string name="plex_keep_main_account">Garder le compte principal</string>
+
+    <!-- Appairage ADB sans fil -->
+    <string name="adb_error_invalid_ip">Adresse IP invalide</string>
+    <string name="adb_error_invalid_pairing_port">Port d\'appairage invalide</string>
+    <string name="adb_error_code_six_digits">Le code d\'appairage comporte 6 chiffres</string>
+    <string name="adb_error_invalid_connect_port">Port de connexion invalide (affiché sous «&#160;Débogage sans fil&#160;»&#160;: adresse IP et port)</string>
+    <string name="adb_error_paired_but_connection_failed">Appairé, mais connexion impossible sur le port %1$d&#160;: %2$s</string>
+    <string name="adb_title">Appairage sans fil (ADB)</string>
+    <string name="adb_back">Retour</string>
+    <string name="adb_instructions">Sur le téléviseur (Android 11 ou plus)&#160;: Options pour les développeurs › Débogage sans fil › «&#160;Associer l\'appareil avec un code d\'association&#160;». Laissez cette fenêtre ouverte et saisissez l\'adresse, le port et le code affichés.</string>
+    <string name="adb_searching">Recherche des téléviseurs en débogage sans fil…</string>
+    <string name="adb_detected_on_network">Détectés sur le réseau</string>
+    <string name="adb_candidate_pairing_port">appairage&#160;: %1$d</string>
+    <string name="adb_candidate_connect_port">connexion&#160;: %1$d</string>
+    <string name="adb_choose">Choisir</string>
+    <string name="adb_ip_address">Adresse IP</string>
+    <string name="adb_pairing_port">Port d\'appairage</string>
+    <string name="adb_code_six_digits">Code (6 chiffres)</string>
+    <string name="adb_paired_check_port">Appairage réussi. Vérifiez le port de connexion puis réessayez.</string>
+    <string name="adb_connect_port">Port de connexion</string>
+    <string name="adb_connect_port_help">Affiché sur l\'écran «&#160;Débogage sans fil&#160;» (adresse IP et port), différent du port d\'appairage.</string>
+    <string name="adb_name_optional">Nom (facultatif)</string>
+    <string name="adb_pairing_in_progress">Appairage…</string>
+    <string name="adb_connecting">Connexion…</string>
+    <string name="adb_connect">Se connecter</string>
+    <string name="adb_pair_and_connect">Associer et se connecter</string>
+</resources>

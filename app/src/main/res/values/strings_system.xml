@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Textes hors écrans : options de connexion, garde réseau, import/export, partage local, clavier Bluetooth. -->
+<resources>
+    <!-- Mode de connexion (connection/DeviceOptions.kt) -->
+    <string name="sys_connection_mode_http" translatable="false">HTTP</string>
+    <string name="sys_connection_mode_https" translatable="false">HTTPS</string>
+    <string name="sys_connection_mode_https_insecure">HTTPS – certificat non vérifié (auto-signé)</string>
+
+    <!-- Validation des options avancées (connection/DeviceOptions.kt) -->
+    <string name="sys_options_invalid_timeout">Délai de connexion invalide (de %1$d à %2$d&#160;s)</string>
+    <string name="sys_options_ssid_too_long">Nom de réseau Wi-Fi trop long (%1$d octets au plus)</string>
+    <string name="sys_options_invalid_eventserver_port">Port Event Server invalide</string>
+    <string name="sys_options_invalid_websocket_port">Port WebSocket invalide</string>
+    <string name="sys_options_invalid_base_path">Chemin de base invalide (ex. /jellyfin)</string>
+    <string name="sys_options_invalid_fingerprint">Empreinte du certificat invalide (SHA-256, 32 octets)</string>
+    <string name="sys_options_invalid_plex_client_id">Identifiant client Plex invalide (sans espace)</string>
+    <string name="sys_options_mac_required">Adresse MAC requise pour le réveil automatique</string>
+    <string name="sys_options_invalid_mac">Adresse MAC invalide (ex. 58:47:CA:7E:0D:48)</string>
+    <string name="sys_options_invalid_broadcast">Adresse de diffusion invalide (IPv4, ex. 192.168.1.255)</string>
+    <string name="sys_options_invalid_wol_port">Port Wake-on-LAN invalide</string>
+
+    <!-- Garde réseau (connection/NetworkGuard.kt) -->
+    <string name="sys_network_wifi_required">Wi-Fi requis pour cet appareil</string>
+    <string name="sys_network_ssid_unknown">Réseau Wi-Fi non identifié&#160;: restriction de réseau non vérifiée</string>
+    <string name="sys_network_ssid_needs_location">Réseau Wi-Fi non vérifié&#160;: autorisez la localisation (et activez-la) pour appliquer la restriction</string>
+    <string name="sys_network_ssid_not_allowed">Réseau «&#160;%1$s&#160;» non autorisé pour cet appareil</string>
+
+    <!-- Import d'appareils refusé (data/DeviceExport.kt) -->
+    <string name="sys_export_too_large_kib">Contenu trop volumineux (plus de %1$d&#160;Kio)</string>
+    <string name="sys_export_too_large">Contenu trop volumineux</string>
+    <string name="sys_export_file_too_large">Fichier trop volumineux</string>
+    <string name="sys_export_too_deep">Structure JSON trop imbriquée</string>
+    <string name="sys_export_unreadable">Contenu illisible&#160;: ce n\'est pas un export Kodifin</string>
+    <string name="sys_export_wrong_format">Ce n\'est pas un export d\'appareils Kodifin</string>
+    <string name="sys_export_missing_version">Version d\'export absente ou invalide</string>
+    <string name="sys_export_newer_version">Export créé par une version plus récente de Kodifin (format %1$d)</string>
+    <string name="sys_export_unknown_version">Version d\'export inconnue (%1$d)</string>
+    <string name="sys_export_missing_devices">Liste d\'appareils absente</string>
+    <string name="sys_export_too_many_devices">Trop d\'appareils (%1$d, maximum %2$d)</string>
+    <string name="sys_qr_unreadable_encoding">QR code illisible (encodage)</string>
+    <string name="sys_qr_unreadable_truncated">QR code illisible (données tronquées)</string>
+    <string name="sys_qr_unreadable_compression">QR code illisible (compression)</string>
+
+    <!-- Partage d'un fichier du téléphone (data/LocalShare.kt) -->
+    <string name="sys_share_no_lan">Aucun réseau local (Wi-Fi ou Ethernet) pour partager le fichier</string>
+    <string name="sys_share_channel_name">Partage vers la télévision</string>
+    <string name="sys_share_notification_title">Partage en cours</string>
+    <string name="sys_share_notification_text_named">«&#160;%1$s&#160;» est servi sur le réseau local</string>
+    <string name="sys_share_notification_text">Fichier servi sur le réseau local</string>
+    <string name="sys_share_stop_action">Arrêter le partage</string>
+
+    <!-- Clavier Bluetooth (bluetooth/) -->
+    <string name="sys_keyboard_layout_qwerty_us">QWERTY (US)</string>
+    <string name="sys_keyboard_layout_azerty_fr">AZERTY (français)</string>
+    <string name="sys_hid_sdp_description">Télécommande clavier</string>
+    <string name="sys_hid_profile_unavailable">Profil clavier Bluetooth indisponible sur cet appareil</string>
+    <string name="sys_hid_register_refused">Déclaration du clavier refusée par la pile Bluetooth</string>
+    <string name="sys_hid_connect_refused">Connexion à %1$s refusée</string>
+</resources>

@@ -60,7 +60,7 @@ kover {
                     "*.BuildConfig", "*.R", "*.R\$*", "*.ComposableSingletons*",
                     "*\$\$serializer", "*.Companion\$serializer",
                     // Routes de navigation @Serializable (constructeur et compagnon générés).
-                    "io.github.jmorille.zapette.ui.*Route", "io.github.jmorille.zapette.ui.*Route\$Companion",
+                    "io.github.ttbox.kodifin.ui.*Route", "io.github.ttbox.kodifin.ui.*Route\$Companion",
                 )
                 annotatedBy("androidx.compose.ui.tooling.preview.Preview")
 
@@ -68,26 +68,32 @@ kover {
                 // sont exclues, mais pas les fichiers *ScreenKt entiers : leur logique non composable
                 // (devicesUiState, buildDevice…) reste mesurée. Navigation et thème : sans logique.
                 annotatedBy("androidx.compose.runtime.Composable")
-                classes("io.github.jmorille.zapette.ui.NavigationKt*", "io.github.jmorille.zapette.ui.theme.ThemeKt")
+                classes("io.github.ttbox.kodifin.ui.NavigationKt*", "io.github.ttbox.kodifin.ui.theme.ThemeKt")
 
                 // Câblage Android / SDK sans logique propre, non testable unitairement.
                 classes(
-                    "io.github.jmorille.zapette.MainActivity*",
-                    "io.github.jmorille.zapette.ZapetteApp",
-                    "io.github.jmorille.zapette.ZapetteAppKt",
-                    "io.github.jmorille.zapette.AppContainer*",
+                    "io.github.ttbox.kodifin.MainActivity*",
+                    "io.github.ttbox.kodifin.KodifinApp",
+                    "io.github.ttbox.kodifin.KodifinAppKt",
+                    "io.github.ttbox.kodifin.AppContainer*",
                     // Google Cast : options du SDK, castContext/castDevices, adaptateurs SDK.
-                    "io.github.jmorille.zapette.cast.CastOptionsProvider",
-                    "io.github.jmorille.zapette.cast.CastSdkKt*",
-                    "io.github.jmorille.zapette.cast.SdkCast*",
+                    "io.github.ttbox.kodifin.cast.CastOptionsProvider",
+                    "io.github.ttbox.kodifin.cast.CastSdkKt*",
+                    "io.github.ttbox.kodifin.cast.SdkCast*",
                     // Découverte : adaptateurs NsdManager / MulticastLock et fabrique des sources réelles.
-                    "io.github.jmorille.zapette.discovery.AndroidNsdBackend*",
-                    "io.github.jmorille.zapette.discovery.AndroidMulticastLock",
-                    "io.github.jmorille.zapette.discovery.DiscoveryManager\$Companion*",
+                    "io.github.ttbox.kodifin.discovery.AndroidNsdBackend*",
+                    "io.github.ttbox.kodifin.discovery.AndroidMulticastLock",
+                    "io.github.ttbox.kodifin.discovery.AndroidDiscoveryKt",
+                    // Contrôleurs exigeant Android (clés ADB dans le stockage privé, SDK Cast).
+                    "io.github.ttbox.kodifin.controller.AndroidPlatformControllers",
                     // Lien ADB réel (dadb, connexion TCP) ; DadbShell lui-même reste mesuré.
-                    "io.github.jmorille.zapette.firetv.DadbShell\$Companion\$dadbLink\$1",
+                    "io.github.ttbox.kodifin.firetv.DadbShell\$Companion\$dadbLink\$1",
                     // Profil Bluetooth HID Device d'Android (pile Bluetooth réelle).
-                    "io.github.jmorille.zapette.bluetooth.AndroidHidKeyboard*",
+                    "io.github.ttbox.kodifin.bluetooth.AndroidHidKeyboard*",
+                    // Résolution des textes via les Resources Android (UiText lui-même reste mesuré).
+                    "io.github.ttbox.kodifin.text.AndroidTextResources",
+                    "io.github.ttbox.kodifin.text.AndroidTextResourcesKt",
+                    "io.github.ttbox.kodifin.ui.text.UiTextAndroidKt",
                 )
             }
         }

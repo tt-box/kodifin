@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icône Kodifin monochrome (icônes thématiques Android 13+). Générée par scripts/gen_icon.py. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+  <group android:translateX="31.1853" android:translateY="33.2834" android:scaleX="0.044172" android:scaleY="0.044172">
+    <path android:pathData="M88,60 L295,60 L295,305 L85,590 Z M480,215 L640,62 L905,58 L610,390 L655,198 L480,242 Z M460,440 C450,570 490,720 625,880 L900,880 C770,730 560,560 545,330 L580,250 Z M85,880 L85,830 C95,640 260,400 580,250 L470,430 C350,495 298,600 295,720 L295,880 Z M762,358 L948,455 L765,590 Z" android:fillColor="#FFFFFFFF"/>
+  </group>
+</vector>

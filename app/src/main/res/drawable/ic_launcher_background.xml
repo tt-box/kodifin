@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fond de l'icône Kodifin : bleu acier sur les bords, bleu électrique au centre (45°). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="45"
+        android:startColor="#1A3E60"
+        android:centerColor="#2B7FA8"
+        android:endColor="#1A3E60" />
+</shape>

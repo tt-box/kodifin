@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Écrans : appareils, réglages, import / export, clavier Bluetooth (ui/devices, ui/settings, ui/transfer, ui/bluetooth). -->
+<resources>
+    <!-- Liste des appareils (ui/devices) -->
+    <string name="devices_delete_title">Supprimer «&#160;%1$s&#160;»&#160;?</string>
+    <string name="devices_delete_message">L\'appareil et ses identifiants enregistrés seront effacés.</string>
+    <string name="devices_delete_confirm">Supprimer</string>
+    <string name="devices_delete_cancel">Annuler</string>
+    <string name="devices_action_import_export">Importer / exporter les appareils</string>
+    <string name="devices_action_bluetooth_keyboard">Clavier Bluetooth (essai)</string>
+    <string name="devices_action_link_plex">Lier un compte Plex</string>
+    <string name="devices_action_settings">Réglages</string>
+    <string name="devices_action_add">Ajouter un appareil</string>
+    <string name="devices_shared_link_title">Lien à envoyer</string>
+    <string name="devices_shared_link_hint">Choisissez l\'appareil de destination.</string>
+    <string name="devices_section_saved">Mes appareils</string>
+    <string name="devices_empty">Aucun appareil enregistré.</string>
+    <string name="devices_section_network">Sur le réseau</string>
+    <string name="devices_edit_device">Modifier %1$s</string>
+    <string name="devices_qr_device">QR code de %1$s</string>
+    <string name="devices_delete_device">Supprimer %1$s</string>
+
+    <!-- Réglages (ui/settings) -->
+    <string name="settings_title">Réglages</string>
+    <string name="settings_back">Retour</string>
+    <string name="settings_section_remote">Télécommande</string>
+    <string name="settings_keep_screen_on_title">Garder l\'écran allumé</string>
+    <string name="settings_keep_screen_on_subtitle">L\'écran ne se met pas en veille tant que la télécommande est affichée.</string>
+    <string name="settings_max_bitrate_title">Débit vidéo maximal</string>
+    <string name="settings_max_bitrate_note">Le récepteur Cast par défaut adapte lui-même le débit&#160;: la limite n\'est appliquée que par les récepteurs qui la prennent en charge.</string>
+    <string name="settings_subtitle_size_title">Taille des sous-titres</string>
+    <string name="settings_subtitle_color_title">Couleur du texte</string>
+    <string name="settings_subtitle_background_title">Fond des sous-titres</string>
+    <string name="settings_auto_disconnect_title">Déconnexion automatique</string>
+    <string name="settings_auto_disconnect_subtitle">Fermer la session Cast en quittant la télécommande (sinon la lecture continue).</string>
+    <string name="settings_error_not_saved">Réglage non enregistré (stockage indisponible)</string>
+    <!-- Valeurs des réglages Chromecast (énumérations de feature/cast) -->
+    <string name="settings_bitrate_auto">Automatique</string>
+    <string name="settings_bitrate_1080p">1080p (≈ 8 Mb/s)</string>
+    <string name="settings_bitrate_720p">720p (≈ 4 Mb/s)</string>
+    <string name="settings_bitrate_480p">480p (≈ 1,5 Mb/s)</string>
+    <string name="settings_subtitle_size_small">Petite</string>
+    <string name="settings_subtitle_size_normal">Normale</string>
+    <string name="settings_subtitle_size_large">Grande</string>
+    <string name="settings_subtitle_size_huge">Très grande</string>
+    <string name="settings_subtitle_color_white">Blanc</string>
+    <string name="settings_subtitle_color_yellow">Jaune</string>
+    <string name="settings_subtitle_color_cyan">Cyan</string>
+    <string name="settings_subtitle_color_green">Vert</string>
+    <string name="settings_subtitle_background_none">Aucun</string>
+    <string name="settings_subtitle_background_translucent">Semi-transparent</string>
+    <string name="settings_subtitle_background_opaque">Noir opaque</string>
+
+    <!-- Import / export des appareils (ui/transfer) -->
+    <string name="transfer_title">Importer / exporter</string>
+    <string name="transfer_back">Retour</string>
+    <string name="transfer_camera_denied">Accès à la caméra refusé&#160;: collez le texte à la place.</string>
+    <string name="transfer_no_secrets">Les mots de passe et jetons ne sont jamais exportés&#160;: ressaisissez-les après l\'import.</string>
+    <string name="transfer_section_file">Fichier</string>
+    <string name="transfer_export">Exporter</string>
+    <string name="transfer_import">Importer</string>
+    <string name="transfer_replace_existing">Remplacer les appareils existants</string>
+    <string name="transfer_replace_existing_on">Un appareil déjà présent (même identifiant) est mis à jour&#160;; ses secrets sont gardés si l\'adresse ne change pas.</string>
+    <string name="transfer_replace_existing_off">Un appareil déjà présent (même identifiant) est laissé tel quel.</string>
+    <string name="transfer_section_text">Texte</string>
+    <string name="transfer_share">Partager</string>
+    <string name="transfer_paste">Coller</string>
+    <string name="transfer_section_qr">QR code</string>
+    <string name="transfer_scan">Scanner un QR code</string>
+    <string name="transfer_no_devices">Aucun appareil enregistré à afficher.</string>
+    <string name="transfer_all_devices">Tous les appareils</string>
+    <string name="transfer_qr_too_dense">Trop de données pour un seul QR code lisible&#160;: choisissez un appareil, ou utilisez le fichier.</string>
+    <plurals name="transfer_qr_description">
+        <item quantity="one">QR code de %d appareil</item>
+        <item quantity="other">QR code de %d appareils</item>
+    </plurals>
+    <string name="transfer_qr_hint">À scanner depuis Kodifin sur l\'autre téléphone (Importer / exporter → Scanner).</string>
+    <string name="transfer_scan_prompt">Visez le QR code affiché par Kodifin</string>
+    <string name="transfer_share_subject">Appareils Kodifin</string>
+    <string name="transfer_share_chooser">Partager les appareils</string>
+    <string name="transfer_no_share_app">Aucune application de partage disponible.</string>
+    <!-- Nom de fichier proposé à l'export : sans espace ni caractère réservé. -->
+    <string name="transfer_export_file_name">kodifin-appareils.json</string>
+    <string name="transfer_error_document_unavailable">document inaccessible</string>
+    <plurals name="transfer_exported">
+        <item quantity="one">%d appareil exporté, sans mot de passe ni jeton.</item>
+        <item quantity="other">%d appareils exportés, sans mot de passe ni jeton.</item>
+    </plurals>
+    <!-- Bilan d'import : %1$s à %4$s sont les quatre pluriels ci-dessous. -->
+    <string name="transfer_import_summary">Import&#160;: %1$s, %2$s, %3$s, %4$s</string>
+    <plurals name="transfer_import_added">
+        <item quantity="one">%d ajouté</item>
+        <item quantity="other">%d ajoutés</item>
+    </plurals>
+    <plurals name="transfer_import_updated">
+        <item quantity="one">%d mis à jour</item>
+        <item quantity="other">%d mis à jour</item>
+    </plurals>
+    <plurals name="transfer_import_skipped">
+        <item quantity="one">%d ignoré</item>
+        <item quantity="other">%d ignorés</item>
+    </plurals>
+    <plurals name="transfer_import_invalid">
+        <item quantity="one">%d invalide</item>
+        <item quantity="other">%d invalides</item>
+    </plurals>
+    <string name="transfer_error_write">Écriture impossible&#160;: %1$s</string>
+    <string name="transfer_error_read">Lecture impossible&#160;: %1$s</string>
+    <string name="transfer_error_io_generic">erreur d\'entrée/sortie</string>
+    <string name="transfer_error_access_denied">accès refusé</string>
+
+    <!-- Clavier Bluetooth (ui/bluetooth) -->
+    <string name="bt_keyboard_title">Clavier Bluetooth (essai)</string>
+    <string name="bt_keyboard_back">Retour</string>
+    <string name="bt_keyboard_intro">La tablette se présente à la TV comme un clavier Bluetooth avec touches multimédia (profil standard HID). Sur la TV Samsung&#160;: Paramètres › Connexion › Gestionnaire de périphériques externes › Gestionnaire de périphériques d\'entrée › Liste des périphériques Bluetooth, puis choisir cette tablette.</string>
+    <string name="bt_keyboard_status_title">État</string>
+    <string name="bt_keyboard_allow_nearby">Autoriser les appareils à proximité</string>
+    <string name="bt_keyboard_enable_bluetooth">Activer le Bluetooth</string>
+    <string name="bt_keyboard_make_visible">Rendre la tablette visible (%1$d&#160;min)</string>
+    <string name="bt_keyboard_disconnect">Déconnecter</string>
+    <string name="bt_keyboard_paired_devices">Appareils appairés</string>
+    <string name="bt_keyboard_host_connected">Connecté</string>
+    <string name="bt_keyboard_connect">Connecter</string>
+    <string name="bt_keyboard_section_navigation">Navigation</string>
+    <string name="bt_keyboard_section_media">Multimédia</string>
+    <string name="bt_keyboard_section_variants">Variantes à comparer</string>
+    <string name="bt_keyboard_section_text">Saisie de texte</string>
+    <string name="bt_keyboard_layout_hint">Choisir la disposition réglée sur la TV (Paramètres du clavier).</string>
+    <string name="bt_keyboard_text_label">Texte</string>
+    <string name="bt_keyboard_send">Envoyer</string>
+    <!-- État du clavier -->
+    <string name="bt_keyboard_status_unsupported">Le mode clavier Bluetooth n\'est pas disponible sur cet appareil (Android 9 ou plus requis).</string>
+    <string name="bt_keyboard_status_no_bluetooth">Cet appareil n\'a pas de Bluetooth.</string>
+    <string name="bt_keyboard_status_no_permission">La permission «&#160;Appareils à proximité&#160;» est nécessaire.</string>
+    <string name="bt_keyboard_status_bluetooth_off">Le Bluetooth est désactivé.</string>
+    <string name="bt_keyboard_status_connected">Connecté à %1$s&#160;: les touches sont envoyées.</string>
+    <string name="bt_keyboard_status_connecting">Connexion à %1$s…</string>
+    <string name="bt_keyboard_status_registered">Déclarée comme clavier. Appairez la tablette depuis la TV, ou connectez un appareil déjà appairé.</string>
+    <string name="bt_keyboard_status_registering">Déclaration du clavier…</string>
+    <!-- Retour de la dernière touche -->
+    <string name="bt_keyboard_feedback_sent">Envoyé&#160;: %1$s</string>
+    <string name="bt_keyboard_feedback_not_sent">Non envoyé&#160;: aucune TV connectée</string>
+    <string name="bt_keyboard_feedback_text_skipped">Texte envoyé&#160;; ignorés&#160;: %1$s</string>
+    <plurals name="bt_keyboard_feedback_text_sent">
+        <item quantity="one">Texte envoyé (%d touche)</item>
+        <item quantity="other">Texte envoyé (%d touches)</item>
+    </plurals>
+    <!-- Touches d'essai -->
+    <string name="bt_keyboard_key_play_pause">Lecture / pause</string>
+    <string name="bt_keyboard_key_stop">Stop</string>
+    <string name="bt_keyboard_key_previous">Précédent</string>
+    <string name="bt_keyboard_key_next">Suivant</string>
+    <string name="bt_keyboard_key_rewind">Retour rapide</string>
+    <string name="bt_keyboard_key_fast_forward">Avance rapide</string>
+    <string name="bt_keyboard_key_volume_down">Volume −</string>
+    <string name="bt_keyboard_key_volume_up">Volume +</string>
+    <string name="bt_keyboard_key_mute">Sourdine</string>
+    <string name="bt_keyboard_key_back">Retour</string>
+    <string name="bt_keyboard_key_home">Accueil</string>
+    <string name="bt_keyboard_key_menu">Menu</string>
+    <string name="bt_keyboard_key_info">Infos</string>
+    <string name="bt_keyboard_key_escape">Échap (retour clavier)</string>
+    <string name="bt_keyboard_key_backspace">Retour arrière</string>
+    <string name="bt_keyboard_key_keyboard_home">Origine (clavier)</string>
+    <string name="bt_keyboard_key_channel_up">Chaîne +</string>
+    <string name="bt_keyboard_key_channel_down">Chaîne −</string>
+    <string name="bt_keyboard_key_power">Alimentation</string>
+    <string name="bt_keyboard_key_up">Haut</string>
+    <string name="bt_keyboard_key_down">Bas</string>
+    <string name="bt_keyboard_key_left">Gauche</string>
+    <string name="bt_keyboard_key_right">Droite</string>
+    <string name="bt_keyboard_key_ok">OK</string>
+</resources>

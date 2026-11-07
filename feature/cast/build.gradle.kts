@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "io.github.jmorille.zapette.cast"
+    namespace = "io.github.ttbox.kodifin.cast"
     compileSdk = 37
 
     defaultConfig {

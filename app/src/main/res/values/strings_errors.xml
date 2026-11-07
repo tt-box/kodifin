@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Traduction des erreurs typées des protocoles (core/model : RemoteError, UnsupportedAction). -->
+<resources>
+    <!-- Réseau et transport -->
+    <string name="error_unreachable_host">Appareil injoignable (%1$s)</string>
+    <string name="error_unreachable">Appareil injoignable</string>
+    <string name="error_interrupted_host">Réponse interrompue (%1$s)</string>
+    <string name="error_interrupted">Connexion interrompue</string>
+    <string name="error_timeout">L\'appareil ne répond pas (délai dépassé)</string>
+    <string name="error_response_too_large">Réponse trop volumineuse (plus de %1$d&#160;octets) de %2$s</string>
+    <string name="error_invalid_address_value">Adresse invalide&#160;: %1$s</string>
+    <string name="error_invalid_address">Adresse invalide</string>
+    <string name="error_tls_host">Échec de la négociation TLS avec %1$s</string>
+    <string name="error_tls">Échec de la négociation TLS</string>
+    <string name="error_redirect_refused">Redirection refusée</string>
+    <string name="error_http">Erreur HTTP %1$d</string>
+
+    <!-- Protocole -->
+    <string name="error_unexpected_response_service">Réponse inattendue&#160;: l\'appareil ne répond pas comme %1$s</string>
+    <string name="error_unexpected_response">Réponse inattendue de l\'appareil</string>
+    <string name="error_device_refused_code_detail">Refusé par l\'appareil (%1$s)&#160;: %2$s</string>
+    <string name="error_device_refused_detail">Refusé par l\'appareil&#160;: %1$s</string>
+    <string name="error_device_refused_code">Refusé par l\'appareil (%1$s)</string>
+    <string name="error_device_refused">Requête refusée par l\'appareil</string>
+
+    <!-- Authentification -->
+    <string name="error_credentials_rejected">Identifiants refusés&#160;: reconnectez-vous</string>
+    <string name="error_session_expired">Session expirée&#160;: reconnectez-vous</string>
+    <string name="error_password_required">Mot de passe requis par l\'appareil</string>
+    <string name="error_password_rejected">Mot de passe refusé</string>
+    <string name="error_code_rejected">Code refusé&#160;: vérifiez le code affiché sur l\'appareil</string>
+    <string name="error_code_expired">Code expiré, recommencez.</string>
+    <string name="error_admin_required">Action réservée à un administrateur du serveur</string>
+
+    <!-- État de l'appareil -->
+    <string name="error_nothing_playing">Aucune lecture en cours</string>
+    <string name="error_no_controllable_client">Aucun client contrôlable sur le serveur</string>
+    <string name="error_item_not_found">Élément introuvable</string>
+    <string name="error_session_ended">Session de diffusion terminée par l\'appareil</string>
+
+    <!-- Réglages à faire -->
+    <string name="error_setup_roku_network_access">Le Roku refuse les commandes&#160;: Paramètres › Système › Paramètres système avancés › Contrôle par applications mobiles › Accès réseau = Activé (ou Permissif)</string>
+    <string name="error_setup_adb_debugging">ADB indisponible&#160;: activez le débogage réseau et acceptez la clé de Kodifin sur le téléviseur</string>
+    <string name="error_setup_adb_pairing_window">Port d\'appairage injoignable&#160;: la fenêtre «&#160;Associer avec un code&#160;» est-elle ouverte&#160;?</string>
+    <string name="error_setup_airplay_1">Récepteur AirPlay injoignable ou AirPlay 2 uniquement</string>
+    <string name="error_setup_media_server_base_path">Le serveur ne répond pas à cette adresse&#160;: vérifiez le port et le chemin de base (ex. /jellyfin) dans les options avancées</string>
+    <string name="error_setup_quick_connect_disabled">Quick Connect n\'est pas activé sur ce serveur (Tableau de bord › Général).</string>
+    <string name="error_setup_google_cast">Google Cast indisponible (services Google Play absents&#160;?)</string>
+
+    <!-- Actions non prises en charge : « Non pris en charge par Roku : volume absolu » -->
+    <string name="unsupported_by">Non pris en charge par %2$s&#160;: %1$s</string>
+    <string name="unsupported">Non pris en charge&#160;: %1$s</string>
+    <string name="unsupported_play_url">lecture d\'URL</string>
+    <string name="unsupported_volume">volume absolu</string>
+    <string name="unsupported_seek">déplacement dans la lecture</string>
+    <string name="unsupported_text_input">saisie de texte</string>
+    <string name="unsupported_search">recherche</string>
+    <string name="unsupported_key">touche %1$s</string>
+    <string name="unsupported_server_method">commande «&#160;%1$s&#160;» de ce serveur</string>
+    <string name="unsupported_media_type">médias de type %1$s</string>
+    <string name="unsupported_characters">caractères «&#160;%1$s&#160;»</string>
+    <string name="unsupported_browse">parcourir cet élément</string>
+    <string name="unsupported_play">lire cet élément</string>
+    <string name="unsupported_enqueue">ajouter cet élément à la file d\'attente</string>
+    <string name="unsupported_edit_queue">modifier la file d\'attente d\'un autre client</string>
+    <string name="unsupported_clean_library">nettoyage de la bibliothèque (fait lors de l\'analyse)</string>
+    <string name="unsupported_play_mode">mode de lecture</string>
+    <string name="unsupported_no_subtitles">Aucun sous-titre pour ce média</string>
+    <string name="unsupported_no_audio_tracks">Aucune piste audio pour ce média</string>
+    <string name="unsupported_no_chapters">Aucun chapitre pour ce média</string>
+
+    <string name="error_unknown">Erreur inattendue (%1$s)</string>
+</resources>

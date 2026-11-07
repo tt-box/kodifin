@@ -1,0 +1,243 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Télécommande (ui/remote) : écran, volets, recherche, transfert et messages du ViewModel. -->
+<resources>
+    <!-- Libellés communs -->
+    <string name="remote_cancel">Annuler</string>
+    <string name="remote_retry">Réessayer</string>
+    <string name="remote_open">Ouvrir</string>
+    <string name="remote_actions">Actions</string>
+    <string name="remote_play">Lire</string>
+    <string name="remote_play_now">Lire maintenant</string>
+    <string name="remote_play_next">Lire ensuite</string>
+    <string name="remote_play_right_after">Lire juste après</string>
+    <string name="remote_add_to_queue">Ajouter à la file d\'attente</string>
+    <string name="remote_add_to_queue_short">Ajouter à la file</string>
+    <string name="remote_enqueue_item">Ajouter %1$s à la file</string>
+    <string name="remote_current">En cours</string>
+    <string name="remote_watched">Déjà vu</string>
+    <string name="remote_folder">Dossier</string>
+    <string name="remote_playable">Élément jouable</string>
+    <string name="remote_folder_empty">Dossier vide</string>
+    <string name="remote_kind_others">Autres</string>
+    <string name="remote_this_device">cet appareil</string>
+    <string name="remote_the_device">l\'appareil</string>
+    <string name="remote_on">Activé</string>
+    <string name="remote_off">Désactivé</string>
+    <string name="remote_audio">Audio</string>
+    <string name="remote_subtitles">Sous-titres</string>
+    <string name="remote_nothing_playing">Rien en lecture</string>
+    <string name="remote_status_playing">En lecture</string>
+    <string name="remote_status_paused">En pause</string>
+
+    <!-- Onglets et volets -->
+    <string name="remote_tab_remote">Télécommande</string>
+    <string name="remote_tab_now_playing_short">Lecture</string>
+    <string name="remote_tab_now_playing">Lecture en cours</string>
+    <string name="remote_tab_queue_short">File</string>
+    <string name="remote_tab_queue">File d\'attente</string>
+    <string name="remote_tab_library_short">Médias</string>
+    <string name="remote_tab_library">Bibliothèque</string>
+    <string name="remote_show_pane">Afficher&#160;: %1$s</string>
+    <string name="remote_pane_collapse">Réduire le volet</string>
+    <string name="remote_pane_expand">Agrandir le volet en plein écran</string>
+    <string name="remote_pane_hide">Masquer la file et les médias</string>
+    <string name="remote_collapse_show">Afficher %1$s</string>
+    <string name="remote_collapse_hide">Masquer %1$s</string>
+    <string name="remote_more_commands">Plus de commandes</string>
+    <plurals name="remote_device_commands_count">
+        <item quantity="one">%1$d commande de l\'appareil</item>
+        <item quantity="other">%1$d commandes de l\'appareil</item>
+    </plurals>
+
+    <!-- Barre du haut -->
+    <string name="remote_title_default">Télécommande</string>
+    <string name="remote_status_connecting">Connexion…</string>
+    <string name="remote_status_disconnected">Non connecté</string>
+    <string name="remote_status_target">Cible&#160;: %1$s</string>
+    <string name="remote_back_home">Retour à l\'accueil</string>
+    <string name="remote_back">Retour</string>
+    <string name="remote_reconnect">Reconnecter</string>
+    <string name="remote_more_actions">Plus d\'actions</string>
+    <string name="remote_switch_remote">Changer de télécommande</string>
+    <string name="remote_switch_header">Télécommandes</string>
+    <string name="remote_switch_current">Télécommande actuelle</string>
+    <string name="remote_target">Cible de lecture</string>
+    <string name="remote_target_none">Aucune session active</string>
+    <string name="remote_target_current">Cible actuelle</string>
+    <string name="remote_power">Alimentation</string>
+    <string name="remote_power_wake">Allumer (Wake-on-LAN)</string>
+    <string name="remote_network_blocked_hint">Connectez-vous à un réseau autorisé puis appuyez sur «&#160;Reconnecter&#160;», ou modifiez les options réseau de l\'appareil.</string>
+
+    <!-- Feuille « ⋮ » -->
+    <string name="remote_more_type_text">Saisir du texte</string>
+    <string name="remote_play_url">Lire une URL</string>
+    <string name="remote_more_send_file">Envoyer un fichier du téléphone</string>
+    <string name="remote_more_stop_sharing">Arrêter le partage de fichier</string>
+    <string name="remote_more_transfer">Transférer la lecture vers…</string>
+    <string name="remote_more_scan_library">Mettre à jour la bibliothèque</string>
+    <string name="remote_more_clean_library">Nettoyer la bibliothèque</string>
+    <string name="remote_device_commands">Commandes de l\'appareil</string>
+    <string name="remote_more_edit">Modifier la configuration</string>
+
+    <!-- Boîtes de dialogue -->
+    <string name="remote_send_text_title">Envoyer du texte</string>
+    <string name="remote_text_label">Texte</string>
+    <string name="remote_send">Envoyer</string>
+    <string name="remote_notify_title">Message à l\'écran</string>
+    <string name="remote_notify_title_label">Titre</string>
+    <string name="remote_notify_confirm">Afficher</string>
+    <string name="remote_clear_queue_title">Vider la file d\'attente&#160;?</string>
+    <string name="remote_clear_queue_text">Tous les éléments de la file d\'attente de %1$s seront retirés.</string>
+    <string name="remote_clear_queue_confirm">Vider</string>
+    <string name="remote_clean_library_title">Nettoyer la bibliothèque&#160;?</string>
+    <string name="remote_clean_library_text">Les éléments dont le fichier n\'existe plus seront retirés de la bibliothèque de %1$s.</string>
+    <string name="remote_clean_library_confirm">Nettoyer</string>
+    <string name="remote_power_confirm_title">%1$s&#160;?</string>
+    <string name="remote_power_confirm_text">«&#160;%1$s&#160;» sera envoyé à %2$s.</string>
+
+    <!-- Pavé, transport et volume -->
+    <string name="remote_key_home">Accueil</string>
+    <string name="remote_key_context_menu">Menu contextuel</string>
+    <string name="remote_key_osd">Menu de lecture (OSD)</string>
+    <string name="remote_key_info">Informations</string>
+    <string name="remote_key_up">Haut</string>
+    <string name="remote_key_down">Bas</string>
+    <string name="remote_key_left">Gauche</string>
+    <string name="remote_key_right">Droite</string>
+    <string name="remote_key_ok">OK</string>
+    <string name="remote_key_ok_description">OK (valider)</string>
+    <string name="remote_key_previous">Précédent</string>
+    <string name="remote_key_back_30">Reculer de 30 secondes</string>
+    <string name="remote_key_rewind">Retour rapide</string>
+    <string name="remote_key_pause">Pause</string>
+    <string name="remote_key_play">Lecture</string>
+    <string name="remote_key_forward_30">Avancer de 30 secondes</string>
+    <string name="remote_key_fast_forward">Avance rapide</string>
+    <string name="remote_key_next">Suivant</string>
+    <string name="remote_key_stop">Stop</string>
+    <string name="remote_key_mute">Couper le son</string>
+    <string name="remote_key_volume_down">Baisser le volume</string>
+    <string name="remote_key_volume_up">Monter le volume</string>
+    <string name="remote_volume_percent">%1$d&#160;%%</string>
+    <string name="remote_volume_description">Volume %1$d&#160;%%</string>
+    <string name="remote_speed_status">Vitesse ×%1$d</string>
+
+    <!-- Avancement et chapitres -->
+    <string name="remote_progress_position">Position de lecture</string>
+    <string name="remote_progress_remaining">Temps restant %1$s</string>
+    <string name="remote_chapter">Chapitre %1$d/%2$d</string>
+    <string name="remote_chapter_named">Chapitre %1$d/%2$d · %3$s</string>
+    <string name="remote_chapter_go_to">Aller au %1$s</string>
+    <string name="remote_chapter_at">%1$s à %2$s</string>
+
+    <!-- Volet « Lecture en cours » -->
+    <string name="remote_tracks_title">Pistes et modes</string>
+    <string name="remote_tracks_refresh">Actualiser les pistes</string>
+    <string name="remote_tracks_none">Aucune piste annoncée</string>
+    <string name="remote_track_number">Piste %1$d</string>
+    <string name="remote_audio_next">Piste audio suivante</string>
+    <string name="remote_subtitles_off">Désactivés</string>
+    <string name="remote_subtitles_next">Sous-titres suivants</string>
+    <string name="remote_sync">Synchronisation</string>
+    <string name="remote_sync_summary">Décalage sous-titres et audio</string>
+    <string name="remote_sync_earlier">Plus tôt</string>
+    <string name="remote_sync_later">Plus tard</string>
+    <string name="remote_play_modes">Modes de lecture</string>
+    <string name="remote_repeat_one_summary">Répéter le titre</string>
+    <string name="remote_repeat_all_summary">Répéter tout</string>
+    <string name="remote_repeat_off">Sans répétition</string>
+    <string name="remote_repeat_one">Répéter un</string>
+    <string name="remote_repeat_all">Tout répéter</string>
+    <string name="remote_shuffle_summary">aléatoire</string>
+    <string name="remote_shuffle">Lecture aléatoire</string>
+    <string name="remote_speed_paused">En pause</string>
+    <string name="remote_speed_normal">Normale</string>
+    <string name="remote_speed_factor">×%1$s</string>
+    <string name="remote_fullscreen_on">Plein écran (activé)&#160;:</string>
+    <string name="remote_fullscreen_off">Plein écran (désactivé)&#160;:</string>
+    <string name="remote_fullscreen_unknown">Plein écran&#160;:</string>
+
+    <!-- Fiches (résumé, distribution) -->
+    <string name="remote_info_title">Résumé et informations</string>
+    <string name="remote_info_aired">Diffusé le %1$s</string>
+    <string name="remote_info_released">Sorti le %1$s</string>
+    <string name="remote_duration_minutes">%1$d min</string>
+    <string name="remote_duration_hours">%1$d h %2$02d</string>
+    <plurals name="remote_cast_more">
+        <item quantity="one">%1$s et %2$d autre</item>
+        <item quantity="other">%1$s et %2$d autres</item>
+    </plurals>
+    <string name="remote_info_no_overview">Aucun résumé disponible.</string>
+    <string name="remote_info_none">Aucune information disponible.</string>
+    <string name="remote_info_directors">Réalisation</string>
+    <string name="remote_info_writers">Scénario</string>
+    <string name="remote_info_cast">Distribution</string>
+    <string name="remote_info_studios">Studio</string>
+    <string name="remote_info_video">Vidéo</string>
+    <string name="remote_info_play_next">Ensuite</string>
+    <string name="remote_info_enqueue">File</string>
+
+    <!-- File d'attente, bibliothèque et série -->
+    <string name="remote_queue_title">File d\'attente (%1$d)</string>
+    <string name="remote_queue_refresh">Actualiser la file d\'attente</string>
+    <string name="remote_queue_clear">Vider la file d\'attente</string>
+    <string name="remote_queue_empty">La file d\'attente est vide</string>
+    <string name="remote_queue_remove">Retirer %1$s de la file</string>
+    <string name="remote_library_parent">Dossier parent</string>
+    <string name="remote_library_reload">Recharger la bibliothèque</string>
+    <string name="remote_library_no_sections">Aucune rubrique</string>
+    <string name="remote_series">Série</string>
+    <string name="remote_series_refresh">Actualiser la série</string>
+    <string name="remote_series_not_episode">Le média en cours n\'est pas un épisode de série</string>
+    <string name="remote_series_no_seasons">Aucune saison disponible</string>
+    <string name="remote_series_no_episodes">Aucun épisode dans cette saison</string>
+    <string name="remote_episode_playing">En cours de lecture</string>
+    <string name="remote_episode_watched">Vu</string>
+    <string name="remote_episode_actions">Actions pour %1$s</string>
+
+    <!-- Recherche -->
+    <string name="remote_search">Rechercher</string>
+    <string name="remote_search_placeholder">Rechercher dans la bibliothèque</string>
+    <string name="remote_search_hint">Recherchez un film, une série, un artiste…</string>
+    <plurals name="remote_search_min_length">
+        <item quantity="one">Saisissez au moins %1$d caractère</item>
+        <item quantity="other">Saisissez au moins %1$d caractères</item>
+    </plurals>
+    <string name="remote_search_no_results">Aucun résultat pour «&#160;%1$s&#160;»</string>
+    <string name="remote_search_back">Niveau précédent</string>
+    <string name="remote_search_close">Fermer la recherche</string>
+    <string name="remote_search_clear">Effacer la recherche</string>
+    <string name="remote_search_all_kinds">Tout</string>
+
+    <!-- Transfert de lecture -->
+    <string name="remote_transfer_title">Transférer la lecture</string>
+    <string name="remote_transfer_current_media">Média en cours</string>
+    <string name="remote_transfer_resume_at">%1$s · reprise à %2$s</string>
+    <string name="remote_transfer_no_target">Aucun autre appareil enregistré ne sait lire un média (Kodi, Chromecast, DLNA, AirPlay…).</string>
+    <string name="remote_transfer_bubble">%1$s · conversion par BubbleUPnP Server</string>
+    <string name="remote_transfer_transcode">Conversion par le serveur (H.264 / AAC)</string>
+    <string name="remote_transfer_transcode_detail">Pour un lecteur qui ne lit pas le fichier d\'origine</string>
+    <string name="remote_transfer_stop_here">Arrêter la lecture sur %1$s</string>
+    <string name="remote_transfer_confirm">Transférer</string>
+
+    <!-- Messages (snackbars) du ViewModel -->
+    <string name="remote_wake_sent">Signal de réveil envoyé à %1$s</string>
+    <string name="remote_wake_failed">Réveil impossible&#160;: %1$s</string>
+    <string name="remote_device_not_found">Appareil introuvable</string>
+    <string name="remote_connection_failed">Connexion impossible</string>
+    <string name="remote_not_connected">Appareil non connecté</string>
+    <string name="remote_command_refused">Commande refusée</string>
+    <string name="remote_not_supported">Action non prise en charge par cet appareil</string>
+    <string name="remote_share_unavailable">Partage de fichiers indisponible</string>
+    <string name="remote_file_sent_to">«&#160;%1$s&#160;» envoyé à %2$s</string>
+    <string name="remote_file_sent">«&#160;%1$s&#160;» envoyé à l\'appareil</string>
+    <string name="remote_share_stopped">Partage de fichier arrêté</string>
+    <string name="remote_transfer_no_media">Aucun média transférable en cours de lecture</string>
+    <string name="remote_transfer_done">Lecture transférée vers %1$s</string>
+    <string name="remote_power_sent">%1$s&#160;: demande envoyée</string>
+    <string name="remote_notify_shown">Message affiché sur l\'appareil</string>
+    <string name="remote_library_scan_started">Mise à jour de la bibliothèque lancée</string>
+    <string name="remote_library_clean_started">Nettoyage de la bibliothèque lancé</string>
+    <string name="remote_enqueued_next">Lu juste après&#160;: %1$s</string>
+    <string name="remote_enqueued">Ajouté à la file d\'attente&#160;: %1$s</string>
+</resources>

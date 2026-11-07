@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "zapette"
+rootProject.name = "kodifin"
 
 include(
     ":app",

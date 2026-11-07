@@ -1,10 +1,10 @@
-# Zapette
+# Kodifin
 
-[![CI](https://github.com/tt-box/zapette/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tt-box/zapette/actions/workflows/ci.yml)
-[![Fusion auto Dependabot](https://github.com/tt-box/zapette/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/tt-box/zapette/actions/workflows/dependabot-automerge.yml)
-[![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/tt-box/zapette/security/dependabot)
+[![CI](https://github.com/tt-box/kodifin/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tt-box/kodifin/actions/workflows/ci.yml)
+[![Fusion auto Dependabot](https://github.com/tt-box/kodifin/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/tt-box/kodifin/actions/workflows/dependabot-automerge.yml)
+[![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/tt-box/kodifin/security/dependabot)
 [![Scan CVE](https://img.shields.io/badge/CVE-OSV--Scanner-4285F4?logo=google&logoColor=white)](https://github.com/google/osv-scanner)
-[![Couverture](.github/badges/coverage.svg)](https://github.com/tt-box/zapette/actions/workflows/ci.yml)
+[![Couverture](.github/badges/coverage.svg)](https://github.com/tt-box/kodifin/actions/workflows/ci.yml)
 [![Traceurs](https://img.shields.io/badge/traceurs-0-brightgreen)](scripts/check-no-trackers.sh)
 
 [![Android](https://img.shields.io/badge/Android-8%2B%20%E2%86%92%2016%20(API%2036)-3DDC84?logo=android&logoColor=white)](app/build.gradle.kts)
@@ -43,7 +43,7 @@ Le code a été écrit à partir des spécifications publiques de chaque protoco
 ## Limites connues
 
 - **AirPlay 2** (appairage HomeKit) non pris en charge : seuls les récepteurs acceptant AirPlay 1 vidéo.
-- **Fire TV** : nécessite d'activer le débogage ADB et d'accepter la clé de Zapette sur le téléviseur.
+- **Fire TV** : nécessite d'activer le débogage ADB et d'accepter la clé de Kodifin sur le téléviseur.
 - **Chromecast** : dépend des Google Play Services (SDK officiel).
 - Le trafic HTTP en clair est autorisé sur le réseau local (Kodi, UPnP, Roku, AirPlay ne proposent pas TLS).
 
@@ -81,18 +81,18 @@ Couverture de code (Kover, tous modules agrégés) :
 
 ## Release signée
 
-La clé de release est une clé **ECDSA P-256** (alias `zapette-release`, PKCS12), signée en
+La clé de release est une clé **ECDSA P-256** (alias `kodifin-release`, PKCS12), signée en
 v2 + v3/v3.1 (+ v4). En local, créer un `keystore.properties` à la racine (ignoré par git) :
 
 ```properties
-storeFile=/chemin/vers/zapette-release.p12
+storeFile=/chemin/vers/kodifin-release.p12
 storePassword=…
-keyAlias=zapette-release
+keyAlias=kodifin-release
 keyPassword=…
 ```
 
-En CI : variables `ZAPETTE_STORE_FILE`, `ZAPETTE_STORE_PASSWORD`, `ZAPETTE_KEY_ALIAS`,
-`ZAPETTE_KEY_PASSWORD`. Sans l'un ni l'autre, `assembleRelease` produit un APK non signé.
+En CI : variables `KODIFIN_STORE_FILE`, `KODIFIN_STORE_PASSWORD`, `KODIFIN_KEY_ALIAS`,
+`KODIFIN_KEY_PASSWORD`. Sans l'un ni l'autre, `assembleRelease` produit un APK non signé.
 
 **Publier une version** : `git tag v1.2.3 && git push origin v1.2.3` (ou créer la release
 depuis l'interface GitHub). Le workflow `.github/workflows/release.yml` rejoue tests et lint,
@@ -102,10 +102,10 @@ sommes SHA-256. La release contient quatre artefacts :
 
 | Fichier | Usage |
 |---|---|
-| `zapette-X.Y.Z.apk` | Installation directe (signé) |
-| `zapette-X.Y.Z.aab` | Publication sur un store (Android App Bundle signé) |
-| `zapette-X.Y.Z-unsigned.apk` | Re-signature par un tiers, vérification de reproductibilité |
-| `zapette-X.Y.Z-unsigned.aab` | Bundle non signé, à signer avec sa propre clé d'envoi |
+| `kodifin-X.Y.Z.apk` | Installation directe (signé) |
+| `kodifin-X.Y.Z.aab` | Publication sur un store (Android App Bundle signé) |
+| `kodifin-X.Y.Z-unsigned.apk` | Re-signature par un tiers, vérification de reproductibilité |
+| `kodifin-X.Y.Z-unsigned.aab` | Bundle non signé, à signer avec sa propre clé d'envoi |
 
 La variante non signée est construite avant la restauration du keystore. Le tag donne le `versionName`, le nombre de commits le `versionCode`.
 
@@ -113,9 +113,9 @@ Secrets requis (`Settings ▸ Secrets and variables ▸ Actions`) — sans eux, 
 
 | Secret | Contenu |
 |---|---|
-| `KEYSTORE_BASE64` | `base64 -w0 zapette-release.p12` |
+| `KEYSTORE_BASE64` | `base64 -w0 kodifin-release.p12` |
 | `KEYSTORE_PASSWORD` | mot de passe du keystore |
-| `KEY_ALIAS` | `zapette-release` |
+| `KEY_ALIAS` | `kodifin-release` |
 | `KEY_PASSWORD` | mot de passe de la clé (identique en PKCS12) |
 
 ## CI / sécurité

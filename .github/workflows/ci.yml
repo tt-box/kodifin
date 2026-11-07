@@ -40,8 +40,9 @@ jobs:
       # Valide aussi la somme de contrôle du gradle-wrapper.jar.
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
 
-      - name: Tests unitaires, lint et assemblage
-        run: ./gradlew test testDebugUnitTest lint assembleDebug assembleRelease koverXmlReport koverHtmlReport --continue --stacktrace
+      # koverVerify : échoue sous 80 % de couverture des lignes (seuil du build.gradle.kts racine).
+      - name: Tests unitaires, lint, assemblage et seuil de couverture
+        run: ./gradlew test testDebugUnitTest lint assembleDebug assembleRelease koverXmlReport koverHtmlReport koverVerify --continue --stacktrace
 
       - name: Aucune dépendance de pistage
         run: bash scripts/check-no-trackers.sh
@@ -73,7 +74,7 @@ jobs:
       - name: APK de debug
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: zapette-debug-apk
+          name: kodifin-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

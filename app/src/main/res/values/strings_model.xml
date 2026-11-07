@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Libellés des énumérations de core/model (module JVM sans ressources Android). -->
+<resources>
+    <string name="ui_command_osd">Menu de lecture (OSD)</string>
+    <string name="ui_command_context_menu">Menu contextuel</string>
+    <string name="ui_command_codec_info">Informations codec</string>
+    <string name="ui_command_fullscreen">Plein écran</string>
+    <string name="ui_command_home_screen">Accueil</string>
+    <string name="ui_command_settings">Paramètres</string>
+    <string name="ui_command_search">Recherche</string>
+    <string name="ui_command_page_up">Page précédente</string>
+    <string name="ui_command_page_down">Page suivante</string>
+    <string name="ui_command_channel_up">Chaîne suivante</string>
+    <string name="ui_command_channel_down">Chaîne précédente</string>
+    <string name="ui_command_guide">Guide TV</string>
+
+    <string name="power_action_suspend">Mettre en veille</string>
+    <string name="power_action_hibernate">Mettre en veille prolongée</string>
+    <string name="power_action_shutdown">Éteindre</string>
+    <string name="power_action_reboot">Redémarrer</string>
+    <string name="power_action_quit_app">Quitter l\'application</string>
+
+    <string name="media_kind_movie">Films</string>
+    <string name="media_kind_series">Séries</string>
+    <string name="media_kind_season">Saisons</string>
+    <string name="media_kind_episode">Épisodes</string>
+    <string name="media_kind_artist">Artistes</string>
+    <string name="media_kind_album">Albums</string>
+    <string name="media_kind_song">Titres</string>
+    <string name="media_kind_channel">Chaînes TV</string>
+    <string name="media_kind_folder">Dossiers</string>
+    <string name="media_kind_other">Autres</string>
+</resources>

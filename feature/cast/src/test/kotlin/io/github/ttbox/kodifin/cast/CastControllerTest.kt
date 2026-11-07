@@ -1,0 +1,516 @@
+package io.github.ttbox.kodifin.cast
+
+import io.github.ttbox.kodifin.model.Device
+import io.github.ttbox.kodifin.model.DeviceKind
+import io.github.ttbox.kodifin.model.Setup
+import io.github.ttbox.kodifin.model.RemoteError
+import io.github.ttbox.kodifin.model.RemoteException
+import io.github.ttbox.kodifin.model.RemoteKey
+import io.github.ttbox.kodifin.model.UnsupportedActionException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+import java.io.IOException
+import kotlin.coroutines.EmptyCoroutineContext
+
+private class FakeMedia(
+    override var positionMs: Long = 30_000,
+    override var durationMs: Long = 60_000,
+) : CastMediaPort {
+    override var title: String? = "Film"
+    override var isPlaying = true
+    val calls = mutableListOf<String>()
+    var failure: Exception? = null
+
+    private fun record(call: String) {
+        failure?.let { throw it }
+        calls += call
+    }
+
+    override fun togglePlayback() = record("toggle")
+    override fun stop() = record("stop")
+    override fun next() = record("next")
+    override fun previous() = record("previous")
+    override fun seek(positionMs: Long) = record("seek:$positionMs")
+    val loadOptions = mutableListOf<CastLoadOptions>()
+    val styles = mutableListOf<CastSubtitleStyle>()
+
+    override suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions) {
+        record("load:$url|$contentType|$title")
+        loadOptions += options
+    }
+
+    override fun setTextTrackStyle(style: CastSubtitleStyle) {
+        failure?.let { throw it }
+        styles += style
+    }
+}
+
+private class FakeSession(
+    override val deviceId: String?,
+    override var isConnected: Boolean = true,
+    override var isConnecting: Boolean = false,
+    override var media: CastMediaPort? = FakeMedia(),
+) : CastSessionPort {
+    override var volume = 0.5
+    override var isMute = false
+}
+
+/** Faux SDK : routes, session courante et SessionManager. */
+private class FakePlatform : CastPlatform {
+    val routes = mutableListOf(
+        CastRoute("route-salon", "192.168.1.20", "cast-salon"),
+        CastRoute("route-chambre", "192.168.1.21", "cast-chambre"),
+    )
+    var current: FakeSession? = null
+    val selected = mutableListOf<String>()
+    var ended = 0
+    val listeners = mutableListOf<CastSessionEvents>()
+    var readyFailure: Exception? = null
+
+    /** Réaction à la sélection d'une route ; par défaut la session s'ouvre aussitôt. */
+    var onSelect: (CastRoute) -> Unit = { route ->
+        val session = FakeSession(route.deviceId)
+        current = session
+        listeners.toList().forEach { it.started(session) }
+    }
+
+    override suspend fun ready() {
+        readyFailure?.let { throw it }
+    }
+
+    override fun routes(): List<CastRoute> = routes
+    override fun currentSession(): CastSessionPort? = current
+    override fun selectRoute(route: CastRoute) {
+        selected += route.id
+        onSelect(route)
+    }
+
+    override fun endCurrentSession() {
+        ended++
+        current = null
+    }
+
+    override fun listen(events: CastSessionEvents): AutoCloseable {
+        listeners += events
+        return AutoCloseable { listeners -= events }
+    }
+}
+
+private fun chromecast(id: String = "route-salon", host: String = "192.168.1.20") =
+    Device(id = id, name = "Salon", kind = DeviceKind.CHROMECAST, host = host)
+
+/** Parcourt la chaîne des causes (les coroutines peuvent recopier l'exception pour la pile d'appel). */
+private inline fun <reified T : Throwable> Throwable.hasCause(): Boolean =
+    generateSequence(cause) { it.cause }.any { it is T }
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class CastControllerTest {
+    private val platform = FakePlatform()
+
+    private fun controller(device: Device = chromecast()) = CastController(device, platform, EmptyCoroutineContext)
+
+    private suspend inline fun <reified T : Throwable> assertThrows(block: () -> Unit): T {
+        try {
+            block()
+        } catch (e: Throwable) {
+            if (e is T) return e
+            throw AssertionError("${T::class.simpleName} attendue, ${e::class.simpleName} levée", e)
+        }
+        fail("${T::class.simpleName} attendue")
+        throw IllegalStateException()
+    }
+
+    @Test
+    fun `route is found by id first, then by address`() {
+        assertEquals("route-chambre", controller(chromecast("route-chambre", "192.168.1.20")).route()?.id)
+        assertEquals("route-chambre", controller(chromecast("manuel", "[192.168.1.21]")).route()?.id)
+        assertNull(controller(chromecast("manuel", "192.168.1.99")).route())
+    }
+
+    @Test
+    fun `isOurs compares the session device with our route`() {
+        val c = controller()
+        assertTrue(c.isOurs(FakeSession("cast-salon")))
+        assertFalse(c.isOurs(FakeSession("cast-chambre")))
+        assertFalse(c.isOurs(FakeSession(null)))
+        assertFalse(c.isOurs(null))
+        platform.routes[0] = CastRoute("route-salon", "192.168.1.20", null)
+        assertFalse(c.isOurs(FakeSession("cast-salon")))
+        platform.routes.clear()
+        assertFalse(c.isOurs(FakeSession("cast-salon")))
+    }
+
+    @Test
+    fun `an existing connected session to our device is reused`() = runTest {
+        platform.current = FakeSession("cast-salon")
+        controller().connect()
+        assertTrue(platform.selected.isEmpty())
+    }
+
+    @Test
+    fun `connect selects our route and stops listening afterwards`() = runTest {
+        platform.current = FakeSession("cast-chambre")
+        controller().connect()
+        assertEquals(listOf("route-salon"), platform.selected)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a session already connecting to our device is awaited without reselecting`() = runTest {
+        val connecting = FakeSession("cast-salon", isConnected = false, isConnecting = true)
+        platform.current = connecting
+        val job = async { controller().connect() }
+        runCurrent()
+        assertTrue(platform.selected.isEmpty())
+        platform.listeners.single().started(connecting)
+        job.await()
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a session started for another device is ignored and the wait times out`() = runTest {
+        platform.onSelect = { platform.listeners.toList().forEach { it.started(FakeSession("cast-chambre")) } }
+        val result = async { runCatching { controller().connect() } }
+        advanceTimeBy(15_001)
+        val error = result.await().exceptionOrNull()
+        assertTrue(error is RemoteException)
+        assertEquals(RemoteError.Timeout, (error as RemoteException).reason)
+        assertEquals(1, platform.ended)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `session failures become RemoteException`() = runTest {
+        platform.onSelect = { platform.listeners.toList().forEach { it.failed("cast-salon", 2005, "APPLICATION_NOT_RUNNING") } }
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertEquals(RemoteError.DeviceRefused("APPLICATION_NOT_RUNNING", "2005"), e.reason)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a failure of an unidentified session still ends the wait`() = runTest {
+        platform.onSelect = { platform.listeners.toList().forEach { it.failed(null, 15) } }
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertEquals(RemoteError.DeviceRefused(null, "15"), e.reason)
+    }
+
+    @Test
+    fun `a failure of another device's session is ignored`() = runTest {
+        platform.onSelect = { route ->
+            platform.listeners.toList().forEach { it.failed("cast-chambre", 2005) }
+            val session = FakeSession(route.deviceId)
+            platform.current = session
+            platform.listeners.toList().forEach { it.started(session) }
+        }
+        controller().connect()
+        assertEquals(listOf("route-salon"), platform.selected)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `our session ending before it starts is a failure, another device's end is ignored`() = runTest {
+        platform.onSelect = {
+            platform.listeners.toList().forEach { it.ended("cast-chambre") }
+            platform.listeners.toList().forEach { it.ended("cast-salon") }
+        }
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertEquals(RemoteError.SessionEnded, e.reason)
+        assertTrue(platform.listeners.isEmpty())
+    }
+
+    @Test
+    fun `a device entered by IP address is matched to its discovered route`() = runTest {
+        val manual = Device(id = Device.manualId(DeviceKind.CHROMECAST, "192.168.1.21", 8009), name = "Chambre",
+            kind = DeviceKind.CHROMECAST, host = "192.168.1.21", port = 8009)
+        CastController(manual, platform, EmptyCoroutineContext).connect()
+        assertEquals(listOf("route-chambre"), platform.selected)
+    }
+
+    @Test
+    fun `missing route is reported`() = runTest {
+        platform.routes.clear()
+        val e = assertThrows<RemoteException> { controller().connect() }
+        assertEquals(RemoteError.Unreachable("192.168.1.20"), e.reason)
+    }
+
+    @Test
+    fun `sdk initialisation errors are translated`() = runTest {
+        platform.readyFailure = IllegalStateException("pas sur le thread principal")
+        assertEquals(RemoteError.Interrupted("192.168.1.20"), assertThrows<RemoteException> { controller().connect() }.reason)
+        val unavailable = RemoteException(RemoteError.SetupRequired(Setup.GOOGLE_CAST))
+        platform.readyFailure = unavailable
+        assertEquals(unavailable.reason, assertThrows<RemoteException> { controller().connect() }.reason)
+    }
+
+    @Test
+    fun `keys map to media actions`() = runTest {
+        val session = FakeSession("cast-salon")
+        val media = FakeMedia(positionMs = 5_000, durationMs = 60_000)
+        session.media = media
+        platform.current = session
+        val c = controller()
+
+        c.send(RemoteKey.PLAY_PAUSE)
+        c.send(RemoteKey.STOP)
+        c.send(RemoteKey.NEXT)
+        c.send(RemoteKey.PREVIOUS)
+        c.send(RemoteKey.REWIND)
+        media.positionMs = 55_000
+        c.send(RemoteKey.FAST_FORWARD)
+        assertEquals(listOf("toggle", "stop", "next", "previous", "seek:0", "seek:60000"), media.calls)
+
+        session.volume = 0.98
+        c.send(RemoteKey.VOLUME_UP)
+        assertEquals(1.0, session.volume, 1e-9)
+        c.send(RemoteKey.VOLUME_DOWN)
+        assertEquals(0.95, session.volume, 1e-9)
+        c.send(RemoteKey.MUTE)
+        assertTrue(session.isMute)
+        c.send(RemoteKey.MUTE)
+        assertFalse(session.isMute)
+
+        assertThrows<UnsupportedActionException> { c.send(RemoteKey.UP) }
+    }
+
+    @Test
+    fun `volume and seek requests are clamped`() = runTest {
+        val session = FakeSession("cast-salon")
+        val media = FakeMedia(durationMs = 60_000)
+        session.media = media
+        platform.current = session
+        val c = controller()
+        c.setVolume(150)
+        assertEquals(1.0, session.volume, 1e-9)
+        c.setVolume(-5)
+        assertEquals(0.0, session.volume, 1e-9)
+        c.setVolume(42)
+        assertEquals(0.42, session.volume, 1e-9)
+        c.seekTo(90_000)
+        c.seekTo(-1)
+        assertEquals(listOf("seek:60000", "seek:0"), media.calls)
+    }
+
+    @Test
+    fun `playUrl loads the media with its type and a default title`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val url = "http://nas/films/vacances.mkv"
+        controller().playUrl(url, null)
+        controller().playUrl(url, "Vacances")
+        val type = CastMedia.contentType(url)
+        assertEquals(listOf("load:$url|$type|vacances.mkv", "load:$url|$type|Vacances"), media.calls)
+    }
+
+    @Test
+    fun `sdk errors are translated into RemoteException`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val c = controller()
+
+        media.failure = IllegalStateException("session fermée")
+        val interrupted = assertThrows<RemoteException> { c.send(RemoteKey.PLAY_PAUSE) }
+        assertTrue(interrupted.hasCause<IllegalStateException>())
+        assertEquals(RemoteError.Interrupted("192.168.1.20"), interrupted.reason)
+        media.failure = IOException("canal fermé")
+        assertTrue(assertThrows<RemoteException> { c.playUrl("http://nas/a.mp4", null) }.hasCause<IOException>())
+        val refused = RemoteException(RemoteError.DeviceRefused("Invalid request", "2100"))
+        media.failure = refused
+        val passed = assertThrows<RemoteException> { c.playUrl("http://nas/a.mp4", null) }
+        assertEquals(refused.reason, passed.reason)
+        assertFalse(passed.hasCause<IOException>())
+    }
+
+    @Test
+    fun `missing player is reported`() = runTest {
+        platform.current = FakeSession("cast-salon", media = null)
+        val e = assertThrows<RemoteException> { controller().send(RemoteKey.STOP) }
+        assertEquals(RemoteError.NothingPlaying, e.reason)
+    }
+
+    @Test
+    fun `disconnect only ends the session of this device`() = runTest {
+        platform.current = FakeSession("cast-chambre")
+        controller().disconnect()
+        assertEquals(0, platform.ended)
+
+        platform.current = FakeSession("cast-salon")
+        controller().disconnect()
+        assertEquals(1, platform.ended)
+
+        // Erreur du SDK : ignorée à la déconnexion.
+        platform.readyFailure = RemoteException(RemoteError.SetupRequired(Setup.GOOGLE_CAST))
+        controller().disconnect()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `playback state is polled every second`() = runTest {
+        val session = FakeSession("cast-salon")
+        val media = FakeMedia(positionMs = 1_000, durationMs = 60_000)
+        session.media = media
+        platform.current = session
+        val states = async { controller().playbackState().take(2).toList() }
+        runCurrent()
+        media.positionMs = 2_000
+        session.isMute = true
+        advanceTimeBy(1_001)
+        val (first, second) = states.await()
+        assertEquals("Film", first.title)
+        assertTrue(first.isPlaying)
+        assertEquals(1_000L, first.positionMs)
+        assertEquals(60_000L, first.durationMs)
+        assertEquals(50, first.volumePercent)
+        assertFalse(first.muted)
+        assertEquals(2_000L, second.positionMs)
+        assertTrue(second.muted)
+    }
+
+    @Test
+    fun `playback state without player and after disconnection`() = runTest {
+        val session = FakeSession("cast-salon", media = null)
+        platform.current = session
+        val c = controller()
+        val idle = c.playbackState().first()
+        assertNull(idle.title)
+        assertFalse(idle.isPlaying)
+        assertEquals(0L, idle.positionMs)
+
+        val states = async { runCatching { c.playbackState().take(2).toList() } }
+        runCurrent()
+        session.isConnected = false
+        advanceTimeBy(1_001)
+        assertTrue(states.await().exceptionOrNull() is RemoteException)
+    }
+
+    @Test
+    fun `the end of our session stops the playback state at once`() = runTest {
+        val session = FakeSession("cast-salon")
+        platform.current = session
+        val states = async { runCatching { controller().playbackState().toList() } }
+        runCurrent()
+        // La fin de la session d'un autre Chromecast ne change rien.
+        platform.listeners.toList().forEach { it.ended("cast-chambre") }
+        runCurrent()
+        assertFalse(states.isCompleted)
+        platform.listeners.toList().forEach { it.ended("cast-salon") }
+        runCurrent()
+        // Sans attendre le relevé suivant (1 s) : l'état est mis à jour aussitôt.
+        assertTrue(states.isCompleted)
+        assertTrue(states.await().exceptionOrNull() is RemoteException)
+        assertTrue(platform.listeners.isEmpty())
+    }
+}
+
+/** Application des réglages Chromecast (sous-titres, débit, déconnexion automatique). */
+class CastSettingsControllerTest {
+    private val platform = FakePlatform()
+    private var settings = CastSettings()
+
+    private fun controller() = CastController(chromecast(), platform, EmptyCoroutineContext, settings = { settings })
+
+    private val style = CastSubtitleStyle(SubtitleSize.LARGE, SubtitleColor.YELLOW, SubtitleBackground.NONE)
+
+    @Test
+    fun `playUrl passes bitrate cap and subtitle style to the load`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        settings = CastSettings(maxBitrate = CastMaxBitrate.P720, subtitles = style)
+        controller().playUrl("http://nas/film.mp4", "Film")
+        assertEquals(listOf(CastLoadOptions(4_000_000, style)), media.loadOptions)
+    }
+
+    @Test
+    fun `automatic bitrate sends no cap`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        controller().playUrl("http://nas/film.mp4", null)
+        assertNull(media.loadOptions.single().maxBitrate)
+    }
+
+    @Test
+    fun `settings are read at each use`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val c = controller()
+        c.playUrl("http://nas/a.mp4", null)
+        settings = CastSettings(maxBitrate = CastMaxBitrate.P1080)
+        c.playUrl("http://nas/b.mp4", null)
+        assertEquals(listOf(null, 8_000_000L), media.loadOptions.map { it.maxBitrate })
+    }
+
+    @Test
+    fun `subtitle style is applied on connect and on demand`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        settings = CastSettings(subtitles = style)
+        val c = controller()
+        c.connect()
+        assertEquals(listOf(style), media.styles)
+        settings = CastSettings()
+        c.applySubtitleStyle()
+        assertEquals(listOf(style, CastSubtitleStyle()), media.styles)
+    }
+
+    @Test
+    fun `connect succeeds without media or when the style is refused`() = runTest {
+        platform.current = FakeSession("cast-salon", media = null)
+        controller().connect()
+        val media = FakeMedia().apply { failure = IOException("refus") }
+        platform.current = FakeSession("cast-salon", media = media)
+        controller().connect()
+        assertTrue(media.styles.isEmpty())
+    }
+
+    @Test
+    fun `leaving the remote ends the session only with auto disconnect`() = runTest {
+        platform.current = FakeSession("cast-salon")
+        settings = CastSettings(autoDisconnect = false)
+        controller().disconnect()
+        assertEquals(0, platform.ended)
+        settings = CastSettings(autoDisconnect = true)
+        controller().disconnect()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `endSession always ends our session but never another device's`() = runTest {
+        settings = CastSettings(autoDisconnect = false)
+        platform.current = FakeSession("cast-chambre")
+        controller().endSession()
+        assertEquals(0, platform.ended)
+        platform.current = FakeSession("cast-salon")
+        controller().endSession()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `unreadable settings fall back to defaults`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val c = CastController(chromecast(), platform, EmptyCoroutineContext, settings = { throw IOException("disque") })
+        c.playUrl("http://nas/a.mp4", null)
+        assertEquals(CastLoadOptions(), media.loadOptions.single())
+        c.disconnect()
+        assertEquals(1, platform.ended)
+    }
+
+    @Test
+    fun `subtitle style outline only without background`() {
+        assertTrue(style.outlined)
+        assertFalse(CastSubtitleStyle().outlined)
+        assertEquals(0xFFFFFF00.toInt(), SubtitleColor.YELLOW.argb)
+        assertEquals(0x80000000.toInt(), SubtitleBackground.TRANSLUCENT.argb)
+    }
+}

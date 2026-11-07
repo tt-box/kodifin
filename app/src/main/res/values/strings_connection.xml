@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Diagnostic et test de connexion (connection/). -->
+<resources>
+    <string name="diag_certificate_changed_title">Le certificat de l\'appareil a changé (empreinte %1$s)&#160;: vérifiez puis faites de nouveau confiance</string>
+    <string name="diag_certificate_changed_advice">Le certificat présenté ne correspond plus à celui accepté (%1$s). Serveur réinstallé ou certificat renouvelé&#160;? Comparez la nouvelle empreinte avec celle du serveur avant de lui faire confiance&#160;; sinon, quelqu\'un intercepte peut-être la connexion.</string>
+    <string name="diag_credentials_title">Identifiants refusés (HTTP %1$d)</string>
+    <string name="diag_credentials_advice">Vérifiez l\'utilisateur et le mot de passe, ou les droits de ce compte sur le serveur.</string>
+    <string name="diag_not_found_title">Réponse inattendue (HTTP 404)</string>
+    <string name="diag_not_found_advice">Le service attendu n\'est pas à cette adresse&#160;: vérifiez le type d\'appareil, le port et le chemin de base.</string>
+    <string name="diag_http_title">Erreur du serveur (HTTP %1$d)</string>
+    <string name="diag_http_advice">Le serveur a répondu mais a refusé la requête&#160;; consultez son journal.</string>
+    <string name="diag_redirect_title">Redirection refusée</string>
+    <string name="diag_redirect_advice">Le serveur renvoie vers une autre adresse&#160;; saisissez directement l\'adresse finale (hôte, port, HTTPS).</string>
+    <string name="diag_certificate_title">Certificat invalide ou non reconnu</string>
+    <string name="diag_certificate_advice">Certificat auto-signé&#160;? Choisissez le mode «&#160;HTTPS – certificat non vérifié&#160;» après avoir comparé l\'empreinte.</string>
+    <string name="diag_unknown_host_title">Nom introuvable</string>
+    <string name="diag_unknown_host_advice">Ce nom n\'est pas résolu sur ce réseau&#160;: utilisez l\'adresse IP de l\'appareil ou vérifiez le DNS local.</string>
+    <string name="diag_refused_title">Connexion refusée (port fermé)</string>
+    <string name="diag_refused_advice">L\'appareil répond mais rien n\'écoute sur ce port&#160;: vérifiez le port et que le service (contrôle à distance) est activé.</string>
+    <string name="diag_unexpected_title">Réponse inattendue</string>
+    <string name="diag_unexpected_advice">Un autre service répond à cette adresse&#160;: vérifiez le type d\'appareil, le port et le chemin de base.</string>
+    <string name="diag_timeout_title">Délai dépassé</string>
+    <string name="diag_timeout_advice">L\'appareil ne répond pas à temps&#160;: est-il allumé&#160;? Augmentez le délai de connexion si le réseau est lent.</string>
+    <string name="diag_unreachable_title">Hôte injoignable</string>
+    <string name="diag_unreachable_advice">Aucune route vers l\'appareil&#160;: isolation des clients Wi-Fi, VLAN ou sous-réseau différent, ou appareil éteint.</string>
+    <string name="diag_tls_title">Échec de la négociation TLS</string>
+    <string name="diag_tls_advice">Le serveur ne parle peut-être pas HTTPS sur ce port&#160;: essayez le mode HTTP ou le port HTTPS du serveur.</string>
+
+    <string name="conn_test_invalid_config">Configuration invalide</string>
+    <string name="conn_test_success_described">Connexion réussie&#160;: %1$s</string>
+    <string name="conn_test_success">Connexion réussie à %1$s (%2$s)</string>
+    <string name="conn_test_timeout">%1$s&#160;: %2$s (%3$d&#160;s)</string>
+</resources>

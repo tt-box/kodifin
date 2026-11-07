@@ -1,0 +1,217 @@
+package io.github.ttbox.kodifin.ui.remote
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.github.ttbox.kodifin.model.Chapter
+import io.github.ttbox.kodifin.model.formatHms
+import androidx.compose.ui.res.stringResource
+import io.github.ttbox.kodifin.R
+import io.github.ttbox.kodifin.text.UiText
+import io.github.ttbox.kodifin.ui.text.asString
+
+/** Index du chapitre contenant [positionMs] (dernier chapitre commencé), ou `null`. */
+internal fun chapterAt(chapters: List<Chapter>, positionMs: Long): Int? =
+    chapters.indexOfLast { it.startMs <= positionMs }.takeIf { it >= 0 }
+
+/** Libellé d'un chapitre : « Chapitre 3/12 · Nom » (nom omis s'il est absent). */
+internal fun chapterLabel(chapters: List<Chapter>, index: Int): UiText {
+    val name = chapters[index].name
+    return if (name != null) {
+        UiText.Res(R.string.remote_chapter_named, index + 1, chapters.size, name)
+    } else {
+        UiText.Res(R.string.remote_chapter, index + 1, chapters.size)
+    }
+}
+
+/**
+ * Barre d'avancement pleine largeur : curseur précis (le temps visé s'affiche pendant le
+ * glissement), repères de chapitres sur la piste et bande de chapitres cliquables en dessous
+ * (un appui place la lecture au début du chapitre).
+ */
+@Composable
+fun MediaProgress(
+    positionMs: Long,
+    durationMs: Long,
+    chapters: List<Chapter>,
+    canSeek: Boolean,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (durationMs <= 0) return
+    val slider = remember { RemoteSliderState(tolerance = SEEK_TOLERANCE_MS) }
+    val remote = positionMs.toFloat()
+    LaunchedEffect(remote) { slider.onRemoteValue(remote) }
+    PendingExpiry(slider)
+    val duration = durationMs.toFloat()
+    val shown = slider.displayed(remote).coerceIn(0f, duration)
+    val dragging = slider.dragValue != null
+    val marks = chapters.filter { it.startMs in 1 until durationMs }
+    val current = chapterAt(chapters, shown.toLong())
+    val haptic = LocalHapticFeedback.current
+    val positionLabel = stringResource(R.string.remote_progress_position)
+
+    fun seek(ms: Long) {
+        slider.onDrag(ms.toFloat())
+        slider.onDragFinished()?.let { onSeek(it.toLong()) }
+    }
+
+    Column(modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth()) {
+            Slider(
+                value = shown,
+                onValueChange = slider::onDrag,
+                onValueChangeFinished = { slider.onDragFinished()?.let { onSeek(it.toLong()) } },
+                valueRange = 0f..duration,
+                enabled = canSeek,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = positionLabel },
+            )
+            if (marks.isNotEmpty()) {
+                // Repères de début de chapitre, dessinés sur la piste du curseur.
+                val color = MaterialTheme.colorScheme.onSurface
+                Canvas(Modifier.matchParentSize()) {
+                    val y = size.height / 2
+                    marks.forEach { c ->
+                        val x = size.width * (c.startMs / duration)
+                        drawLine(color, Offset(x, y - 9.dp.toPx()), Offset(x, y + 9.dp.toPx()), strokeWidth = 2.dp.toPx())
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                formatHms(shown.toLong()),
+                style = if (dragging) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelMedium,
+                fontWeight = if (dragging) FontWeight.Bold else null,
+            )
+            Text(
+                current?.let { chapterLabel(chapters, it).asString() }.orEmpty(),
+                style = MaterialTheme.typography.labelMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            val remaining = formatHms(durationMs - shown.toLong())
+            val remainingLabel = stringResource(R.string.remote_progress_remaining, remaining)
+            Text(
+                "−$remaining",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.semantics { contentDescription = remainingLabel },
+            )
+        }
+        if (chapters.size > 1) {
+            // Bande de chapitres : largeur proportionnelle à la durée, chapitre courant en évidence.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp).height(40.dp).clip(RoundedCornerShape(8.dp)),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                chapters.forEachIndexed { i, c ->
+                    val end = chapters.getOrNull(i + 1)?.startMs ?: durationMs
+                    val weight = ((end - c.startMs).coerceAtLeast(1).toFloat() / duration).coerceAtLeast(0.004f)
+                    val selected = i == current
+                    val label = chapterLabel(chapters, i).asString()
+                    val goTo = stringResource(R.string.remote_chapter_go_to, label)
+                    val description = stringResource(R.string.remote_chapter_at, label, formatHms(c.startMs))
+                    Surface(
+                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier
+                            .weight(weight)
+                            .fillMaxHeight()
+                            .clickable(enabled = canSeek, onClickLabel = goTo) {
+                                haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
+                                seek(c.startMs)
+                            }
+                            .semantics { contentDescription = description },
+                    ) {
+                        if (weight > 0.06f) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                c.name ?: "${i + 1}",
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Carte « avancement » pleine largeur (tablettes et téléphone couché) : titre compact sur une
+ * ligne puis [MediaProgress].
+ */
+@Composable
+fun ProgressCard(
+    title: String?,
+    status: String?,
+    positionMs: Long,
+    durationMs: Long,
+    chapters: List<Chapter>,
+    canSeek: Boolean,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+    /** Épisode : « S01E10 · Titre de l'épisode » (le titre est alors le nom de la série). */
+    subtitle: String? = null,
+) {
+    Surface(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        title ?: stringResource(R.string.remote_nothing_playing),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (subtitle != null) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false).padding(start = 12.dp),
+                        )
+                    }
+                }
+                if (status != null) Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 12.dp))
+            }
+            MediaProgress(positionMs, durationMs, chapters, canSeek, onSeek)
+        }
+    }
+}

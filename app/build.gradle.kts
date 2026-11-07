@@ -8,7 +8,7 @@ plugins {
 }
 
 // Identifiants de signature, hors du dépôt : `keystore.properties` à la racine en local
-// (ignoré par git), variables d'environnement ZAPETTE_* en CI. Sans eux, la config release
+// (ignoré par git), variables d'environnement KODIFIN_* en CI. Sans eux, la config release
 // est absente et assembleRelease produit un APK non signé (suffisant pour vérifier R8).
 val keystoreProperties =
     Properties().apply {
@@ -19,26 +19,26 @@ val keystoreProperties =
 fun signingValue(key: String, environmentVariable: String): String? =
     keystoreProperties.getProperty(key) ?: System.getenv(environmentVariable)
 
-val releaseStoreFile = signingValue("storeFile", "ZAPETTE_STORE_FILE")
-val releaseStorePassword = signingValue("storePassword", "ZAPETTE_STORE_PASSWORD")
-val releaseKeyAlias = signingValue("keyAlias", "ZAPETTE_KEY_ALIAS")
-val releaseKeyPassword = signingValue("keyPassword", "ZAPETTE_KEY_PASSWORD")
+val releaseStoreFile = signingValue("storeFile", "KODIFIN_STORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "KODIFIN_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "KODIFIN_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "KODIFIN_KEY_PASSWORD")
 val hasReleaseSigning =
     listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
         .all { !it.isNullOrBlank() }
 
 android {
-    namespace = "io.github.jmorille.zapette"
+    namespace = "io.github.ttbox.kodifin"
     // Compilation contre le SDK 37 (exigé par okhttp-android et mediarouter) ; la cible reste Android 16.
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "io.github.jmorille.zapette"
+        applicationId = "io.github.ttbox.kodifin"
         minSdk = 26
         targetSdk = 36
         // Le workflow de release surcharge ces valeurs depuis le tag git.
-        versionCode = System.getenv("ZAPETTE_VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = System.getenv("ZAPETTE_VERSION_NAME") ?: "0.1.0"
+        versionCode = System.getenv("KODIFIN_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("KODIFIN_VERSION_NAME") ?: "0.1.0"
     }
 
     signingConfigs {
@@ -76,6 +76,12 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    // Langue par application (Android 13+) : la liste des langues est déduite des dossiers values-*.
+    // La langue par défaut (values/) est le français, déclarée dans res/resources.properties.
+    androidResources {
+        generateLocaleConfig = true
     }
 
     lint {
@@ -139,4 +145,6 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Contrat des capacités (assertHonorsCapabilities) partagé par les modules.
+    testImplementation(testFixtures(project(":core:model")))
 }
