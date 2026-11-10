@@ -36,9 +36,10 @@ android {
         applicationId = "io.github.ttbox.kodifin"
         minSdk = 26
         targetSdk = 36
-        // Le workflow de release surcharge ces valeurs depuis le tag git.
-        versionCode = System.getenv("KODIFIN_VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = System.getenv("KODIFIN_VERSION_NAME") ?: "0.1.0"
+        // Valeurs par défaut ; le workflow de release les surcharge pour la seule variante
+        // release (androidComponents ci-dessous).
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     signingConfigs {
@@ -113,6 +114,20 @@ configurations.configureEach {
     exclude(group = "com.google.firebase", module = "firebase-encoders")
     exclude(group = "com.google.firebase", module = "firebase-encoders-json")
     exclude(group = "com.google.firebase", module = "firebase-encoders-proto")
+}
+
+// Version issue du tag git (KODIFIN_VERSION_*), appliquée à la seule variante release : les
+// tâches debug (tests, lint) gardent les mêmes entrées qu'en CI et restent reprises du cache
+// quand la release les lance dans le même appel Gradle.
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        val code = System.getenv("KODIFIN_VERSION_CODE")?.toIntOrNull()
+        val name = System.getenv("KODIFIN_VERSION_NAME")
+        variant.outputs.forEach { output ->
+            code?.let { output.versionCode.set(it) }
+            name?.let { output.versionName.set(it) }
+        }
+    }
 }
 
 dependencies {

@@ -124,26 +124,29 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Tag $TAG -> version $VERSION (versionCode $VERSION_CODE, prerelease $PRERELEASE)"
 
-      # On ne publie jamais une version qui ne passe pas les tests. L'APK debug (non
-      # obfusqué) sert au contrôle anti-pistage des classes embarquées.
-      - name: Tests unitaires, lint et APK debug
-        run: ./gradlew test testDebugUnitTest lint assembleDebug --stacktrace
-
-      - name: Aucune dépendance de pistage
-        run: bash scripts/check-no-trackers.sh
-
-      # Variante non signée (APK + AAB), construite avant la restauration du keystore :
-      # aucun secret n'est accessible à cette étape. Seule build release : la signature se
-      # fait ensuite sur ces mêmes fichiers, sans relancer R8 (~3 min économisées). Utile
-      # aussi pour une re-signature par un tiers (F-Droid, magasin, clé propre).
-      - name: Construire l'APK et l'AAB non signés
+      # Un seul appel Gradle (une configuration, un démon) : tests, lint, APK debug et variante
+      # release non signée (APK + AAB). Sans --continue, un test ou un lint en échec arrête le
+      # build : aucun artefact n'est alors publié. La version du tag ne s'applique qu'à la
+      # variante release (app/build.gradle.kts) : les tâches debug restent reprises du cache.
+      # Construit avant la restauration du keystore : aucun secret n'est accessible ici. Seule
+      # build release : la signature se fait ensuite sur ces mêmes fichiers, sans relancer R8.
+      # La variante non signée sert aussi à une re-signature par un tiers (F-Droid, magasin).
+      - name: Tests, lint, APK debug et artefacts release non signés
         env:
           KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
           KODIFIN_VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: ./gradlew test testDebugUnitTest lint assembleDebug :app:assembleRelease :app:bundleRelease --stacktrace
+
+      # L'APK debug (non obfusqué) sert au contrôle anti-pistage des classes embarquées.
+      - name: Aucune dépendance de pistage
+        run: bash scripts/check-no-trackers.sh
+
+      - name: Contrôler et copier les artefacts non signés
+        env:
           VERSION: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |
           set -euo pipefail
-          ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
           BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           apk=app/build/outputs/apk/release/app-release-unsigned.apk
           aab=app/build/outputs/bundle/release/app-release.aab
@@ -151,8 +154,13 @@ jobs:
           # Garde-fou : ces artefacts ne doivent porter aucune signature.
           if "$BUILD_TOOLS/apksigner" verify "$apk" >/dev/null 2>&1; then echo "::error::$apk est signé"; exit 1; fi
           if keytool -printcert -jarfile "$aab" 2>/dev/null | grep -q 'SHA256:'; then echo "::error::$aab est signé"; exit 1; fi
-          # apksigner n'aligne pas : la sortie d'AGP doit déjà l'être.
-          "$BUILD_TOOLS/zipalign" -c 4 "$apk"
+          # apksigner n'aligne pas : la sortie d'AGP doit déjà l'être (4 octets, et pages de
+          # 16 Ko pour les bibliothèques natives non compressées, exigées par Android 15+).
+          "$BUILD_TOOLS/zipalign" -c -P 16 4 "$apk"
+          # La version du tag doit bien être portée par l'APK (surcharge limitée à la release).
+          badging="$("$BUILD_TOOLS/aapt2" dump badging "$apk")"
+          grep -q "versionCode='$VERSION_CODE' versionName='$VERSION'" <<< "$badging" \
+            || { echo "::error::Version inattendue dans $apk"; grep -m1 '^package:' <<< "$badging"; exit 1; }
           mkdir -p dist
           cp "$apk" "dist/kodifin-$VERSION-unsigned.apk"
           cp "$aab" "dist/kodifin-$VERSION-unsigned.aab"
