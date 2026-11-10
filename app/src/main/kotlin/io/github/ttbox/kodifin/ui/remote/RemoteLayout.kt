@@ -62,18 +62,25 @@ object RemoteLayouts {
     /**
      * Onglets du volet latéral. En portrait, la colonne de gauche porte déjà le bandeau et
      * le transport : « Lecture en cours » n'y figure que s'il a des détails (pistes, modes…).
-     * En paysage, le volet de gauche affiche toujours ces détails.
+     * En paysage, la colonne de gauche affiche ces détails, sauf s'ils ont été déplacés dans
+     * le volet ([detailsInPane]) : ils y deviennent alors l'onglet « Lecture ».
      */
-    fun sideTabs(layout: RemoteLayout, features: RemoteFeatures): List<RemoteTab> = buildList {
-        if (layout == RemoteLayout.TABLET_PORTRAIT && features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
+    fun sideTabs(layout: RemoteLayout, features: RemoteFeatures, detailsInPane: Boolean = false): List<RemoteTab> = buildList {
+        val details = layout == RemoteLayout.TABLET_PORTRAIT || (layout == RemoteLayout.TABLET_LANDSCAPE && detailsInPane)
+        if (details && features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
         if (features.queue || features.series) add(RemoteTab.QUEUE)
         if (features.library) add(RemoteTab.LIBRARY)
     }
 
     /** Volets réellement affichés, transmis au ViewModel pour ne charger que ceux-là. */
-    fun visiblePanels(layout: RemoteLayout, selected: RemoteTab?, features: RemoteFeatures): Set<RemotePanel> =
+    fun visiblePanels(
+        layout: RemoteLayout,
+        selected: RemoteTab?,
+        features: RemoteFeatures,
+        detailsInPane: Boolean = false,
+    ): Set<RemotePanel> =
         buildSet {
             selected?.panel?.let(::add)
-            if (layout == RemoteLayout.TABLET_LANDSCAPE && features.hasPlaybackDetails) add(RemotePanel.DETAILS)
+            if (layout == RemoteLayout.TABLET_LANDSCAPE && !detailsInPane && features.hasPlaybackDetails) add(RemotePanel.DETAILS)
         }
 }

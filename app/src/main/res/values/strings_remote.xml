@@ -41,6 +41,8 @@
     <string name="remote_pane_collapse">Réduire le volet</string>
     <string name="remote_pane_expand">Agrandir le volet en plein écran</string>
     <string name="remote_pane_hide">Masquer la file et les médias</string>
+    <string name="remote_details_to_pane">Masquer et placer dans le volet de droite</string>
+    <string name="remote_details_to_left">Remettre la lecture en cours à gauche</string>
     <string name="remote_collapse_show">Afficher %1$s</string>
     <string name="remote_collapse_hide">Masquer %1$s</string>
     <string name="remote_more_commands">Plus de commandes</string>

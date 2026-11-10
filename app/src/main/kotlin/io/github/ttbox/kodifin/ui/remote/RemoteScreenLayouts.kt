@@ -30,6 +30,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -76,7 +78,7 @@ internal val RemoteTab.icon: ImageVector
 /** Signale au ViewModel les volets visibles (chargement à l'ouverture) et gère le retour en bibliothèque. */
 @Composable
 private fun PanelsEffect(content: RemoteContent, layout: RemoteLayout, selected: RemoteTab?) {
-    val visible = RemoteLayouts.visiblePanels(layout, selected, content.features)
+    val visible = RemoteLayouts.visiblePanels(layout, selected, content.features, PanePreferences.detailsInPane)
     LaunchedEffect(visible, content.state.connected) { content.vm.setVisiblePanels(visible) }
     BackHandler(enabled = RemotePanel.LIBRARY in visible && content.state.library.path.isNotEmpty()) {
         content.vm.library.back()
@@ -186,13 +188,20 @@ internal fun TabletPortraitLayout(content: RemoteContent) {
 /** Tablette en paysage : lecture en cours et pistes | pavé directionnel | file d'attente ou bibliothèque. */
 @Composable
 internal fun TabletLandscapeLayout(content: RemoteContent) {
-    val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, content.features)
+    val detailsInPane = PanePreferences.detailsInPane
+    val tabs = RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, content.features, detailsInPane)
     var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
     val hidden = PanePreferences.hidden && tabs.isNotEmpty()
     val selected = tabs.getOrNull(selectedIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)))
     var expanded by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = expanded && tabs.isNotEmpty()) { expanded = false }
     PanelsEffect(content, RemoteLayout.TABLET_LANDSCAPE, selected.takeUnless { hidden })
+    // L'onglet « Lecture » (en tête) quitte le volet : la sélection reste sur le même onglet.
+    val detailsBack: () -> Unit = {
+        val keep = selected?.takeUnless { it == RemoteTab.NOW_PLAYING }
+        PanePreferences.detailsInPane = false
+        selectedIndex = keep?.let { RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, content.features).indexOf(it) }?.coerceAtLeast(0) ?: 0
+    }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     ProgressFor(content)
     if (expanded && !hidden && tabs.isNotEmpty()) {
@@ -201,39 +210,56 @@ internal fun TabletLandscapeLayout(content: RemoteContent) {
             if (content.playbackRows) Box(Modifier.weight(1f)) { TransportFor(content) }
             Box(Modifier.weight(1f)) { VolumeFor(content) }
         }
-        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true, onHide = { expanded = false; PanePreferences.hidden = true }) { expanded = false }
+        SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxWidth(), expanded = true, onHide = { expanded = false; PanePreferences.hidden = true }, onDetailsBack = detailsBack) { expanded = false }
         return@Column
     }
     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column(
+        val leftDetails = !detailsInPane && content.features.hasPlaybackDetails
+        if (!leftDetails) {
+            // Colonne libérée : volume vertical sur toute la hauteur, transport en grande grille à côté.
+            Row(Modifier.weight(1f).fillMaxHeight(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                VolumeColumn(
+                    content.keys, content.state.capabilities, content.state.playback?.volumePercent, content.actions,
+                    Modifier.fillMaxHeight().padding(vertical = 8.dp),
+                )
+                if (content.playbackRows) {
+                    TransportGrid(
+                        content.keys, content.state.playback?.isPlaying == true, content.features.seekStep, content.actions,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+            }
+        } else Column(
             Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (content.playbackRows) TransportFor(content)
             VolumeFor(content)
-            PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+            run {
+                // Détails masquables : ils passent alors dans le volet de droite (onglet « Lecture »).
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
+                    val moveLabel = stringResource(R.string.remote_details_to_pane)
+                    WithTooltip(moveLabel) {
+                        IconButton(onClick = {
+                            PanePreferences.detailsInPane = true
+                            PanePreferences.hidden = false
+                            selectedIndex = 0
+                        }) { Icon(Icons.Filled.VisibilityOff, contentDescription = moveLabel) }
+                    }
+                }
+                PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+            }
         }
         Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             NavigationFor(content, Modifier.weight(1f).fillMaxWidth())
-            val extra = content.features.uiCommands - setOf(UiCommand.OSD, UiCommand.CONTEXT_MENU)
-            if (extra.isNotEmpty()) {
-                CollapsibleCard(
-                    stringResource(R.string.remote_more_commands),
-                    summary = pluralStringResource(R.plurals.remote_device_commands_count, extra.size, extra.size),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    UiCommandChips(
-                        extra, content.actions.uiCommand, Modifier.fillMaxWidth(),
-                        fullscreen = content.state.fullscreen,
-                        onFullscreen = content.vm::setFullscreen.takeIf { content.features.fullscreen },
-                    )
-                }
-            }
+            // Déplacées avec les détails dans l'onglet « Lecture » du volet de droite.
+            if (!detailsInPane) MoreCommandsCard(content)
         }
         if (hidden) {
             PaneRail(tabs) { selectedIndex = tabs.indexOf(it); PanePreferences.hidden = false }
         } else if (tabs.isNotEmpty()) {
-            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight(), onHide = { PanePreferences.hidden = true }) { expanded = true }
+            SidePane(content, tabs, selected, { selectedIndex = tabs.indexOf(it) }, Modifier.weight(1f).fillMaxHeight(), onHide = { PanePreferences.hidden = true }, onDetailsBack = detailsBack) { expanded = true }
         }
     }
     }
@@ -245,6 +271,9 @@ internal fun TabletLandscapeLayout(content: RemoteContent) {
  */
 private object PanePreferences {
     var hidden by mutableStateOf(false)
+
+    /** Paysage : détails de lecture déplacés de la colonne de gauche vers le volet de droite. */
+    var detailsInPane by mutableStateOf(false)
 }
 
 /** Volet masqué : une colonne d'icônes, une par onglet, pour le rouvrir directement. */
@@ -280,19 +309,27 @@ private fun SidePane(
     expanded: Boolean = false,
     /** Masque le volet (la télécommande reprend la place). */
     onHide: () -> Unit,
+    /** Paysage : remet l'onglet « Lecture » dans la colonne de gauche ; `null` : sans objet. */
+    onDetailsBack: (() -> Unit)? = null,
     onToggleExpand: () -> Unit,
 ) {
     Surface(modifier, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.88f)) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (tabs.size > 1) {
+                    // Volet étroit avec trois onglets ou plus : icônes seules (libellés tronqués sinon).
+                    val iconsOnly = !expanded && tabs.size >= 3
                     PrimaryTabRow(selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0), modifier = Modifier.weight(1f)) {
                         tabs.forEach { tab ->
+                            val label = stringResource(tab.labelRes)
                             Tab(
                                 selected = tab == selected,
                                 onClick = { onSelect(tab) },
-                                text = { Text(stringResource(tab.shortRes), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                icon = { Icon(tab.icon, contentDescription = stringResource(tab.labelRes)) },
+                                text = if (iconsOnly) null else ({ Text(stringResource(tab.shortRes), maxLines = 1, overflow = TextOverflow.Ellipsis) }),
+                                icon = {
+                                    if (iconsOnly) WithTooltip(label) { Icon(tab.icon, contentDescription = label) }
+                                    else Icon(tab.icon, contentDescription = label)
+                                },
                             )
                         }
                     }
@@ -302,6 +339,14 @@ private fun SidePane(
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f).padding(start = 16.dp),
                     )
+                }
+                if (onDetailsBack != null && selected == RemoteTab.NOW_PLAYING) {
+                    val backLabel = stringResource(R.string.remote_details_to_left)
+                    WithTooltip(backLabel) {
+                        IconButton(onClick = onDetailsBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = backLabel)
+                        }
+                    }
                 }
                 val expandLabel = stringResource(if (expanded) R.string.remote_pane_collapse else R.string.remote_pane_expand)
                 WithTooltip(expandLabel) {
@@ -318,8 +363,13 @@ private fun SidePane(
             }
             Box(Modifier.weight(1f)) {
                 when (selected) {
-                    RemoteTab.NOW_PLAYING -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    RemoteTab.NOW_PLAYING -> Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                         PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+                        // Paysage, détails déplacés : « Plus de commandes » les accompagne.
+                        if (onDetailsBack != null) MoreCommandsCard(content)
                     }
                     RemoteTab.QUEUE -> QueueContent(content)
                     RemoteTab.LIBRARY -> LibraryContent(content)
@@ -331,6 +381,24 @@ private fun SidePane(
 }
 
 // --- Briques communes -------------------------------------------------------------------------
+
+/** Carte dépliante « Plus de commandes » (commandes d'interface hors OSD et menu contextuel). */
+@Composable
+private fun MoreCommandsCard(content: RemoteContent) {
+    val extra = content.features.uiCommands - setOf(UiCommand.OSD, UiCommand.CONTEXT_MENU)
+    if (extra.isEmpty()) return
+    CollapsibleCard(
+        stringResource(R.string.remote_more_commands),
+        summary = pluralStringResource(R.plurals.remote_device_commands_count, extra.size, extra.size),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        UiCommandChips(
+            extra, content.actions.uiCommand, Modifier.fillMaxWidth(),
+            fullscreen = content.state.fullscreen,
+            onFullscreen = content.vm::setFullscreen.takeIf { content.features.fullscreen },
+        )
+    }
+}
 
 @Composable
 private fun BannerFor(content: RemoteContent) {

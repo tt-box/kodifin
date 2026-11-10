@@ -461,5 +461,18 @@ class RemoteViewModelAdvancedTest {
             RemoteLayouts.visiblePanels(RemoteLayout.TABLET_LANDSCAPE, RemoteTab.QUEUE, full),
         )
         assertEquals(emptySet<RemotePanel>(), RemoteLayouts.visiblePanels(RemoteLayout.PHONE, RemoteTab.REMOTE, full))
+        // Paysage, détails déplacés dans le volet de droite : onglet « Lecture » en tête.
+        assertEquals(
+            listOf(RemoteTab.NOW_PLAYING, RemoteTab.QUEUE, RemoteTab.LIBRARY),
+            RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, full, detailsInPane = true),
+        )
+        assertEquals(
+            setOf(RemotePanel.QUEUE),
+            RemoteLayouts.visiblePanels(RemoteLayout.TABLET_LANDSCAPE, RemoteTab.QUEUE, full, detailsInPane = true),
+        )
+        assertEquals(
+            setOf(RemotePanel.DETAILS),
+            RemoteLayouts.visiblePanels(RemoteLayout.TABLET_LANDSCAPE, RemoteTab.NOW_PLAYING, full, detailsInPane = true),
+        )
     }
 }

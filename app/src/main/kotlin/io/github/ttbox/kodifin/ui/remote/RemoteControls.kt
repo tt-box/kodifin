@@ -77,6 +77,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.res.stringResource
 import io.github.ttbox.kodifin.R
 import kotlinx.coroutines.delay
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import kotlin.math.roundToInt
 
 /** Actions de l'écran, regroupées pour ne pas propager le ViewModel dans chaque composable. */
@@ -309,6 +313,44 @@ private fun DPadArrow(
 // --- Transport et volume ----------------------------------------------------------------------
 
 /**
+ * Transport en grille (colonne de gauche libérée, tablette en paysage) : précédent,
+ * lecture/pause en grand, suivant ; puis −30 s (ou retour rapide), stop, +30 s (ou avance).
+ */
+@Composable
+fun TransportGrid(
+    keys: Set<RemoteKey>,
+    isPlaying: Boolean,
+    seekStep: Boolean,
+    actions: RemoteActions,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            KeyButton(Icons.Filled.SkipPrevious, stringResource(R.string.remote_key_previous), RemoteKey.PREVIOUS, keys, actions.press, size = 64.dp)
+            KeyButton(
+                if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                stringResource(if (isPlaying) R.string.remote_key_pause else R.string.remote_key_play),
+                RemoteKey.PLAY_PAUSE, keys, actions.press, size = 88.dp, emphasized = true,
+            )
+            KeyButton(Icons.Filled.SkipNext, stringResource(R.string.remote_key_next), RemoteKey.NEXT, keys, actions.press, size = 64.dp)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            if (seekStep) {
+                RemoteIconButton(Icons.Filled.Replay30, stringResource(R.string.remote_key_back_30), { actions.seekBy(-SEEK_STEP_MS) }, size = 64.dp)
+            } else {
+                KeyButton(Icons.Filled.FastRewind, stringResource(R.string.remote_key_rewind), RemoteKey.REWIND, keys, actions.press, size = 64.dp)
+            }
+            KeyButton(Icons.Filled.Stop, stringResource(R.string.remote_key_stop), RemoteKey.STOP, keys, actions.press, size = 64.dp)
+            if (seekStep) {
+                RemoteIconButton(Icons.Filled.Forward30, stringResource(R.string.remote_key_forward_30), { actions.seekBy(SEEK_STEP_MS) }, size = 64.dp)
+            } else {
+                KeyButton(Icons.Filled.FastForward, stringResource(R.string.remote_key_fast_forward), RemoteKey.FAST_FORWARD, keys, actions.press, size = 64.dp)
+            }
+        }
+    }
+}
+
+/**
  * Précédent, −30 s, lecture/pause, +30 s, suivant, stop. Sans saut relatif, −30/+30 cèdent la
  * place au retour / à l'avance rapides de l'appareil.
  */
@@ -375,8 +417,55 @@ fun VolumeRow(
     }
 }
 
+/**
+ * Volume en colonne (tablette en paysage, colonne de gauche libérée) : volume + en haut,
+ * curseur vertical sur toute la hauteur, volume −, pourcentage et muet en bas.
+ */
 @Composable
-private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun VolumeColumn(
+    keys: Set<RemoteKey>,
+    capabilities: Set<Capability>,
+    volumePercent: Int?,
+    actions: RemoteActions,
+    modifier: Modifier = Modifier,
+) {
+    val slider = Capability.VOLUME in capabilities && volumePercent != null
+    val anyKey = keys.any { it == RemoteKey.VOLUME_UP || it == RemoteKey.VOLUME_DOWN || it == RemoteKey.MUTE }
+    if (!slider && !anyKey) return
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (RemoteKey.VOLUME_UP in keys) {
+            KeyButton(Icons.AutoMirrored.Filled.VolumeUp, stringResource(R.string.remote_key_volume_up), RemoteKey.VOLUME_UP, keys, actions.press, size = 48.dp)
+        }
+        if (slider) VolumeSlider(volumePercent, actions.setVolume, Modifier.weight(1f), vertical = true) else Spacer(Modifier.weight(1f))
+        if (RemoteKey.VOLUME_DOWN in keys) {
+            KeyButton(Icons.AutoMirrored.Filled.VolumeDown, stringResource(R.string.remote_key_volume_down), RemoteKey.VOLUME_DOWN, keys, actions.press, size = 48.dp)
+        }
+        if (RemoteKey.MUTE in keys) {
+            KeyButton(Icons.AutoMirrored.Filled.VolumeOff, stringResource(R.string.remote_key_mute), RemoteKey.MUTE, keys, actions.press, size = 48.dp)
+        }
+    }
+}
+
+/** Fait pivoter un composant horizontal d'un quart de tour (bas → haut), dimensions échangées. */
+private fun Modifier.verticalRotation(): Modifier = this
+    .graphicsLayer {
+        rotationZ = 270f
+        transformOrigin = TransformOrigin(0f, 0f)
+    }
+    .layout { measurable, constraints ->
+        val placeable = measurable.measure(
+            Constraints(
+                minWidth = constraints.minHeight,
+                maxWidth = constraints.maxHeight,
+                minHeight = constraints.minWidth,
+                maxHeight = constraints.maxWidth,
+            ),
+        )
+        layout(placeable.height, placeable.width) { placeable.place(-placeable.width, 0) }
+    }
+
+@Composable
+private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier, vertical: Boolean = false) {
     // Pas de remember(volume) : une valeur reçue pendant le glissement réinitialisait le curseur.
     val slider = remember { RemoteSliderState(tolerance = 1f) }
     val remote = volume.toFloat()
@@ -385,21 +474,34 @@ private fun VolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifie
     val shown = slider.displayed(remote).coerceIn(0f, 100f)
     val percent = shown.roundToInt()
     val description = stringResource(R.string.remote_volume_description, percent)
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Slider(
-            value = shown,
-            onValueChange = slider::onDrag,
-            onValueChangeFinished = { slider.onDragFinished()?.let { onChange(it.roundToInt()) } },
-            valueRange = 0f..100f,
-            modifier = Modifier.weight(1f).semantics { contentDescription = description },
-        )
+    val label = @Composable { padding: Modifier ->
         Text(
             stringResource(R.string.remote_volume_percent, percent),
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             softWrap = false,
-            modifier = Modifier.padding(start = 8.dp).widthIn(min = 52.dp),
+            modifier = padding,
         )
+    }
+    val bar = @Composable { barModifier: Modifier ->
+        Slider(
+            value = shown,
+            onValueChange = slider::onDrag,
+            onValueChangeFinished = { slider.onDragFinished()?.let { onChange(it.roundToInt()) } },
+            valueRange = 0f..100f,
+            modifier = barModifier.semantics { contentDescription = description },
+        )
+    }
+    if (vertical) {
+        Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+            label(Modifier.padding(bottom = 4.dp))
+            bar(Modifier.weight(1f).verticalRotation())
+        }
+    } else {
+        Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+            bar(Modifier.weight(1f))
+            label(Modifier.padding(start = 8.dp).widthIn(min = 52.dp))
+        }
     }
 }
 
