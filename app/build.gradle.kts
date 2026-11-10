@@ -88,6 +88,9 @@ android {
         abortOnError = true
         warningsAsErrors = false
         checkDependencies = true
+        // Sources de test non analysées : supprime les tâches lintAnalyze*UnitTest/AndroidTest
+        // (30 à 60 s en CI quand le cache est invalidé) ; les tests ne sont pas livrés.
+        ignoreTestSources = true
         // Les mises à jour de dépendances sont gérées par Dependabot.
         disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
         // Cible Android 16 (API 36) volontaire.

@@ -17,6 +17,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    // Comme :app (qui l'analyse via checkDependencies) : sources de test non analysées.
+    lint { ignoreTestSources = true }
 }
 
 kotlin {

@@ -1,7 +1,9 @@
 name: Release
 
-# Construit l'APK et l'AAB signés (clé ECDSA P-256) ainsi que leur variante non signée,
-# et les publie sur une release GitHub.
+# Construit l'APK et l'AAB non signés (une seule passe R8), les signe hors de Gradle avec la
+# clé d'envoi (apksigner / jarsigner) et publie les deux variantes sur une release GitHub.
+# Les artefacts signés sont donc exactement les artefacts non signés publiés, plus une
+# signature (vérifiable par un tiers, utile à la reproductibilité).
 #
 # Déclencheurs :
 # - `push` d'un tag (`git tag v1.2.3 && git push origin v1.2.3`, « v » facultatif,
@@ -82,6 +84,8 @@ jobs:
         with:
           # Pas d'écriture de cache depuis une release : seul main alimente le cache.
           cache-read-only: true
+          # Permet de relire le cache de configuration (chiffré) sauvegardé par main.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Déterminer la version
         id: version
@@ -129,9 +133,9 @@ jobs:
         run: bash scripts/check-no-trackers.sh
 
       # Variante non signée (APK + AAB), construite avant la restauration du keystore :
-      # aucun secret n'est accessible à cette étape. Utile pour une re-signature par un
-      # tiers (F-Droid, magasin d'applications, clé propre) ou une vérification de
-      # reproductibilité.
+      # aucun secret n'est accessible à cette étape. Seule build release : la signature se
+      # fait ensuite sur ces mêmes fichiers, sans relancer R8 (~3 min économisées). Utile
+      # aussi pour une re-signature par un tiers (F-Droid, magasin, clé propre).
       - name: Construire l'APK et l'AAB non signés
         env:
           KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
@@ -140,19 +144,18 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
-          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           apk=app/build/outputs/apk/release/app-release-unsigned.apk
           aab=app/build/outputs/bundle/release/app-release.aab
           [ -f "$apk" ] && [ -f "$aab" ] || { echo "::error::Artefacts non signés introuvables"; exit 1; }
           # Garde-fou : ces artefacts ne doivent porter aucune signature.
-          if "$APKSIGNER" verify "$apk" >/dev/null 2>&1; then echo "::error::$apk est signé"; exit 1; fi
+          if "$BUILD_TOOLS/apksigner" verify "$apk" >/dev/null 2>&1; then echo "::error::$apk est signé"; exit 1; fi
           if keytool -printcert -jarfile "$aab" 2>/dev/null | grep -q 'SHA256:'; then echo "::error::$aab est signé"; exit 1; fi
+          # apksigner n'aligne pas : la sortie d'AGP doit déjà l'être.
+          "$BUILD_TOOLS/zipalign" -c 4 "$apk"
           mkdir -p dist
           cp "$apk" "dist/kodifin-$VERSION-unsigned.apk"
           cp "$aab" "dist/kodifin-$VERSION-unsigned.aab"
-          # Les sorties signées sont produites au même endroit : on repart d'un dossier vide
-          # pour que la vérification de signature ne voie que les artefacts signés.
-          rm -rf app/build/outputs/apk/release app/build/outputs/bundle/release
 
       - name: Restaurer le keystore
         id: keystore
@@ -162,50 +165,64 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.p12"
           echo "path=$RUNNER_TEMP/release.p12" >> "$GITHUB_OUTPUT"
 
-      - name: Construire l'APK et l'AAB signés
+      # Mêmes schémas que la config de signature Gradle : APK v2 + v3 + v4 (sans v1, minSdk 26),
+      # AAB signé JAR (seul format accepté par Google Play pour la clé d'envoi).
+      # Mots de passe passés par variables d'environnement, jamais en ligne de commande.
+      - name: Signer l'APK et l'AAB
         env:
-          KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
-          KODIFIN_VERSION_CODE: ${{ steps.version.outputs.code }}
-          KODIFIN_STORE_FILE: ${{ steps.keystore.outputs.path }}
-          KODIFIN_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KODIFIN_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KODIFIN_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
+          VERSION: ${{ steps.version.outputs.name }}
+          KEYSTORE: ${{ steps.keystore.outputs.path }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          out="$RUNNER_TEMP/signed"
+          rm -rf "$out" && mkdir -p "$out"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --v1-signing-enabled false --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled true \
+            --out "$out/kodifin-$VERSION.apk" "dist/kodifin-$VERSION-unsigned.apk"
+          jarsigner -keystore "$KEYSTORE" -storepass:env KS_PASS -keypass:env KEY_PASS \
+            -signedjar "$out/kodifin-$VERSION.aab" "dist/kodifin-$VERSION-unsigned.aab" "$KEY_ALIAS"
 
       - name: Effacer le keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
 
-      # Contrôle indépendant de Gradle : signature valide et certificat épinglé.
+      # Contrôle indépendant : signature valide et certificat épinglé.
       - name: Vérifier la signature des artefacts
+        env:
+          VERSION: ${{ steps.version.outputs.name }}
         run: |
           set -euo pipefail
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
-          shopt -s nullglob
-          apks=(app/build/outputs/apk/release/*.apk)
-          aabs=(app/build/outputs/bundle/release/*.aab)
-          [ ${#apks[@]} -gt 0 ] && [ ${#aabs[@]} -gt 0 ] || { echo "::error::Artefacts introuvables"; exit 1; }
-          for apk in "${apks[@]}"; do
-            case "$apk" in *-unsigned.apk) echo "::error::APK non signé : $apk"; exit 1 ;; esac
-            out="$("$APKSIGNER" verify --verbose --print-certs "$apk")"
-            echo "$out" | grep -E "^Verified using|certificate DN|certificate SHA-256|key algorithm|key size"
-            actual="$(echo "$out" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')"
-            [ "$actual" = "$EXPECTED_CERT_SHA256" ] || { echo "::error::$apk signé par $actual, attendu $EXPECTED_CERT_SHA256"; exit 1; }
-          done
-          for aab in "${aabs[@]}"; do
-            actual="$(keytool -printcert -jarfile "$aab" | grep -m1 'SHA256:' | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')"
-            [ "$actual" = "$EXPECTED_CERT_SHA256" ] || { echo "::error::$aab signé par '$actual', attendu $EXPECTED_CERT_SHA256"; exit 1; }
-            echo "$aab : certificat $actual"
-          done
+          apk="$RUNNER_TEMP/signed/kodifin-$VERSION.apk"
+          aab="$RUNNER_TEMP/signed/kodifin-$VERSION.aab"
+          [ -f "$apk" ] && [ -f "$aab" ] || { echo "::error::Artefacts signés introuvables"; exit 1; }
+          out="$("$APKSIGNER" verify --verbose --print-certs "$apk")"
+          echo "$out" | grep -E "^Verified using|certificate DN|certificate SHA-256|key algorithm|key size"
+          grep -q "^Verified using v2 scheme (APK Signature Scheme v2): true" <<< "$out" \
+            || { echo "::error::$apk : signature v2 absente"; exit 1; }
+          actual="$(echo "$out" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')"
+          [ "$actual" = "$EXPECTED_CERT_SHA256" ] || { echo "::error::$apk signé par $actual, attendu $EXPECTED_CERT_SHA256"; exit 1; }
+          # Intégrité de la signature JAR (le certificat auto-signé n'est pas une erreur ici :
+          # c'est l'empreinte épinglée ci-dessous qui fait foi).
+          verified="$(jarsigner -verify "$aab")"
+          grep -q "^jar verified" <<< "$verified" || { echo "::error::$aab : signature JAR invalide"; exit 1; }
+          actual="$(keytool -printcert -jarfile "$aab" | grep -m1 'SHA256:' | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')"
+          [ "$actual" = "$EXPECTED_CERT_SHA256" ] || { echo "::error::$aab signé par '$actual', attendu $EXPECTED_CERT_SHA256"; exit 1; }
+          echo "$aab : certificat $actual"
 
       - name: Préparer les artefacts
         env:
           VERSION: ${{ steps.version.outputs.name }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/kodifin-$VERSION.apk"
-          cp app/build/outputs/bundle/release/app-release.aab "dist/kodifin-$VERSION.aab"
+          cp "$RUNNER_TEMP/signed/kodifin-$VERSION.apk" "$RUNNER_TEMP/signed/kodifin-$VERSION.aab" dist/
           cd dist && sha256sum ./* | sed 's# \./# #' > "kodifin-$VERSION.sha256" && cat "kodifin-$VERSION.sha256"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

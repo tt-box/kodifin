@@ -23,6 +23,9 @@ concurrency:
 jobs:
   build:
     name: Build, tests unitaires, lint
+    # Le cron quotidien ne sert qu'au scan CVE et au graphe de dépendances : le code n'a pas
+    # changé depuis le dernier push, inutile de tout reconstruire.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -37,8 +40,12 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      # Valide aussi la somme de contrôle du gradle-wrapper.jar.
+      # Valide aussi la somme de contrôle du gradle-wrapper.jar. La clé chiffre le cache de
+      # configuration Gradle (qui peut contenir des secrets) : sans elle (PR de fork ou
+      # Dependabot), il n'est simplement pas sauvegardé.
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       # koverVerify : échoue sous 80 % de couverture des lignes (seuil du build.gradle.kts racine).
       - name: Tests unitaires, lint, assemblage et seuil de couverture
@@ -145,6 +152,8 @@ jobs:
           java-version: "25"
 
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Inventaire CycloneDX (SBOM)
         run: ./gradlew cyclonedxBom
@@ -193,4 +202,5 @@ jobs:
       # ils ne sont pas livrés dans l'APK et sont mis à jour via Dependabot de toute façon).
       - uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
         with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           dependency-graph-include-configurations: '.*[Rr]untimeClasspath'
