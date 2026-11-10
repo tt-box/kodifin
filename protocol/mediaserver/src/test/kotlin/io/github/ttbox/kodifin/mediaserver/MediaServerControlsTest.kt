@@ -413,6 +413,42 @@ class MediaServerControlsTest {
     }
 
     @Test
+    fun `stopped player with a queue is relaunched by play next and previous`() = runTest {
+        val c = controller()
+        val queue = """"NowPlayingQueue":[{"Id":"a","PlaylistItemId":"p1"},{"Id":"b","PlaylistItemId":"p2"},{"Id":"c","PlaylistItemId":"p3"}]"""
+        // Lecteur arrêté sur « b » : plus de NowPlayingItem, file et position conservées.
+        json("[" + session(extra = """$queue,"PlaylistItemId":"p2"""") + "]")
+        c.targets()
+        server.next()
+
+        for ((key, index) in listOf(RemoteKey.NEXT to "2", RemoteKey.PREVIOUS to "0", RemoteKey.PLAY_PAUSE to "1")) {
+            noContent()
+            c.send(key)
+            val play = server.next()
+            assertEquals("/Sessions/s1/Playing", play.path())
+            assertEquals("PlayNow", play.url.queryParameter("playCommand"))
+            assertEquals("a,b,c", play.url.queryParameter("itemIds"))
+            assertEquals(index, play.url.queryParameter("startIndex"))
+        }
+
+        // Dernier élément : « suivant » reste une commande NextTrack ordinaire.
+        json("[" + session(extra = """$queue,"PlaylistItemId":"p3"""") + "]")
+        c.targets()
+        server.next()
+        noContent()
+        c.send(RemoteKey.NEXT)
+        assertEquals("/Sessions/s1/Playing/NextTrack", server.next().path())
+
+        // En lecture : commandes de lecture habituelles.
+        json("[" + session(nowPlaying = """{"Id":"b"}""", extra = """$queue,"PlaylistItemId":"p2"""") + "]")
+        c.targets()
+        server.next()
+        noContent()
+        c.send(RemoteKey.NEXT)
+        assertEquals("/Sessions/s1/Playing/NextTrack", server.next().path())
+    }
+
+    @Test
     fun `chapters seek to next and previous start`() = runTest {
         val c = controller()
         val chapters = """"Chapters":[{"StartPositionTicks":0},{"StartPositionTicks":600000000},{"StartPositionTicks":1200000000}]"""

@@ -335,6 +335,7 @@ class MediaServerController(
 
     override suspend fun send(key: RemoteKey) {
         requireKey(key)
+        if (resumeIdleQueue(key)) return
         withSession { id ->
             when (key) {
                 RemoteKey.UP -> client.generalCommand(id, "MoveUp")
@@ -357,6 +358,31 @@ class MediaServerController(
                 RemoteKey.FAST_FORWARD -> client.playstate(id, "FastForward")
             }
         }
+    }
+
+    /**
+     * Lecteur arrêté (fin d'épisode, Stop) mais file conservée : le client (Jellyfin Web…)
+     * n'a plus de lecteur actif et ignore `PlayPause`/`NextTrack`/`PreviousTrack`. La file est
+     * alors relancée (`PlayNow` + `startIndex`) sur l'élément courant, suivant ou précédent.
+     * S'appuie sur le dernier état connu de la session (rafraîchi par [playbackState]).
+     * `true` si la commande a été traitée ainsi.
+     */
+    private suspend fun resumeIdleQueue(key: RemoteKey): Boolean {
+        val offset = when (key) {
+            RemoteKey.PLAY_PAUSE -> 0
+            RemoteKey.NEXT -> 1
+            RemoteKey.PREVIOUS -> -1
+            else -> return false
+        }
+        val s = lastSession?.takeIf { it.id == sessionId && it.nowPlaying == null } ?: return false
+        val queue = s.nowPlayingQueue.orEmpty().filter { it.id.isNotBlank() }
+        val current = s.playlistItemId?.let { pid -> queue.indexOfFirst { it.playlistItemId == pid } }?.takeIf { it >= 0 }
+            ?: return false
+        val index = (current + offset).coerceIn(0, queue.lastIndex)
+        // Après le dernier élément, « suivant » ne relance pas la fin de la file.
+        if (offset > 0 && current == queue.lastIndex) return false
+        withSession { client.play(it, "PlayNow", queue.map { q -> q.id }, startIndex = index) }
+        return true
     }
 
     override suspend fun setVolume(percent: Int) {
