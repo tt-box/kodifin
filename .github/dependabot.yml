@@ -5,7 +5,7 @@ updates:
   - package-ecosystem: gradle
     directory: "/"
     schedule:
-      interval: daily
+      interval: monthly
       time: "04:00"
       timezone: Europe/Paris
     # Délai avant de proposer une version tout juste publiée : les PR étant fusionnées
@@ -30,13 +30,15 @@ updates:
         patterns: ["com.google.android.gms*"]
       test:
         patterns: ["junit*", "app.cash.turbine*"]
+      # Tout le reste en une seule PR mensuelle.
+      others:
+        patterns: ["*"]
 
   # Versions des actions GitHub utilisées par la CI (épinglées par SHA).
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       timezone: Europe/Paris
     cooldown:
       default-days: 3
