@@ -13,7 +13,7 @@ buildscript {
                 "org.bouncycastle:bcpkix-jdk18on:1.86",
                 "org.bouncycastle:bcutil-jdk18on:1.86",
                 "com.google.guava:guava:33.8.0-jre",
-                "com.fasterxml.jackson.core:jackson-core:2.22.4",
+                "com.fasterxml.jackson.core:jackson-core:2.23.0",
                 "com.fasterxml.jackson.core:jackson-databind:2.22.4",
                 "org.bitbucket.b_c:jose4j:0.9.7",
                 "org.jdom:jdom2:2.0.6.1",
