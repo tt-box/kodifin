@@ -8,9 +8,13 @@ name: Release
 # Déclencheurs :
 # - `push` d'un tag (`git tag v1.2.3 && git push origin v1.2.3`, « v » facultatif,
 #   suffixe de pré-version accepté : 1.2.3-rc1) ;
-# - `release: published` : une release créée depuis l'interface GitHub n'émet pas de
-#   `push` de tag, sans cette entrée elle resterait sans artefact ;
+# - `release: published` : une release créée depuis l'interface GitHub n'émet pas toujours de
+#   `push` de tag, sans cette entrée elle pourrait rester sans artefact ;
 # - `workflow_dispatch` : reprise manuelle d'un tag existant.
+#
+# Un tag poussé puis une release publiée sur ce tag déclenchent deux exécutions : le groupe de
+# concurrence (clé = tag) les sérialise, et le job `gate` de la seconde la saute si une
+# exécution réussie existe déjà pour ce tag. La reprise manuelle reconstruit toujours.
 on:
   push:
     tags:
@@ -36,8 +40,42 @@ concurrency:
 # La publication passe par la CLI `gh` préinstallée : aucune action tierce n'a accès
 # au jeton en écriture.
 jobs:
+  gate:
+    name: Éviter une double construction
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Chercher une exécution réussie pour ce tag
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fichier du workflow (.github/workflows/release.yml) tiré de github.workflow_ref.
+          workflow="$(basename "${WORKFLOW_REF%%@*}")"
+          done_runs="$(gh run list --workflow "$workflow" --status success --limit 100               --json databaseId,headBranch             | jq --arg tag "$TAG" --argjson self "$GITHUB_RUN_ID"               '[.[] | select(.headBranch == $tag and .databaseId != $self)] | length')"
+          if [ "$done_runs" -gt 0 ]; then
+            echo "::notice::Tag $TAG déjà construit et publié par une autre exécution : rien à refaire."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
     name: Construire, signer et publier
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -83,9 +121,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
         with:
           # Pas d'écriture de cache depuis une release : seul main alimente le cache.
+          # Pas de cache-encryption-key : l'entrée du cache de configuration dépend de
+          # l'ensemble de tâches et des variables lues (KODIFIN_VERSION_*), propres à la
+          # release ; main ne l'écrit jamais, elle ne serait donc jamais trouvée, et la
+          # clé serait exposée à Gradle pour rien. Le cache de build, lui, est relu.
           cache-read-only: true
-          # Permet de relire le cache de configuration (chiffré) sauvegardé par main.
-          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Déterminer la version
         id: version
@@ -128,9 +168,11 @@ jobs:
       # release non signée (APK + AAB). Sans --continue, un test ou un lint en échec arrête le
       # build : aucun artefact n'est alors publié. La version du tag ne s'applique qu'à la
       # variante release (app/build.gradle.kts) : les tâches debug restent reprises du cache.
-      # Construit avant la restauration du keystore : aucun secret n'est accessible ici. Seule
-      # build release : la signature se fait ensuite sur ces mêmes fichiers, sans relancer R8.
-      # La variante non signée sert aussi à une re-signature par un tiers (F-Droid, magasin).
+      # Construit avant la restauration du keystore : le keystore et ses mots de passe ne sont
+      # pas encore exposés à cette étape (le démon Gradle est arrêté avant de les restaurer,
+      # voir plus bas). Seule build release : la signature se fait ensuite sur ces mêmes
+      # fichiers, sans relancer R8. La variante non signée sert aussi à une re-signature par un
+      # tiers (F-Droid, magasin).
       - name: Tests, lint, APK debug et artefacts release non signés
         env:
           KODIFIN_VERSION_NAME: ${{ steps.version.outputs.name }}
@@ -140,6 +182,22 @@ jobs:
       # L'APK debug (non obfusqué) sert au contrôle anti-pistage des classes embarquées.
       - name: Aucune dépendance de pistage
         run: bash scripts/check-no-trackers.sh
+
+      # Plus aucun appel Gradle après ce point : on arrête le démon Gradle et le démon de
+      # compilation Kotlin, pour qu'aucun processus issu du build (plugins, scripts de
+      # dépendances) ne survive pendant la restauration du keystore et la signature.
+      - name: Arrêter les démons Gradle et Kotlin
+        run: |
+          ./gradlew --stop
+          pkill -f KotlinCompileDaemon || true
+          # Laisse quelques secondes aux processus pour se terminer, puis échoue s'il en reste.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            pgrep -f 'GradleDaemon|KotlinCompileDaemon' >/dev/null || exit 0
+            sleep 1
+          done
+          pgrep -fa 'GradleDaemon|KotlinCompileDaemon' || true
+          echo "::error::Démon de build encore actif avant la signature"
+          exit 1
 
       - name: Contrôler et copier les artefacts non signés
         env:
@@ -164,6 +222,8 @@ jobs:
           mkdir -p dist
           cp "$apk" "dist/kodifin-$VERSION-unsigned.apk"
           cp "$aab" "dist/kodifin-$VERSION-unsigned.aab"
+          # mapping.txt : sans lui, une trace d'exception d'un build minifié est illisible.
+          cp app/build/outputs/mapping/release/mapping.txt "dist/kodifin-$VERSION-mapping.txt"
 
       - name: Restaurer le keystore
         id: keystore
@@ -194,6 +254,8 @@ jobs:
             --v1-signing-enabled false --v2-signing-enabled true \
             --v3-signing-enabled true --v4-signing-enabled true \
             --out "$out/kodifin-$VERSION.apk" "dist/kodifin-$VERSION-unsigned.apk"
+          # La signature v2+ scelle l'archive : l'alignement doit avoir survécu.
+          "$BUILD_TOOLS/zipalign" -c -P 16 4 "$out/kodifin-$VERSION.apk"
           jarsigner -keystore "$KEYSTORE" -storepass:env KS_PASS -keypass:env KEY_PASS \
             -signedjar "$out/kodifin-$VERSION.aab" "dist/kodifin-$VERSION-unsigned.aab" "$KEY_ALIAS"
 

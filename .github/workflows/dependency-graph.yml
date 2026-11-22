@@ -1,0 +1,63 @@
+name: Graphe de dépendances
+
+# Soumet les dépendances résolues par Gradle : Dependabot signale ainsi les CVE de
+# toutes les bibliothèques, transitives comprises.
+#
+# Sorti de ci.yml (où il tournait à chaque push sur main et chaque nuit) pour ne tourner
+# que lorsque les dépendances peuvent avoir changé. Les alertes n'y perdent rien : GitHub
+# confronte en continu le dernier instantané soumis aux nouvelles CVE, inutile de le
+# renvoyer à l'identique. Le scan OSV quotidien reste dans ci.yml.
+#
+# Les chemins couvrent tout ce qui décide des versions résolues : le catalogue, les
+# scripts de build (dont les versions forcées du build.gradle.kts racine), les propriétés
+# Gradle et le wrapper. Ce fichier lui-même y figure, pour qu'une modification du job
+# soit essayée aussitôt.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gradle/libs.versions.toml"
+      - "**/*.gradle.kts"
+      - "gradle.properties"
+      - "gradle/wrapper/**"
+      - ".github/workflows/dependency-graph.yml"
+  # Les fusions automatiques Dependabot passent par GITHUB_TOKEN et ne déclenchent pas
+  # `push` : l'exécution hebdomadaire remet l'instantané à jour après elles.
+  schedule:
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Seul le dernier instantané compte : un nouveau push remplace le précédent.
+concurrency:
+  group: dependency-graph-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-graph:
+    name: Graphe de dépendances (alertes Dependabot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # contents: write est requis par l'API de soumission du graphe de dépendances.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      # Publie les dépendances transitives résolues par Gradle : Dependabot peut ainsi
+      # signaler les CVE de toutes les bibliothèques, pas seulement celles déclarées.
+      # Périmètre : bibliothèques embarquées (les classpaths de plugins/outillage sont exclus,
+      # ils ne sont pas livrés dans l'APK et sont mis à jour via Dependabot de toute façon).
+      - uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          dependency-graph-include-configurations: '.*[Rr]untimeClasspath'

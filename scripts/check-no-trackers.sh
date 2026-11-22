@@ -5,10 +5,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BLOCKLIST='com\.google\.firebase:firebase-(analytics|crashlytics|perf|messaging|inappmessaging|config|installations)
+BLOCKLIST='com\.google\.firebase:firebase-(analytics|crashlytics|perf|messaging|inappmessaging|config|installations|sessions)
 com\.google\.firebase:firebase-encoders
 com\.google\.android\.datatransport
-com\.google\.android\.gms:play-services-(measurement|analytics|ads|ads-identifier|appset)
+com\.google\.android\.gms:play-services-(measurement|analytics|ads|ads-identifier|appset|clearcut|phenotype)
 com\.google\.android\.play:core-common
 io\.sentry
 com\.bugsnag
@@ -29,7 +29,7 @@ org\.piwik
 com\.yandex\.android:mobmetricalib
 com\.huawei\.hms:hianalytics'
 
-CLASS_BLOCKLIST='com\.google\.android\.datatransport|com\.google\.firebase\.(analytics|crashlytics|perf|messaging|inappmessaging|remoteconfig|installations)|com\.google\.android\.gms\.(measurement|ads|appset)|io\.sentry|com\.bugsnag|com\.instabug|com\.newrelic|com\.microsoft\.appcenter|com\.facebook\.(appevents|ads)|com\.appsflyer|com\.adjust\.sdk|io\.branch|com\.mixpanel|com\.amplitude|com\.segment\.analytics|com\.flurry|com\.onesignal|org\.matomo|org\.piwik|com\.yandex\.metrica|com\.huawei\.hms\.analytics'
+CLASS_BLOCKLIST='com\.google\.android\.datatransport|com\.google\.firebase\.(analytics|crashlytics|perf|messaging|inappmessaging|remoteconfig|installations|sessions)|com\.google\.android\.gms\.(measurement|ads|appset|clearcut|phenotype)|io\.sentry|com\.bugsnag|com\.instabug|com\.newrelic|com\.microsoft\.appcenter|com\.facebook\.(appevents|ads)|com\.appsflyer|com\.adjust\.sdk|io\.branch|com\.mixpanel|com\.amplitude|com\.segment\.analytics|com\.flurry|com\.onesignal|org\.matomo|org\.piwik|com\.yandex\.metrica|com\.huawei\.hms\.analytics'
 
 deps="$(./gradlew -q :app:dependencies --configuration releaseRuntimeClasspath | tr -d '\r')"
 # Garde-fou : une configuration renommée ou vide donnerait une sortie sans dépendance,

@@ -84,6 +84,10 @@ kover {
                     "io.github.ttbox.kodifin.discovery.AndroidNsdBackend*",
                     "io.github.ttbox.kodifin.discovery.AndroidMulticastLock",
                     "io.github.ttbox.kodifin.discovery.AndroidDiscoveryKt",
+                    // Découverte ADB (NsdManager réel : résolution bornée, arrêt Android 14+).
+                    "io.github.ttbox.kodifin.ui.adb.AdbServiceDiscovery*",
+                    // Chiffrement par l'Android Keystore (la logique des secrets, DeviceSecrets, reste mesurée).
+                    "io.github.ttbox.kodifin.data.KeystoreSecretStore",
                     // Contrôleurs exigeant Android (clés ADB dans le stockage privé, SDK Cast).
                     "io.github.ttbox.kodifin.controller.AndroidPlatformControllers",
                     // Lien ADB réel (dadb, connexion TCP) ; DadbShell lui-même reste mesuré.
