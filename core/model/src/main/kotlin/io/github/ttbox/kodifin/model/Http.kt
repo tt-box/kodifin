@@ -1,9 +1,12 @@
 package io.github.ttbox.kodifin.model
 
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -11,6 +14,11 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.InetAddress
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -48,7 +56,7 @@ suspend fun OkHttpClient.fetchString(request: Request, maxBodyBytes: Long = DEFA
     } catch (e: RedirectRefusedException) {
         throw RemoteException(RemoteError.RedirectRefused, e)
     } catch (e: IOException) {
-        throw RemoteException(RemoteError.Unreachable(request.url.host), e)
+        throw RemoteException(connectionFailure(e, request.url.host), e)
     }
     response.use {
         if (!it.isSuccessful) {
@@ -76,15 +84,55 @@ suspend fun OkHttpClient.fetchString(request: Request, maxBodyBytes: Long = DEFA
 }
 
 /**
- * Télécharge une image (pochette, affiche) à l'adresse [url], sans cookie ni authentification :
- * `null` si l'adresse n'est pas http(s), si le statut n'est pas 2xx, si le type n'est pas une
- * image, si le corps dépasse [maxBytes] (jamais lu en entier) ou si le réseau échoue.
+ * Télécharge une image (pochette, affiche) à l'adresse [url], sans cookie ni authentification,
+ * en respectant la règle « on ne parle qu'à l'appareil contrôlé et au réseau local ».
+ *
+ * Politique d'hôte (voir [imageHostAddresses]) : seul est contacté [deviceHost] (l'appareil
+ * contrôlé) ou un hôte dont TOUTES les adresses sont locales (RFC 1918, lien local, IPv6 ULA ;
+ * boucle locale exclue). Un hôte public (CDN d'une application, par exemple `i.ytimg.com`) est
+ * refusé sans aucune requête vers lui : seule la résolution DNS locale via [resolve] a lieu.
+ * Les adresses vérifiées sont épinglées pour la connexion (pas de second DNS, donc pas de
+ * rebinding) ; les redirections restent limitées au même hôte par [kodifinHttpClient].
+ *
+ * `null` si l'hôte est refusé, si l'adresse n'est pas http(s), si le statut n'est pas 2xx, si
+ * le type n'est pas une image, si le corps dépasse [maxBytes] (jamais lu en entier) ou si le
+ * réseau échoue : l'interface affiche simplement « pas d'image ».
  */
-suspend fun OkHttpClient.fetchImage(url: String, maxBytes: Long = DEFAULT_MAX_BODY_BYTES): ByteArray? {
+suspend fun OkHttpClient.fetchImage(
+    url: String,
+    deviceHost: String,
+    maxBytes: Long = DEFAULT_MAX_BODY_BYTES,
+    resolve: HostResolver = SYSTEM_HOST_RESOLVER,
+): ByteArray? = fetchVettedImage(url, maxBytes) { host -> imageHostAddresses(host, deviceHost, resolve) }
+
+/**
+ * Adresses autorisées pour télécharger une image sur [host] : liste vide si [host] est
+ * l'appareil contrôlé [deviceHost] (résolution ordinaire du client) ; adresses toutes locales
+ * (boucle exclue) sinon ; `null` si l'hôte est refusé (public, mixte, irrésolu, forme numérique
+ * ambiguë). Peut bloquer (DNS) : appeler hors du fil principal.
+ */
+fun imageHostAddresses(host: String, deviceHost: String, resolve: HostResolver): List<InetAddress>? {
+    val h = LocalNetwork.normalize(host)
+    if (h.isEmpty()) return null
+    if (h == LocalNetwork.normalize(deviceHost)) return emptyList()
+    return LocalNetwork.lanAddresses(h, resolve, allowLoopback = false)
+}
+
+/**
+ * Télécharge l'image si [vet] autorise l'hôte : `null` → refus sans requête ; liste vide →
+ * client tel quel ; sinon connexion épinglée sur ces adresses.
+ */
+internal suspend fun OkHttpClient.fetchVettedImage(
+    url: String,
+    maxBytes: Long,
+    vet: (String) -> List<InetAddress>?,
+): ByteArray? {
     val parsed = url.toHttpUrlOrNull() ?: return null
+    val addresses = withContext(Dispatchers.IO) { vet(parsed.host) } ?: return null
+    val client = if (addresses.isEmpty()) this else newBuilder().dns(PinnedDns(parsed.host, addresses)).build()
     val request = Request.Builder().url(parsed).header("Accept", "image/*").build()
     val response = try {
-        newCall(request).await()
+        client.newCall(request).await()
     } catch (_: IOException) {
         return null
     }
@@ -104,7 +152,32 @@ suspend fun OkHttpClient.fetchImage(url: String, maxBytes: Long = DEFAULT_MAX_BO
     }
 }
 
-private val UTF8_BOM = okio.ByteString.of(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+/**
+ * DNS figé : [host] → [addresses] déjà vérifiées ; tout autre nom est refusé. Empêche OkHttp de
+ * résoudre à nouveau le nom au moment de la connexion (DNS rebinding : une première réponse
+ * privée validée, puis une adresse publique). Classe de données : deux clients épinglés sur les
+ * mêmes adresses partagent les connexions du pool (l'égalité du DNS fait partie de l'adresse OkHttp).
+ */
+data class PinnedDns(private val host: String, private val addresses: List<InetAddress>) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> =
+        if (hostname.equals(host, ignoreCase = true)) addresses else throw UnknownHostException(hostname)
+}
+
+/**
+ * Raison d'un échec avant toute réponse : poignée de main TLS refusée (certificat inconnu,
+ * empreinte épinglée différente, port non TLS) → [RemoteError.TlsFailed] ; délai dépassé
+ * (connexion, lecture, ou délai d'appel OkHttp qui lève `InterruptedIOException("timeout")`)
+ * → [RemoteError.Timeout] ; sinon [RemoteError.Unreachable]. La cause reste attachée pour le
+ * diagnostic.
+ */
+internal fun connectionFailure(e: IOException, host: String): RemoteError = when {
+    e is SSLException -> RemoteError.TlsFailed(host)
+    e is SocketTimeoutException -> RemoteError.Timeout
+    e is InterruptedIOException && e.message == "timeout" -> RemoteError.Timeout
+    else -> RemoteError.Unreachable(host)
+}
+
+private val UTF8_BOM =okio.ByteString.of(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
 
 /** Statut HTTP d'échec ; [code] reste accessible pour les décisions (401, 404…). */
 class HttpStatusException(val code: Int, cause: Throwable? = null) : RemoteException(RemoteError.Http(code), cause)

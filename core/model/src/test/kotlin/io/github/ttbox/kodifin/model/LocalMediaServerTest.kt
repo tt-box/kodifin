@@ -14,8 +14,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.FileNotFoundException
 import java.net.InetAddress
 import java.net.Socket
+import java.util.Collections
 
 /** Serveur de partage local : fichiers publiés seulement, requêtes partielles, en-têtes DLNA. */
 class LocalMediaServerTest {
@@ -122,6 +124,100 @@ class LocalMediaServerTest {
         }
     }
 
+    /** Exceptions non rattrapées des fils du serveur (sur Android, elles arrêtent le processus). */
+    private fun <T> recordingUncaught(block: (MutableList<Throwable>) -> T): T {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        val uncaught = Collections.synchronizedList(mutableListOf<Throwable>())
+        Thread.setDefaultUncaughtExceptionHandler { _, e -> uncaught += e }
+        try {
+            return block(uncaught)
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous)
+        }
+    }
+
+    private fun portOf(url: String) = url.substringAfter("127.0.0.1:").substringBefore('/').toInt()
+
+    /** Attend que le serveur ferme la connexion (lecture -1) ; échoue après [maxMs]. */
+    private fun Socket.awaitClosedByServer(maxMs: Int) {
+        soTimeout = maxMs
+        assertEquals(-1, getInputStream().read())
+    }
+
+    @Test
+    fun `silent client is dropped after the socket timeout without crashing`() = recordingUncaught { uncaught ->
+        val impatient = LocalMediaServer(socketTimeoutMs = 200)
+        try {
+            impatient.start(InetAddress.getLoopbackAddress())
+            val url = impatient.publish(LocalMedia("a.mp4", "video/mp4", data.size.toLong()) { ByteArrayInputStream(data) })
+            Socket(InetAddress.getLoopbackAddress(), portOf(url)).use { it.awaitClosedByServer(5_000) }
+            // Le serveur sert toujours après l'incident.
+            get(url).use { assertArrayEquals(data, it.body.bytes()) }
+            Thread.sleep(100)
+            assertTrue(uncaught.toString(), uncaught.isEmpty())
+        } finally {
+            impatient.stop()
+        }
+    }
+
+    @Test
+    fun `slow headers hit the global deadline`() = recordingUncaught { uncaught ->
+        // Délai par lecture long (10 s) mais échéance globale courte (300 ms).
+        val strict = LocalMediaServer(socketTimeoutMs = 10_000, headerTimeoutMs = 300)
+        try {
+            strict.start(InetAddress.getLoopbackAddress())
+            val url = strict.publish(LocalMedia("a.mp4", "video/mp4", 1) { ByteArrayInputStream(ByteArray(1)) })
+            Socket(InetAddress.getLoopbackAddress(), portOf(url)).use { s ->
+                val started = System.nanoTime()
+                s.getOutputStream().write("GET /m/".toByteArray())
+                s.awaitClosedByServer(5_000)
+                assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000)
+            }
+            Thread.sleep(100)
+            assertTrue(uncaught.toString(), uncaught.isEmpty())
+        } finally {
+            strict.stop()
+        }
+    }
+
+    @Test
+    fun `failing open answers 404 without crashing`() = recordingUncaught { uncaught ->
+        server.start(InetAddress.getLoopbackAddress())
+        val missing = server.publish(LocalMedia("parti.mp4", "video/mp4", 10) { throw FileNotFoundException("supprimé") })
+        val revoked = server.publish(LocalMedia("revoque.mp4", "video/mp4", 10) { throw SecurityException("permission retirée") })
+        get(missing).use { assertEquals(404, it.code) }
+        get(revoked).use { assertEquals(404, it.code) }
+        // HEAD n'ouvre pas le fichier.
+        get(missing, method = "HEAD").use { assertEquals(200, it.code) }
+        Thread.sleep(100)
+        assertTrue(uncaught.toString(), uncaught.isEmpty())
+    }
+
+    @Test
+    fun `read failure mid-stream closes the connection without crashing`() = recordingUncaught { uncaught ->
+        server.start(InetAddress.getLoopbackAddress())
+        val url = server.publish(
+            LocalMedia("casse.mp4", "video/mp4", 10) {
+                object : java.io.InputStream() {
+                    override fun read(): Int = throw java.io.IOException("support retiré")
+                    override fun read(b: ByteArray, off: Int, len: Int): Int = throw java.io.IOException("support retiré")
+                }
+            },
+        )
+        val failed = runCatching { get(url).use { it.body.bytes() } }
+        assertTrue(failed.isFailure)
+        Thread.sleep(100)
+        assertTrue(uncaught.toString(), uncaught.isEmpty())
+    }
+
+    @Test
+    fun `start on an unavailable address fails cleanly`() {
+        // 192.0.2.1 (TEST-NET-1) n'est attribuée à aucune interface locale.
+        val result = runCatching { server.start(InetAddress.getByName("192.0.2.1")) }
+        assertTrue(result.exceptionOrNull() is java.io.IOException)
+        assertFalse(server.isRunning)
+    }
+
     @Test
     fun `range parsing and helpers`() {
         assertEquals(0L..9L, LocalMediaServer.parseRange("bytes=0-9", 100))
@@ -146,12 +242,13 @@ class LocalMediaServerTest {
             web.enqueue(MockResponse.Builder().code(404).build())
             web.enqueue(MockResponse.Builder().addHeader("Content-Type", "image/png").body(Buffer().write(ByteArray(50))).build())
             web.start()
-            assertArrayEquals(byteArrayOf(1, 2), http.fetchImage(web.url("/a.png").toString()))
-            assertNull(http.fetchImage(web.url("/b").toString()))
-            assertNull(http.fetchImage(web.url("/c").toString()))
-            assertNull(http.fetchImage(web.url("/d").toString(), maxBytes = 10))
-            assertNull(http.fetchImage("pas une url"))
+            val device = web.url("/").host
+            assertArrayEquals(byteArrayOf(1, 2), http.fetchImage(web.url("/a.png").toString(), device))
+            assertNull(http.fetchImage(web.url("/b").toString(), device))
+            assertNull(http.fetchImage(web.url("/c").toString(), device))
+            assertNull(http.fetchImage(web.url("/d").toString(), device, maxBytes = 10))
+            assertNull(http.fetchImage("pas une url", device))
         }
-        assertNull(http.fetchImage("http://127.0.0.1:1/injoignable.png"))
+        assertNull(http.fetchImage("http://127.0.0.1:1/injoignable.png", "127.0.0.1"))
     }
 }

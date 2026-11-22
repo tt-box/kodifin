@@ -8,7 +8,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -32,10 +32,15 @@ class LocalMedia(
  * chemin aléatoire de 128 bits (`/m/<jeton>/<nom>`) ; tout le reste répond 404. GET et HEAD,
  * requêtes partielles (`Range`) pour le saut dans le média, en-têtes DLNA de diffusion.
  * Aucune donnée ne sort ailleurs que vers le lecteur qui demande le fichier.
+ *
+ * [socketTimeoutMs] borne chaque attente de lecture ou d'écriture ; [headerTimeoutMs] borne la
+ * réception complète de la requête (ligne et en-têtes), pour qu'un client qui envoie un octet de
+ * temps en temps (« Slowloris ») ne garde pas indéfiniment une des [maxConnections] places.
  */
 class LocalMediaServer(
     private val maxConnections: Int = 8,
     private val socketTimeoutMs: Int = 30_000,
+    private val headerTimeoutMs: Int = 15_000,
 ) {
     private val random = SecureRandom()
     private val media = ConcurrentHashMap<String, LocalMedia>()
@@ -56,8 +61,14 @@ class LocalMediaServer(
         if (isRunning && host == bindAddress.hostAddress) return
         stop()
         val server = ServerSocket()
-        server.reuseAddress = true
-        server.bind(InetSocketAddress(bindAddress, 0))
+        try {
+            server.reuseAddress = true
+            server.bind(InetSocketAddress(bindAddress, 0))
+        } catch (e: IOException) {
+            // Adresse indisponible : le socket ne doit pas rester ouvert.
+            runCatching { server.close() }
+            throw e
+        }
         val executor = Executors.newFixedThreadPool(maxConnections + 1) { r ->
             Thread(r, "kodifin-partage").apply { isDaemon = true }
         }
@@ -78,12 +89,18 @@ class LocalMediaServer(
         host = null
     }
 
-    /** Publie [item] et renvoie son adresse ; le serveur doit être démarré. */
+    /**
+     * Publie [item] et renvoie son adresse ; le serveur doit être démarré. Synchronisé avec
+     * [start]/[stop] : le socket et l'hôte lus ici restent cohérents, et une publication
+     * concurrente d'un arrêt n'est pas conservée après lui.
+     */
+    @Synchronized
     fun publish(item: LocalMedia): String {
         val server = socket ?: throw IllegalStateException("Serveur de partage arrêté")
+        val bound = host ?: throw IllegalStateException("Serveur de partage arrêté")
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         media[token] = item
-        val address = host!!.let { if (':' in it) "[${it.substringBefore('%')}]" else it }
+        val address = bound.let { if (':' in it) "[${it.substringBefore('%')}]" else it }
         return "http://$address:${server.localPort}/m/$token/${encodeName(item.name)}"
     }
 
@@ -108,6 +125,9 @@ class LocalMediaServer(
                 executor.execute {
                     try {
                         client.use(::serve)
+                    } catch (_: Exception) {
+                        // Filet : une erreur imprévue ne doit jamais remonter au fil de l'exécuteur
+                        // (exception non rattrapée = arrêt du processus Android).
                     } finally {
                         active.decrementAndGet()
                     }
@@ -120,8 +140,20 @@ class LocalMediaServer(
     }
 
     private fun serve(client: Socket) {
+        try {
+            handle(client)
+        } catch (_: IOException) {
+            // Client muet ou trop lent (délai dépassé), lecteur parti en cours de route (saut,
+            // arrêt), fichier illisible : la connexion est simplement fermée.
+        } catch (_: SecurityException) {
+            // Accès au fichier retiré (permission révoquée) pendant l'envoi.
+        }
+    }
+
+    private fun handle(client: Socket) {
         client.soTimeout = socketTimeoutMs
-        val input = BufferedInputStream(client.getInputStream())
+        val deadline = HeaderDeadline(client, client.getInputStream(), socketTimeoutMs, headerTimeoutMs.toLong())
+        val input = BufferedInputStream(deadline)
         val out = client.getOutputStream()
         val requestLine = readLine(input) ?: return
         val headers = mutableMapOf<String, String>()
@@ -137,11 +169,9 @@ class LocalMediaServer(
         val (method, path) = parts
         if (method != "GET" && method != "HEAD") return respond(out, 405, "Method Not Allowed", "Allow: GET, HEAD")
         val item = tokenOf(path)?.let(media::get) ?: return respond(out, 404, "Not Found")
-        try {
-            send(out, item, method == "HEAD", headers["range"])
-        } catch (_: SocketException) {
-            // Lecteur parti en cours de route (saut, arrêt) : rien à signaler.
-        }
+        // En-têtes reçus : seul le délai par opération s'applique désormais à l'envoi.
+        deadline.finish()
+        send(out, item, method == "HEAD", headers["range"])
     }
 
     private fun send(out: OutputStream, item: LocalMedia, headOnly: Boolean, rangeHeader: String?) {
@@ -156,6 +186,19 @@ class LocalMediaServer(
             length >= 0 -> length
             else -> -1
         }
+        // Ouvert avant d'écrire l'en-tête : un fichier disparu ou devenu inaccessible répond 404
+        // au lieu d'un 200 suivi d'une connexion coupée.
+        val source = if (headOnly) {
+            null
+        } else {
+            try {
+                item.open(start)
+            } catch (_: IOException) {
+                return respond(out, 404, "Not Found")
+            } catch (_: SecurityException) {
+                return respond(out, 404, "Not Found")
+            }
+        }
         val head = buildString {
             append(if (range != null) "HTTP/1.1 206 Partial Content\r\n" else "HTTP/1.1 200 OK\r\n")
             append("Content-Type: ${item.mimeType}\r\n")
@@ -167,9 +210,9 @@ class LocalMediaServer(
             append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }
-        out.write(head.toByteArray(Charsets.ISO_8859_1))
-        if (headOnly) return out.flush()
-        item.open(start).use { source ->
+        source.use {
+            out.write(head.toByteArray(Charsets.ISO_8859_1))
+            if (source == null) return out.flush()
             val buffer = ByteArray(64 * 1024)
             var remaining = count
             while (remaining != 0L) {
@@ -189,6 +232,43 @@ class LocalMediaServer(
         runCatching {
             out.write(head.toByteArray(Charsets.ISO_8859_1))
             out.flush()
+        }
+    }
+
+    /**
+     * Échéance globale de réception de la requête : avant chaque lecture du socket, le délai
+     * d'attente est ramené au temps restant (au plus [idleMs]) ; une fois l'échéance passée, la
+     * lecture lève [SocketTimeoutException]. [finish] rétablit le délai par opération.
+     */
+    private class HeaderDeadline(
+        private val socket: Socket,
+        private val source: InputStream,
+        private val idleMs: Int,
+        budgetMs: Long,
+    ) : InputStream() {
+        private val deadline = System.nanoTime() + budgetMs * 1_000_000
+        private var active = true
+
+        private fun arm() {
+            if (!active) return
+            val remaining = (deadline - System.nanoTime()) / 1_000_000
+            if (remaining <= 0) throw SocketTimeoutException("Requête reçue trop lentement")
+            socket.soTimeout = minOf(remaining, idleMs.toLong()).toInt().coerceAtLeast(1)
+        }
+
+        fun finish() {
+            active = false
+            socket.soTimeout = idleMs
+        }
+
+        override fun read(): Int {
+            arm()
+            return source.read()
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            arm()
+            return source.read(b, off, len)
         }
     }
 

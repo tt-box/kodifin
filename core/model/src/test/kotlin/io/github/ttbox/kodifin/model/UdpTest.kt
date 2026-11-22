@@ -170,4 +170,23 @@ class UdpTest {
             assertNull(socket.receive(10))
         }
     }
+
+    @Test
+    fun `socket is closed when its configuration fails`() {
+        var created: DatagramSocket? = null
+        val error = runCatching {
+            // TTL hors de [0, 255] : refusé par MulticastSocket après l'ouverture.
+            openDatagramSocket(UdpOptions(multicastTtl = 300)) { multicast ->
+                assertTrue(multicast)
+                java.net.MulticastSocket(null).also { created = it }
+            }
+        }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(created!!.isClosed)
+    }
+
+    @Test
+    fun `plain datagram socket honours broadcast`() {
+        openDatagramSocket(UdpOptions(broadcast = true)).use { assertTrue(it.broadcast) }
+    }
 }

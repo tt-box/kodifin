@@ -112,6 +112,52 @@ class HttpTest {
     }
 
     @Test
+    fun `fetchString maps a TLS handshake failure to TlsFailed`() = runBlocking {
+        // HTTPS vers un serveur qui répond en clair : « plaintext connection? » (SSLException).
+        java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress()).use { plain ->
+            val responder = Thread {
+                runCatching {
+                    while (true) {
+                        plain.accept().use { s ->
+                            s.getOutputStream().write("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".repeat(20).toByteArray())
+                            s.getOutputStream().flush()
+                            // Garder la socket ouverte jusqu'à ce que le client abandonne : une
+                            // fermeture côté serveur donnerait parfois « connection reset » (Unreachable).
+                            val input = s.getInputStream()
+                            while (input.read() >= 0) Unit
+                        }
+                    }
+                }
+            }.apply { isDaemon = true; start() }
+            val url = okhttp3.HttpUrl.Builder().scheme("https").host("127.0.0.1").port(plain.localPort).build()
+            val e = assertFailsWithReason(RemoteError.TlsFailed("127.0.0.1")) {
+                client.fetchString(Request.Builder().url(url).build())
+            }
+            assertIs<javax.net.ssl.SSLException>(e.cause)
+            responder.interrupt()
+        }
+        Unit
+    }
+
+    @Test
+    fun `fetchString maps a read timeout to Timeout`() = runBlocking {
+        server.enqueue(MockResponse.Builder().headersDelay(2, TimeUnit.SECONDS).body("tard").build())
+        val impatient = client.newBuilder().readTimeout(100, TimeUnit.MILLISECONDS).build()
+        val e = assertFailsWithReason(RemoteError.Timeout) { impatient.fetchString(request()) }
+        assertIs<java.net.SocketTimeoutException>(e.cause)
+        Unit
+    }
+
+    @Test
+    fun `connectionFailure classifies transport errors`() {
+        assertEquals(RemoteError.TlsFailed("h"), connectionFailure(javax.net.ssl.SSLHandshakeException("pin"), "h"))
+        assertEquals(RemoteError.Timeout, connectionFailure(java.net.SocketTimeoutException("connect timed out"), "h"))
+        assertEquals(RemoteError.Timeout, connectionFailure(java.io.InterruptedIOException("timeout"), "h"))
+        assertEquals(RemoteError.Unreachable("h"), connectionFailure(java.io.InterruptedIOException("Canceled"), "h"))
+        assertEquals(RemoteError.Unreachable("h"), connectionFailure(java.net.ConnectException("refused"), "h"))
+    }
+
+    @Test
     fun `body larger than the default limit is rejected`() = runBlocking {
         server.enqueue(MockResponse.Builder().body(Buffer().write(ByteArray((DEFAULT_MAX_BODY_BYTES + 1).toInt()))).build())
         assertFailsWithReason(RemoteError.ResponseTooLarge("localhost", DEFAULT_MAX_BODY_BYTES)) { client.fetchString(request()) }
