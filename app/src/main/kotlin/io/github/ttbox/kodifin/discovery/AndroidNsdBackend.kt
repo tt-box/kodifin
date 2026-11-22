@@ -42,17 +42,25 @@ internal class AndroidNsdBackend(private val nsd: NsdManager) : NsdBackend {
 
         @Suppress("DEPRECATION")
         override suspend fun resolve(): NsdResolution? = suspendCancellableCoroutine { cont ->
-            nsd.resolveService(info, object : NsdManager.ResolveListener {
+            val listener = object : NsdManager.ResolveListener {
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                    if (cont.isActive) {
-                        cont.resume(NsdResolution(serviceInfo.serviceName, listOfNotNull(serviceInfo.host), serviceInfo.port))
-                    }
+                    if (cont.isActive) cont.resume(serviceInfo.toResolution())
                 }
 
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                     if (cont.isActive) cont.resume(null)
                 }
-            })
+
+                override fun onResolutionStopped(serviceInfo: NsdServiceInfo) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
+            nsd.resolveService(info, listener)
+            // Délai expiré (withTimeoutOrNull de NsdSource) ou découverte arrêtée : la résolution
+            // système est arrêtée aussi (Android 14+), sinon la suivante échoue en FAILURE_ALREADY_ACTIVE.
+            cont.invokeOnCancellation {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) Api34.stopResolution(nsd, listener)
+            }
         }
     }
 
@@ -68,7 +76,9 @@ internal class AndroidNsdBackend(private val nsd: NsdManager) : NsdBackend {
             onLost: () -> Unit,
         ): AutoCloseable {
             val callback = object : NsdManager.ServiceInfoCallback {
-                override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = Unit
+                // Suivi refusé (ex. trop de rappels enregistrés) : repli sur une résolution
+                // ponctuelle, sans la limite d'une résolution à la fois sur Android 14+.
+                override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = resolveOnce(nsd, info, onUpdate)
                 override fun onServiceUpdated(serviceInfo: NsdServiceInfo) =
                     onUpdate(NsdResolution(serviceInfo.serviceName, serviceInfo.hostAddresses, serviceInfo.port))
 
@@ -78,8 +88,33 @@ internal class AndroidNsdBackend(private val nsd: NsdManager) : NsdBackend {
             nsd.registerServiceInfoCallback(info, direct, callback)
             return AutoCloseable { runCatching { nsd.unregisterServiceInfoCallback(callback) } }
         }
+
+        // Repli volontaire sur l'API dépréciée : seule voie quand l'abonnement (API 34+) est refusé.
+        @Suppress("DEPRECATION")
+        private fun resolveOnce(nsd: NsdManager, info: NsdServiceInfo, onUpdate: (NsdResolution) -> Unit) {
+            runCatching {
+                nsd.resolveService(info, direct, object : NsdManager.ResolveListener {
+                    override fun onServiceResolved(serviceInfo: NsdServiceInfo) = onUpdate(serviceInfo.toResolution())
+                    override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+                })
+            }
+        }
+
+        fun stopResolution(nsd: NsdManager, listener: NsdManager.ResolveListener) {
+            // Lève si la résolution est déjà terminée : sans conséquence.
+            runCatching { nsd.stopServiceResolution(listener) }
+        }
     }
 }
+
+/** Résolution NSD → [NsdResolution] : toutes les adresses sur Android 14+, une seule avant. */
+@Suppress("DEPRECATION")
+private fun NsdServiceInfo.toResolution(): NsdResolution =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        NsdResolution(serviceName, hostAddresses, port)
+    } else {
+        NsdResolution(serviceName, listOfNotNull(host), port)
+    }
 
 /** Verrou multicast Wi-Fi réel. */
 internal class AndroidMulticastLock(private val lock: WifiManager.MulticastLock) : MulticastLockPort {

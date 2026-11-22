@@ -127,6 +127,7 @@ class MediaServerAccountsUiTest {
     @Test
     fun `exception without message falls back to a generic label`() {
         assertEquals(UiText.Res(R.string.config_server_unreachable), errorText(IllegalStateException()))
-        assertEquals(UiText.Raw("boom"), errorText(IllegalStateException("boom")))
+        // Message brut d'une exception non typée jamais affiché.
+        assertEquals(UiText.Res(R.string.config_server_unreachable), errorText(IllegalStateException("boom")))
     }
 }

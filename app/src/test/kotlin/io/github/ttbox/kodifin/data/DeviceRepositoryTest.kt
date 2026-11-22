@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -182,7 +183,7 @@ class DeviceRepositoryTest {
         assertFalse(json.contains("\"password\""))
         val stored = checkNotNull(repo.get("k"))
         assertNull(stored.extras[DeviceSecrets.PASSWORD])
-        assertEquals("secret", DeviceSecrets.reveal(stored, secrets).extras[DeviceSecrets.PASSWORD])
+        assertEquals("secret", DeviceSecrets.reveal(stored, secrets).device.extras[DeviceSecrets.PASSWORD])
     }
 
     @Test
@@ -205,7 +206,7 @@ class DeviceRepositoryTest {
         // Connexion réussie : le ViewModel enregistre le jeton, sans mot de passe.
         repo.save(jelly.copy(extras = mapOf("username" to "u", "token" to "t")))
         assertNull(repo.get("j")?.extras?.get(DeviceSecrets.PASSWORD))
-        assertEquals("t", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).extras["token"])
+        assertEquals("t", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).device.extras["token"])
     }
 
     @Test
@@ -219,8 +220,8 @@ class DeviceRepositoryTest {
         assertEquals("U42", stored.extras["userId"])
         assertNull(stored.extras["token"])
         // Aller-retour : seul reveal (fabrique de contrôleurs) rend le jeton lisible.
-        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(stored, secrets).extras["token"])
-        assertEquals("JETON-PLEX", DeviceSecrets.reveal(checkNotNull(repo.get("p")), secrets).extras["token"])
+        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(stored, secrets).device.extras["token"])
+        assertEquals("JETON-PLEX", DeviceSecrets.reveal(checkNotNull(repo.get("p")), secrets).device.extras["token"])
     }
 
     @Test
@@ -231,7 +232,7 @@ class DeviceRepositoryTest {
         repo.save(jelly.copy(extras = mapOf("token" to "JETON")))
         assertEquals(before, raw())
         repo.save(jelly.copy(extras = mapOf("token" to "AUTRE")))
-        assertEquals("AUTRE", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).extras["token"])
+        assertEquals("AUTRE", DeviceSecrets.reveal(checkNotNull(repo.get("j")), secrets).device.extras["token"])
     }
 
     @Test
@@ -256,8 +257,8 @@ class DeviceRepositoryTest {
         assertFalse(checkNotNull(raw()).contains("JETON"))
         val j = devices.first { it.id == "j" }
         assertEquals(mapOf("username" to "u", "userId" to "U42", "sessionId" to "S"), j.extras - DeviceSecrets.ENCRYPTED_TOKEN)
-        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(j, secrets).extras["token"])
-        assertEquals("JETON-PLEX", DeviceSecrets.reveal(devices.first { it.id == "p" }, secrets).extras["token"])
+        assertEquals("JETON-JELLYFIN", DeviceSecrets.reveal(j, secrets).device.extras["token"])
+        assertEquals("JETON-PLEX", DeviceSecrets.reveal(devices.first { it.id == "p" }, secrets).device.extras["token"])
     }
 
     @Test
@@ -289,8 +290,44 @@ class DeviceRepositoryTest {
         assertFalse(json.contains("secret"))
         assertFalse(json.contains("hunter2"))
         // Kodi : chiffré ; Jellyfin : gardé en mémoire pour la prochaine connexion.
-        assertEquals("secret", DeviceSecrets.reveal(checkNotNull(repo.get("k")), secrets).extras[DeviceSecrets.PASSWORD])
+        assertEquals("secret", DeviceSecrets.reveal(checkNotNull(repo.get("k")), secrets).device.extras[DeviceSecrets.PASSWORD])
         assertEquals("hunter2", repo.get("j")?.extras?.get(DeviceSecrets.PASSWORD))
+    }
+
+    @Test
+    fun `an unreadable stored password is purged, and the edit form no longer sees it`() = runBlocking {
+        val broken = kodi.copy(extras = mapOf("username" to "kodi", DeviceSecrets.ENCRYPTED_PASSWORD to "perdu"))
+        store.edit { it[DeviceRepository.DEVICES] = DeviceCodec.upsert(null, broken) }
+        val edited = checkNotNull(repo.getForEdit("k"))
+        assertTrue(edited.secretLost)
+        assertEquals(mapOf("username" to "kodi"), edited.device.extras)
+        // Purgé du stockage : le formulaire n'annoncera plus de mot de passe enregistré.
+        assertEquals(mapOf("username" to "kodi"), repo.get("k")?.extras)
+        assertFalse(checkNotNull(repo.getForEdit("k")).secretLost)
+        assertNull(repo.getForEdit("absent"))
+    }
+
+    @Test
+    fun `edit form decrypts on the keystore dispatcher, not on the caller thread`() = runBlocking {
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "keystore-io") }
+        val keystore = executor.asCoroutineDispatcher()
+        try {
+            val repo = DeviceRepository(store, secrets, keystore)
+            repo.save(kodi.copy(extras = mapOf("username" to "kodi")), "pw")
+            secrets.openThreads.clear()
+            assertFalse(checkNotNull(repo.getForEdit("k")).secretLost)
+            assertEquals(listOf("keystore-io"), secrets.openThreads.map { it.substringBefore(" @coroutine") })
+        } finally {
+            keystore.close()
+        }
+    }
+
+    @Test
+    fun `purging an unreadable secret keeps a password typed again meanwhile`() = runBlocking {
+        repo.save(kodi.copy(extras = mapOf("username" to "kodi")), "nouveau")
+        repo.dropUnreadableSecrets("k", mapOf(DeviceSecrets.ENCRYPTED_PASSWORD to "ancien"))
+        repo.dropUnreadableSecrets("k", emptyMap())
+        assertEquals("enc:uaevuon", repo.get("k")?.extras?.get(DeviceSecrets.ENCRYPTED_PASSWORD))
     }
 
     @Test
@@ -311,10 +348,10 @@ class DeviceSecretsTest {
         val jelly = Device("j", "Jelly", DeviceKind.JELLYFIN, "10.0.0.4", extras = mapOf("token" to "abc", "userId" to "U"))
         val stored = DeviceSecrets.forStorage(jelly, null, secrets)
         assertEquals(mapOf("token_enc" to "enc:cba", "userId" to "U"), stored.extras)
-        assertEquals(jelly.extras, DeviceSecrets.reveal(stored, secrets).extras)
+        assertEquals(jelly.extras, DeviceSecrets.reveal(stored, secrets).device.extras)
         assertEquals(mapOf("userId" to "U"), DeviceSecrets.forStorage(stored.copy(extras = stored.extras + ("token" to "")), null, secrets).extras)
         // Chiffré illisible (clé perdue) : retiré, le jeton sera redemandé.
-        assertEquals(mapOf("userId" to "U"), DeviceSecrets.reveal(stored.copy(extras = mapOf("token_enc" to "??", "userId" to "U")), secrets).extras)
+        assertEquals(mapOf("userId" to "U"), DeviceSecrets.reveal(stored.copy(extras = mapOf("token_enc" to "??", "userId" to "U")), secrets).device.extras)
         assertTrue(DeviceSecrets.hasToken(stored))
         assertFalse(DeviceSecrets.hasPlainSecrets(stored))
     }
@@ -337,11 +374,33 @@ class DeviceSecretsTest {
     }
 
     @Test
-    fun `reveal decrypts, and drops an unreadable secret`() {
+    fun `reveal decrypts, and reports an unreadable secret instead of dropping it silently`() {
         val stored = DeviceSecrets.forStorage(kodi, "pw", secrets)
-        assertEquals(mapOf("username" to "kodi", "password" to "pw"), DeviceSecrets.reveal(stored, secrets).extras)
+        val ok = DeviceSecrets.reveal(stored, secrets)
+        assertEquals(mapOf("username" to "kodi", "password" to "pw"), ok.device.extras)
+        assertTrue(ok.unreadable.isEmpty())
+        // Illisible : retiré de l'appareil de connexion, mais SIGNALÉ (≠ absent).
         val broken = kodi.copy(extras = kodi.extras + (DeviceSecrets.ENCRYPTED_PASSWORD to "illisible"))
-        assertEquals(mapOf("username" to "kodi"), DeviceSecrets.reveal(broken, secrets).extras)
-        assertEquals(kodi, DeviceSecrets.reveal(kodi, secrets))
+        val lost = DeviceSecrets.reveal(broken, secrets)
+        assertEquals(mapOf("username" to "kodi"), lost.device.extras)
+        assertEquals(mapOf(DeviceSecrets.ENCRYPTED_PASSWORD to "illisible"), lost.unreadable)
+        assertFalse(lost.toString().contains("illisible"))
+        // Absent : rien à signaler.
+        assertEquals(RevealedDevice(kodi), DeviceSecrets.reveal(kodi, secrets))
+        // Saisie en clair prioritaire : le chiffré n'est même pas déchiffré, donc pas « illisible ».
+        val typed = broken.copy(extras = broken.extras + (DeviceSecrets.PASSWORD to "saisi"))
+        assertTrue(DeviceSecrets.reveal(typed, secrets).unreadable.isEmpty())
+    }
+
+    @Test
+    fun `unreadable secrets are listed and removed only while unchanged`() {
+        val broken = kodi.copy(extras = kodi.extras + mapOf(DeviceSecrets.ENCRYPTED_PASSWORD to "x", "token_enc" to "enc:t"))
+        val unreadable = DeviceSecrets.unreadable(broken, secrets)
+        assertEquals(mapOf(DeviceSecrets.ENCRYPTED_PASSWORD to "x"), unreadable)
+        assertEquals(kodi.extras + ("token_enc" to "enc:t"), DeviceSecrets.withoutUnreadable(broken, unreadable).extras)
+        // Mot de passe ressaisi entre-temps : conservé.
+        val retyped = broken.copy(extras = broken.extras + (DeviceSecrets.ENCRYPTED_PASSWORD to "enc:new"))
+        assertEquals(retyped, DeviceSecrets.withoutUnreadable(retyped, unreadable))
+        assertTrue(DeviceSecrets.unreadable(kodi, secrets).isEmpty())
     }
 }

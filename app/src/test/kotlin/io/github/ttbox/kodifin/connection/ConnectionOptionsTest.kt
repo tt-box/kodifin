@@ -201,6 +201,6 @@ class ConnectionTestTest {
     @Test
     fun `controller creation failure is reported`() = runTest {
         val result = testConnection(KODI) { throw IllegalArgumentException("Hôte invalide") }
-        assertEquals(ConnectionTestResult.Failure(UiText.Raw("Hôte invalide")), result)
+        assertEquals(ConnectionTestResult.Failure(UiText.Res(R.string.conn_test_invalid_config)), result)
     }
 }

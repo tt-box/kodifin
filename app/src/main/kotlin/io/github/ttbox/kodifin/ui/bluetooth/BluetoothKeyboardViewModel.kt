@@ -90,10 +90,19 @@ class BluetoothKeyboardViewModel(
         }
     }
 
+    /**
+     * Appui bref. Le relâchement est garanti (finally) même si la coroutine est annulée pendant
+     * l'appui (écran fermé, ViewModel détruit) : sinon l'hôte verrait une touche bloquée
+     * enfoncée (répétition automatique). `send` n'est pas suspendante : elle s'exécute aussi
+     * pendant l'annulation, sans NonCancellable.
+     */
     private suspend fun tap(key: HidKey): Boolean {
         if (!port.send(HidReports.press(key))) return false
-        delay(holdMs)
-        port.send(HidReports.release(key))
+        try {
+            delay(holdMs)
+        } finally {
+            port.send(HidReports.release(key))
+        }
         delay(holdMs)
         return true
     }

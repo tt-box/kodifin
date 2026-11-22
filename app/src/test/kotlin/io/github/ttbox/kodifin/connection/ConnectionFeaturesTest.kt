@@ -2,6 +2,7 @@ package io.github.ttbox.kodifin.connection
 
 import io.github.ttbox.kodifin.R
 import io.github.ttbox.kodifin.text.UiText
+import io.github.ttbox.kodifin.text.toUiText
 import io.github.ttbox.kodifin.model.Capability
 import io.github.ttbox.kodifin.model.CertificatePinMismatchException
 import io.github.ttbox.kodifin.model.PinnedTrustManager
@@ -272,6 +273,27 @@ class DiagnosisTest {
             diagnose(RemoteException(RemoteError.SetupRequired(Setup.ROKU_NETWORK_ACCESS))).title,
         )
         assertEquals(UiText.Res(R.string.error_unknown, "IOException"), diagnose(IOException()).title)
+    }
+
+    @Test
+    fun `an unreadable stored password asks to type it again in the device form`() {
+        val error = RemoteException(RemoteError.StoredSecretUnreadable)
+        assertEquals(
+            Diagnosis(R.string.diag_stored_secret_title, R.string.diag_stored_secret_advice, Problem.CREDENTIALS),
+            diagnose(IllegalStateException("enveloppe", error)),
+        )
+        assertEquals(UiText.Res(R.string.error_stored_secret_unreadable), error.toUiText())
+    }
+
+    @Test
+    fun `a keystore temporarily unavailable is a retryable, non destructive error`() {
+        val error = RemoteException(RemoteError.SecretStoreUnavailable)
+        assertEquals(
+            Diagnosis(R.string.diag_secret_store_title, R.string.diag_secret_store_advice, Problem.OTHER),
+            diagnose(error),
+        )
+        assertEquals(UiText.Res(R.string.error_secret_store_unavailable), error.toUiText())
+        assertEquals(false, io.github.ttbox.kodifin.ui.remote.isDefinitiveConnectError(error))
     }
 
     @Test

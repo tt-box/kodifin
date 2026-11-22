@@ -15,9 +15,20 @@ class FakeSecretStore : SecretStore {
         return PREFIX + plain.reversed()
     }
 
-    override fun decrypt(encoded: String): String? {
+    /** Simule un Keystore momentanément indisponible (occupé, ProviderException…). */
+    var unavailable = false
+
+    /** Fil d'exécution de chaque déchiffrement (vérifie qu'il ne s'agit pas du thread principal). */
+    val openThreads = mutableListOf<String>()
+
+    override fun open(encoded: String): Decryption {
         decrypted += encoded
-        return if (encoded.startsWith(PREFIX)) encoded.removePrefix(PREFIX).reversed() else null
+        openThreads += Thread.currentThread().name
+        return when {
+            unavailable -> Decryption.Unavailable
+            encoded.startsWith(PREFIX) -> Decryption.Plain(encoded.removePrefix(PREFIX).reversed())
+            else -> Decryption.Lost
+        }
     }
 
     private companion object {

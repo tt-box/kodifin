@@ -25,6 +25,10 @@ data class AppSettings(
     /** Garder l'écran allumé tant que la télécommande est affichée. */
     val keepScreenOn: Boolean = false,
     val cast: CastSettings = CastSettings(),
+    /** Télécommande sur tablette : volet de droite masqué. */
+    val paneHidden: Boolean = false,
+    /** Tablette en paysage : détails de lecture (pistes, sous-titres…) dans le volet de droite. */
+    val detailsInPane: Boolean = false,
 )
 
 /** Accès aux réglages, remplaçable par un faux dans les tests du ViewModel. */
@@ -65,6 +69,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) : SettingsSt
         internal val CAST_SUBTITLE_COLOR = stringPreferencesKey("cast_subtitle_color")
         internal val CAST_SUBTITLE_BACKGROUND = stringPreferencesKey("cast_subtitle_background")
         internal val CAST_AUTO_DISCONNECT = booleanPreferencesKey("cast_auto_disconnect")
+        internal val PANE_HIDDEN = booleanPreferencesKey("pane_hidden")
+        internal val DETAILS_IN_PANE = booleanPreferencesKey("details_in_pane")
 
         /** Nom du fichier (`preferencesDataStoreFile(FILE_NAME)`). */
         const val FILE_NAME = "kodifin_settings"
@@ -85,6 +91,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) : SettingsSt
                     ),
                     autoDisconnect = prefs[CAST_AUTO_DISCONNECT] ?: defaults.cast.autoDisconnect,
                 ),
+                paneHidden = prefs[PANE_HIDDEN] ?: defaults.paneHidden,
+                detailsInPane = prefs[DETAILS_IN_PANE] ?: defaults.detailsInPane,
             )
         }
 
@@ -95,6 +103,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) : SettingsSt
             prefs[CAST_SUBTITLE_COLOR] = s.cast.subtitles.textColor.name
             prefs[CAST_SUBTITLE_BACKGROUND] = s.cast.subtitles.background.name
             prefs[CAST_AUTO_DISCONNECT] = s.cast.autoDisconnect
+            prefs[PANE_HIDDEN] = s.paneHidden
+            prefs[DETAILS_IN_PANE] = s.detailsInPane
         }
 
         /** Magasin DataStore des réglages (un seul par processus), fichier corrompu remplacé. */

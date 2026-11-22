@@ -68,6 +68,8 @@ class SettingsRepositoryTest {
                 subtitles = CastSubtitleStyle(SubtitleSize.HUGE, SubtitleColor.YELLOW, SubtitleBackground.OPAQUE),
                 autoDisconnect = false,
             ),
+            paneHidden = true,
+            detailsInPane = true,
         )
         repo.update { expected }
         assertEquals(expected, repo.settings.first())

@@ -5,6 +5,16 @@
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
+        <!--
+          Seules les autorités de certification SYSTÈME sont reconnues, choix volontaire : les CA
+          « utilisateur » installées dans les réglages Android ne sont pas acceptées (une CA
+          ajoutée par un profil d'entreprise, un logiciel ou un tiers pourrait sinon intercepter
+          les mots de passe et jetons). Conséquence : un Kodi / Jellyfin / Emby en HTTPS avec un
+          certificat signé par une CA maison échoue en mode « HTTPS » vérifié. Utiliser alors
+          le mode « HTTPS non vérifié » du formulaire, qui épingle l'empreinte du certificat
+          (confiance au premier usage, appareil par appareil). Ne pas ajouter
+          <certificates src="user" /> sans raison forte.
+        -->
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

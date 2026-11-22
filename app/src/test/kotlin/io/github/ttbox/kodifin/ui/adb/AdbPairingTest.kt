@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -113,12 +115,13 @@ class AdbPairingViewModelTest {
     fun `discovered television prefills the ports, then pairing saves the device`() = runTest(dispatcher) {
         val deps = Deps()
         val vm = vm(deps)
+        backgroundScope.launch { vm.candidates.collect {} }
         deps.services.value = listOf(
             AdbService(AdbServiceTypes.PAIRING, "p", "10.0.0.5", 37000),
             AdbService(AdbServiceTypes.CONNECT, "c", "10.0.0.5", 41234),
         )
         advanceUntilIdle()
-        vm.choose(vm.state.value.candidates.single())
+        vm.choose(vm.candidates.value.single())
         vm.edit { copy(code = "123456") }
         vm.submit()
         advanceUntilIdle()
@@ -126,6 +129,35 @@ class AdbPairingViewModelTest {
         assertEquals(listOf("10.0.0.5" to 41234), deps.checks)
         assertEquals(AdbPairingStep.Done(deps.saved.single().id), vm.state.value.step)
         assertEquals("true", deps.saved.single().extras[DadbShell.EXTRA_TLS])
+    }
+
+    @Test
+    fun `discovery only runs while the screen collects the candidates`() = runTest(dispatcher) {
+        val deps = Deps()
+        val vm = vm(deps)
+        advanceUntilIdle()
+        // ViewModel créé mais écran non visible : aucune découverte mDNS.
+        assertEquals(0, deps.services.subscriptionCount.value)
+        val screen = launch { vm.candidates.collect {} }
+        advanceUntilIdle()
+        assertEquals(1, deps.services.subscriptionCount.value)
+        // Écran arrêté : la découverte s'arrête après le délai de grâce.
+        screen.cancel()
+        advanceTimeBy(4_000)
+        assertEquals(1, deps.services.subscriptionCount.value)
+        advanceTimeBy(2_000)
+        assertEquals(0, deps.services.subscriptionCount.value)
+    }
+
+    @Test
+    fun `discovery failure leaves an empty list`() = runTest(dispatcher) {
+        val deps = object : AdbPairingDependencies by Deps() {
+            override val services = kotlinx.coroutines.flow.flow<List<AdbService>> { throw IllegalStateException("nsd") }
+        }
+        val vm = ViewModelProvider.create(store, viewModelFactory { initializer { AdbPairingViewModel(deps, dispatcher) } })[AdbPairingViewModel::class.java]
+        backgroundScope.launch { vm.candidates.collect {} }
+        advanceUntilIdle()
+        assertEquals(emptyList<AdbCandidate>(), vm.candidates.value)
     }
 
     @Test

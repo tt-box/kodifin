@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.ttbox.kodifin.model.Device
 import io.github.ttbox.kodifin.model.DeviceKind
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -43,6 +45,8 @@ import kotlin.coroutines.cancellation.CancellationException
 class DeviceRepository(
     private val store: DataStore<Preferences>,
     private val secrets: SecretStore,
+    /** Dispatcher des appels au Keystore (binder) : jamais le thread principal. */
+    private val keystoreDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /** Mots de passe Jellyfin/Emby en attente de la première connexion réussie (jamais écrits). */
     private val transientPasswords = ConcurrentHashMap<String, String>()
@@ -91,6 +95,34 @@ class DeviceRepository(
     suspend fun delete(id: String) {
         store.edit { prefs -> prefs.updateDevices { raw -> DeviceCodec.remove(raw, id) } }
         transientPasswords.remove(id)
+    }
+
+    /**
+     * Efface du stockage les secrets chiffrés [unreadable] de l'appareil [id] (voir
+     * [DeviceSecrets.reveal]) : seule une valeur restée identique est retirée, pour ne pas effacer
+     * un mot de passe ressaisi entre-temps. Sans effet si l'appareil n'est pas enregistré.
+     */
+    suspend fun dropUnreadableSecrets(id: String, unreadable: Map<String, String>) {
+        if (unreadable.isEmpty()) return
+        store.edit { prefs ->
+            prefs.updateDevices { raw ->
+                DeviceCodec.mapValid(raw) { if (it.id == id) DeviceSecrets.withoutUnreadable(it, unreadable) else it }
+            }
+        }
+    }
+
+    /**
+     * Appareil à modifier dans le formulaire : comme [get], mais les secrets enregistrés devenus
+     * illisibles sont d'abord purgés du stockage, pour que le formulaire n'affiche pas un mot de
+     * passe « enregistré » qui ne peut plus servir. `null` si l'appareil n'existe pas.
+     */
+    suspend fun getForEdit(id: String): EditableDevice? {
+        val device = get(id) ?: return null
+        // Appelé depuis l'écran (thread principal) : le déchiffrement passe par le binder du Keystore.
+        val unreadable = withContext(keystoreDispatcher) { DeviceSecrets.unreadable(device, secrets) }
+        if (unreadable.isEmpty()) return EditableDevice(device, secretLost = false)
+        runCatching { dropUnreadableSecrets(id, unreadable) }.onFailure { if (it is CancellationException) throw it }
+        return EditableDevice(DeviceSecrets.withoutUnreadable(device, unreadable), secretLost = true)
     }
 
     /**
@@ -245,6 +277,47 @@ class DeviceRepository(
             produceFile = produceFile,
         )
     }
+
+    /**
+     * Fusionne dans l'appareil [connected] (tel que chargé pour la connexion) les extras [changed]
+     * et retire [removed] (jeton obtenu à la connexion), sans réécrire le reste : l'appareil est
+     * relu DANS la transaction et la fusion y est décidée, une modification faite entre-temps
+     * (nom, options) est donc conservée. Si sa cible (hôte, port ou schéma) a changé depuis le
+     * chargement, aucun secret n'est fusionné : le jeton de l'ancien serveur ne doit jamais être
+     * rattaché au nouveau. Les secrets en clair de [changed] sont chiffrés avant la transaction,
+     * comme dans [save]. Sans effet si l'appareil n'est plus enregistré.
+     */
+    suspend fun mergeExtras(connected: Device, changed: Map<String, String>, removed: Set<String>) {
+        val id = connected.id
+        val base = connected.copy(extras = connected.extras - DeviceSecrets.PASSWORD)
+        val candidate = base.copy(extras = base.extras - removed + changed)
+        // Chiffrement hors transaction : en cas d'échec, rien n'est écrit (et surtout pas en clair).
+        val stored = DeviceSecrets.forStorage(candidate, changed[DeviceSecrets.PASSWORD], secrets, base).extras
+        val set = stored.filter { (key, value) -> base.extras[key] != value }
+        val unset = base.extras.keys - stored.keys
+        var sameTarget = false
+        if (set.isNotEmpty() || unset.isNotEmpty() || DeviceSecrets.PASSWORD in changed) {
+            store.edit { prefs ->
+                prefs.updateDevices { raw ->
+                    DeviceCodec.mapValid(raw) { current ->
+                        if (current.id != id) return@mapValid current
+                        sameTarget = DeviceSecrets.sameTarget(current, connected)
+                        if (sameTarget) {
+                            current.copy(extras = current.extras - unset + set)
+                        } else {
+                            // Cible modifiée pendant la connexion : seuls les extras non secrets suivent.
+                            val keep = { key: String -> key !in DeviceSecrets.SECRET_KEYS }
+                            current.copy(extras = current.extras - unset.filter(keep).toSet() + set.filterKeys(keep))
+                        }
+                    }
+                }
+            }
+        }
+        if (DeviceSecrets.isTransient(connected.kind) && (DeviceSecrets.PASSWORD in removed || DeviceSecrets.PASSWORD in changed)) {
+            val plain = changed[DeviceSecrets.PASSWORD]
+            if (plain.isNullOrEmpty()) transientPasswords.remove(id) else if (sameTarget) transientPasswords[id] = plain
+        }
+    }
 }
 
 /** Règles de stockage des secrets d'appareil (logique pure, testée unitairement). */
@@ -277,6 +350,16 @@ internal object DeviceSecrets {
     fun isTransient(kind: DeviceKind) = kind == DeviceKind.JELLYFIN || kind == DeviceKind.EMBY
 
     fun hasPlainToken(device: Device): Boolean = TOKENS.keys.any { it in device.extras }
+
+    /**
+     * Même cible réseau (hôte, port, schéma HTTP/HTTPS) : un secret obtenu pour l'une ne doit
+     * jamais être rattaché à l'autre.
+     */
+    fun sameTarget(a: Device, b: Device): Boolean =
+        a.host.equals(b.host, ignoreCase = true) && a.port == b.port && a.extras[SCHEME] == b.extras[SCHEME]
+
+    /** Clé du schéma (`DeviceOptions.SCHEME`, absente = HTTP), lue ici sans dépendre du formulaire. */
+    private const val SCHEME = "scheme"
 
     /** Secret en clair à ne pas laisser dans le stockage (migration d'une version antérieure). */
     fun hasPlainSecrets(device: Device): Boolean = PASSWORD in device.extras || hasPlainToken(device)
@@ -315,19 +398,67 @@ internal object DeviceSecrets {
 
     /**
      * Remplace le mot de passe et les jetons chiffrés par leur valeur en clair, pour la connexion
-     * uniquement (appelé par la fabrique de contrôleurs). Un chiffré illisible est retiré.
+     * uniquement (appelé par la fabrique de contrôleurs). Distingue un secret ABSENT (aucune clé
+     * chiffrée : rien à faire) d'un secret ILLISIBLE (clé chiffrée que [secrets] ne sait plus
+     * déchiffrer) : ce dernier est retiré de l'appareil renvoyé et signalé dans
+     * [RevealedDevice.unreadable], pour que l'appelant refuse de se connecter sans lui et le
+     * purge du stockage, au lieu de partir silencieusement sans mot de passe. Un échec PASSAGER
+     * du Keystore ([Decryption.Unavailable]) est signalé à part ([RevealedDevice.unavailable]) :
+     * le secret est peut-être intact, il ne doit pas être purgé.
      */
-    fun reveal(device: Device, secrets: SecretStore): Device {
-        if (SEALED.values.none { it in device.extras }) return device
+    fun reveal(device: Device, secrets: SecretStore): RevealedDevice {
+        if (SEALED.values.none { it in device.extras }) return RevealedDevice(device)
         val extras = device.extras.toMutableMap()
+        val unreadable = mutableMapOf<String, String>()
+        val unavailable = mutableSetOf<String>()
         for ((plainKey, sealedKey) in SEALED) {
             val encrypted = extras.remove(sealedKey) ?: continue
             // Une valeur en clair déjà présente (saisie non enregistrée) reste prioritaire.
-            if (plainKey !in extras) secrets.decrypt(encrypted)?.let { extras[plainKey] = it }
+            if (plainKey in extras) continue
+            when (val result = secrets.open(encrypted)) {
+                is Decryption.Plain -> extras[plainKey] = result.value
+                Decryption.Lost -> unreadable[sealedKey] = encrypted
+                Decryption.Unavailable -> unavailable += sealedKey
+            }
         }
-        return device.copy(extras = extras)
+        return RevealedDevice(device.copy(extras = extras), unreadable, unavailable)
+    }
+
+    /**
+     * Chiffrés de [device] que [secrets] ne sait plus déchiffrer (clé chiffrée → valeur chiffrée),
+     * sans garder les valeurs en clair ; seuls les secrets PERDUS ([Decryption.Lost]) sont listés,
+     * jamais ceux qu'un Keystore momentanément indisponible n'a pas pu lire. Sert au formulaire pour ne pas annoncer un mot de passe
+     * « enregistré » qui ne l'est plus vraiment.
+     */
+    fun unreadable(device: Device, secrets: SecretStore): Map<String, String> =
+        SEALED.values.mapNotNull { key -> device.extras[key]?.takeIf { secrets.open(it) == Decryption.Lost }?.let { key to it } }.toMap()
+
+    /** Retire de [device] les chiffrés [unreadable], seulement s'ils n'ont pas changé entre-temps. */
+    fun withoutUnreadable(device: Device, unreadable: Map<String, String>): Device {
+        val stale = unreadable.filter { (key, value) -> device.extras[key] == value }.keys
+        return if (stale.isEmpty()) device else device.copy(extras = device.extras - stale)
     }
 }
+
+/**
+ * Résultat de [DeviceSecrets.reveal] : [device] porte les secrets lisibles en clair ;
+ * [unreadable] liste les secrets enregistrés devenus illisibles (clé chiffrée → valeur chiffrée),
+ * vide si tout a pu être déchiffré ou s'il n'y avait rien à déchiffrer ; [unavailable] liste les
+ * clés chiffrées que le Keystore n'a pas pu lire POUR LE MOMENT (à conserver, réessayer plus tard).
+ */
+internal data class RevealedDevice(
+    val device: Device,
+    val unreadable: Map<String, String> = emptyMap(),
+    val unavailable: Set<String> = emptySet(),
+) {
+    override fun toString(): String = "RevealedDevice(id=${device.id}, unreadable=${unreadable.keys}, unavailable=$unavailable)"
+}
+
+/**
+ * Appareil enregistré chargé pour le formulaire ([DeviceRepository.getForEdit]) : [secretLost]
+ * indique qu'un mot de passe ou jeton enregistré était illisible et vient d'être effacé.
+ */
+data class EditableDevice(val device: Device, val secretLost: Boolean)
 
 /**
  * Sérialisation de la liste d'appareils, élément par élément : une entrée illisible (type

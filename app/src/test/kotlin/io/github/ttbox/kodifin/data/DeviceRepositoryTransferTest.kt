@@ -60,7 +60,7 @@ class DeviceRepositoryTransferTest {
         assertEquals(ImportReport(updated = 1), r.importDevices(renamed, ImportPolicy.REPLACE_EXISTING))
         val k = r.saved.first().single()
         assertEquals("Salon", k.name)
-        assertEquals("motdepasse", DeviceSecrets.reveal(k, secrets).extras["password"])
+        assertEquals("motdepasse", DeviceSecrets.reveal(k, secrets).device.extras["password"])
     }
 
     @Test

@@ -115,6 +115,10 @@ fun diagnose(error: Throwable): Diagnosis {
         RemoteError.CredentialsRejected, RemoteError.SessionExpired, RemoteError.PasswordRejected ->
             return Diagnosis(reason.text, UiText.Res(R.string.diag_credentials_advice), Problem.CREDENTIALS)
         is RemoteError.Unreachable -> return unreachable()
+        RemoteError.StoredSecretUnreadable ->
+            return Diagnosis(R.string.diag_stored_secret_title, R.string.diag_stored_secret_advice, Problem.CREDENTIALS)
+        RemoteError.SecretStoreUnavailable ->
+            return Diagnosis(R.string.diag_secret_store_title, R.string.diag_secret_store_advice, Problem.OTHER)
         else -> Unit
     }
     // Autre raison typée (ou réglage précis à faire) : son texte dit déjà quoi faire.
