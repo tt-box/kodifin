@@ -19,6 +19,7 @@ import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
+import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.PendingResult
 import io.github.ttbox.kodifin.model.Device
 import io.github.ttbox.kodifin.model.DeviceKind
@@ -26,12 +27,14 @@ import io.github.ttbox.kodifin.model.RemoteError
 import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.Setup
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -55,11 +58,21 @@ private var sharedCastContext: CastContext? = null
 /**
  * Initialisation asynchrone du SDK Cast (API `getSharedInstance(Context, Executor)`), sur le
  * thread principal exigé par le SDK. Le contexte obtenu est mémorisé. Lève [RemoteException]
- * si les services Google Play sont absents ou trop anciens.
+ * si les services Google Play sont absents ou trop anciens, et [RemoteError.Timeout] si
+ * l'initialisation dépasse [CAST_INIT_TIMEOUT_MS].
  */
 suspend fun castContext(context: Context): CastContext {
     sharedCastContext?.let { return it }
-    return withContext(Dispatchers.Main.immediate) {
+    return try {
+        withTimeout(CAST_INIT_TIMEOUT_MS) { initCastContext(context) }
+    } catch (e: TimeoutCancellationException) {
+        // Initialisation bloquée : l'appelant (qui peut tenir un verrou) n'attend pas indéfiniment.
+        throw RemoteException(RemoteError.Timeout, e)
+    }
+}
+
+private suspend fun initCastContext(context: Context): CastContext =
+    withContext(Dispatchers.Main.immediate) {
         sharedCastContext ?: suspendCancellableCoroutine { cont ->
             val task = try {
                 CastContext.getSharedInstance(context.applicationContext, castInitExecutor)
@@ -76,7 +89,6 @@ suspend fun castContext(context: Context): CastContext {
             }
         }
     }
-}
 
 private val castSelector: MediaRouteSelector = MediaRouteSelector.Builder()
     .addControlCategory(CastMediaControlIntent.categoryForCast(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID))
@@ -122,12 +134,16 @@ private suspend fun PendingResult<RemoteMediaClient.MediaChannelResult>.awaitRes
         cont.invokeOnCancellation { runCatching { cancel() } }
         setResultCallback({ if (cont.isActive) cont.resume(it.status) }, RESULT_TIMEOUT_S, TimeUnit.SECONDS)
     }
+    if (status.statusCode == CommonStatusCodes.TIMEOUT) throw RemoteException(RemoteError.Timeout)
     if (!status.isSuccess) {
         throw RemoteException(RemoteError.DeviceRefused(status.statusMessage?.takeIf { it.isNotBlank() }, status.statusCode.toString()))
     }
 }
 
 private const val RESULT_TIMEOUT_S = 15L
+
+/** Délai maximal d'initialisation du SDK (services Google Play lents ou bloqués). */
+internal const val CAST_INIT_TIMEOUT_MS = 15_000L
 
 /** Clé des données personnalisées portant le plafond de débit (bit/s). */
 private const val CUSTOM_MAX_BITRATE = "maxBitrate"
@@ -278,54 +294,56 @@ private class SdkCastMedia(private val client: RemoteMediaClient) : CastMediaPor
 
     override val currentItemId: Int? get() = client.mediaStatus?.currentItemId?.takeIf { it != MediaQueueItem.INVALID_ITEM_ID }
 
-    override fun setActiveTracks(ids: Set<Long>) {
-        client.setActiveMediaTracks(ids.toLongArray())
+    // Chaque commande attend la réponse du récepteur (comme load) : un refus n'est plus ignoré.
+    override suspend fun setActiveTracks(ids: Set<Long>) {
+        client.setActiveMediaTracks(ids.toLongArray()).awaitResult()
     }
 
-    override fun setPlaybackRate(rate: Double) {
-        client.setPlaybackRate(rate)
+    override suspend fun setPlaybackRate(rate: Double) {
+        client.setPlaybackRate(rate).awaitResult()
     }
 
-    override fun setRepeat(mode: CastRepeat) {
+    override suspend fun setRepeat(mode: CastRepeat) {
         val sdk = when (mode) {
             CastRepeat.OFF -> MediaStatus.REPEAT_MODE_REPEAT_OFF
             CastRepeat.ALL -> MediaStatus.REPEAT_MODE_REPEAT_ALL
             CastRepeat.SINGLE -> MediaStatus.REPEAT_MODE_REPEAT_SINGLE
             CastRepeat.ALL_AND_SHUFFLE -> MediaStatus.REPEAT_MODE_REPEAT_ALL_AND_SHUFFLE
         }
-        client.queueSetRepeatMode(sdk, null)
+        client.queueSetRepeatMode(sdk, null).awaitResult()
     }
 
-    override fun jumpTo(itemId: Int) {
-        client.queueJumpToItem(itemId, null)
+    override suspend fun jumpTo(itemId: Int) {
+        client.queueJumpToItem(itemId, null).awaitResult()
     }
 
-    override fun removeItems(itemIds: List<Int>) {
-        if (itemIds.isNotEmpty()) client.queueRemoveItems(itemIds.toIntArray(), null)
+    override suspend fun removeItems(itemIds: List<Int>) {
+        if (itemIds.isNotEmpty()) client.queueRemoveItems(itemIds.toIntArray(), null).awaitResult()
     }
 
-    override fun togglePlayback() {
-        client.togglePlayback()
+    override suspend fun togglePlayback() {
+        // RemoteMediaClient.togglePlayback() ne rend pas de résultat : même logique avec play/pause.
+        (if (client.isPlaying) client.pause() else client.play()).awaitResult()
     }
 
-    override fun stop() {
-        client.stop()
+    override suspend fun stop() {
+        client.stop().awaitResult()
     }
 
-    override fun next() {
-        client.queueNext(null)
+    override suspend fun next() {
+        client.queueNext(null).awaitResult()
     }
 
-    override fun previous() {
-        client.queuePrev(null)
+    override suspend fun previous() {
+        client.queuePrev(null).awaitResult()
     }
 
-    override fun seek(positionMs: Long) {
-        client.seek(MediaSeekOptions.Builder().setPosition(positionMs).build())
+    override suspend fun seek(positionMs: Long) {
+        client.seek(MediaSeekOptions.Builder().setPosition(positionMs).build()).awaitResult()
     }
 
-    override fun setTextTrackStyle(style: CastSubtitleStyle) {
-        client.setTextTrackStyle(style.toSdk())
+    override suspend fun setTextTrackStyle(style: CastSubtitleStyle) {
+        client.setTextTrackStyle(style.toSdk()).awaitResult()
     }
 
     override suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions) {

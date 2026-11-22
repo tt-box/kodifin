@@ -84,7 +84,7 @@ class AirPlayController(
     private fun request(path: String): Request.Builder {
         val root = base ?: throw RemoteException(RemoteError.InvalidAddress("${device.host}:${device.port}"))
         return Request.Builder()
-            .url(root.resolve(path) ?: throw IllegalArgumentException("Chemin AirPlay invalide : $path"))
+            .url(root.resolve(path) ?: throw RemoteException(RemoteError.InvalidAddress("${device.host}:${device.port}")))
             .header("User-Agent", "MediaControl/1.0")
             .header("X-Apple-Device-ID", clientDeviceId)
             .header("X-Apple-Session-ID", sessionId)
@@ -102,8 +102,9 @@ class AirPlayController(
         // Le corps text/parameters est analysé ligne à ligne : un retour à la ligne (y compris
         // NEL U+0085, LS U+2028, PS U+2029) injecterait un paramètre ; NUL et les autres
         // caractères de contrôle tronqueraient ou corrompraient la valeur.
-        require(url.none { it.isISOControl() || it == ' ' || it == ' ' }) {
-            "URL invalide : retour à la ligne ou caractère de contrôle interdit"
+        // L'adresse n'est pas reprise dans l'erreur : elle contient justement des caractères à ne pas afficher.
+        if (url.any { it.isISOControl() || it == ' ' || it == ' ' }) {
+            throw RemoteException(RemoteError.InvalidAddress())
         }
         val body = "Content-Location: $url\nStart-Position: 0.000000\n"
         call(request("/play").post(body.toRequestBody(TEXT_PARAMETERS)).build())
@@ -150,12 +151,16 @@ class AirPlayController(
     /**
      * État réel lu sur `/playback-info`. Si le récepteur ne l'implémente pas (404, 501, plist
      * sans `rate`), repli sur `/scrub` (position, durée) et le dernier état connu.
-     * Seules les erreurs de communication sont ignorées : l'annulation se propage.
+     * Une erreur de communication isolée est ignorée ; après [MAX_POLL_FAILURES] sondages
+     * consécutifs sans état, le flux se termine par la dernière erreur (récepteur éteint,
+     * session perdue), au collecteur de décider d'une reprise. L'annulation se propage.
      */
     override fun playbackState(): Flow<PlaybackState> = flow {
         var playbackInfoSupported = true
+        var failures = 0
         while (true) {
             var state: PlaybackState? = null
+            var error: RemoteException? = null
             if (playbackInfoSupported) {
                 try {
                     val info = parsePlist(call(request("/playback-info").get().build()))
@@ -173,14 +178,16 @@ class AirPlayController(
                         state = PlaybackState()
                     }
                 } catch (e: HttpStatusException) {
-                    if (e.code == 404 || e.code == 501) playbackInfoSupported = false
-                } catch (_: RemoteException) {
+                    if (e.code == 404 || e.code == 501) playbackInfoSupported = false else error = e
+                } catch (e: RemoteException) {
+                    error = e
                 }
             }
             if (state == null) {
                 val text = try {
                     call(request("/scrub").get().build())
-                } catch (_: RemoteException) {
+                } catch (e: RemoteException) {
+                    error = e
                     null
                 }
                 if (text != null) {
@@ -188,7 +195,12 @@ class AirPlayController(
                     state = PlaybackState(isPlaying = playing, positionMs = position, durationMs = duration)
                 }
             }
-            state?.let { emit(it) }
+            if (state != null) {
+                failures = 0
+                emit(state)
+            } else if (error != null && ++failures >= MAX_POLL_FAILURES) {
+                throw error
+            }
             // delay(0) rend la main sans suspendre : yield() évite une boucle active non annulable.
             if (pollIntervalMs > 0) delay(pollIntervalMs) else yield()
         }
@@ -217,6 +229,9 @@ class AirPlayController(
         /** Durée de maintien des connexions inactives (voir la documentation de la classe). */
         const val KEEP_ALIVE_HOURS = 4L
         private const val MAX_IDLE_CONNECTIONS = 4
+
+        /** Sondages consécutifs en échec avant de terminer le flux d'état. */
+        const val MAX_POLL_FAILURES = 3
 
         /** Pool partagé par tous les contrôleurs AirPlay : borne le nombre de connexions maintenues. */
         private val SHARED_POOL = ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_HOURS, TimeUnit.HOURS)

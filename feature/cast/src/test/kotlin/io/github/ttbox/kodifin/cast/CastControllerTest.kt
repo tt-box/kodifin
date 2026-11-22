@@ -38,11 +38,11 @@ private class FakeMedia(
         calls += call
     }
 
-    override fun togglePlayback() = record("toggle")
-    override fun stop() = record("stop")
-    override fun next() = record("next")
-    override fun previous() = record("previous")
-    override fun seek(positionMs: Long) = record("seek:$positionMs")
+    override suspend fun togglePlayback() = record("toggle")
+    override suspend fun stop() = record("stop")
+    override suspend fun next() = record("next")
+    override suspend fun previous() = record("previous")
+    override suspend fun seek(positionMs: Long) = record("seek:$positionMs")
     val loadOptions = mutableListOf<CastLoadOptions>()
     val styles = mutableListOf<CastSubtitleStyle>()
 
@@ -51,7 +51,7 @@ private class FakeMedia(
         loadOptions += options
     }
 
-    override fun setTextTrackStyle(style: CastSubtitleStyle) {
+    override suspend fun setTextTrackStyle(style: CastSubtitleStyle) {
         failure?.let { throw it }
         styles += style
     }
@@ -79,6 +79,9 @@ private class FakePlatform : CastPlatform {
     val listeners = mutableListOf<CastSessionEvents>()
     var readyFailure: Exception? = null
 
+    /** SDK bloqué à l'initialisation tant qu'il n'est pas complété. */
+    var readyGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     /** Réaction à la sélection d'une route ; par défaut la session s'ouvre aussitôt. */
     var onSelect: (CastRoute) -> Unit = { route ->
         val session = FakeSession(route.deviceId)
@@ -88,6 +91,7 @@ private class FakePlatform : CastPlatform {
 
     override suspend fun ready() {
         readyFailure?.let { throw it }
+        readyGate?.await()
     }
 
     override fun routes(): List<CastRoute> = routes
@@ -252,6 +256,28 @@ class CastControllerTest {
         val unavailable = RemoteException(RemoteError.SetupRequired(Setup.GOOGLE_CAST))
         platform.readyFailure = unavailable
         assertEquals(unavailable.reason, assertThrows<RemoteException> { controller().connect() }.reason)
+    }
+
+    @Test
+    fun `a stuck sdk initialisation times out and releases the session lock`() = runTest {
+        platform.readyGate = kotlinx.coroutines.CompletableDeferred()
+        platform.current = FakeSession("cast-salon")
+        val c = CastController(chromecast(), platform, EmptyCoroutineContext, readyTimeoutMs = 1_000)
+        assertEquals(RemoteError.Timeout, assertThrows<RemoteException> { c.connect() }.reason)
+        // Le verrou est rendu : une fois le SDK prêt, les commandes passent.
+        platform.readyGate = null
+        c.send(RemoteKey.STOP)
+        assertEquals(listOf("stop"), (platform.current!!.media as FakeMedia).calls)
+    }
+
+    @Test
+    fun `a command refused by the receiver is reported`() = runTest {
+        val media = FakeMedia()
+        platform.current = FakeSession("cast-salon", media = media)
+        val refused = RemoteException(RemoteError.DeviceRefused("Invalid request", "2100"))
+        media.failure = refused
+        assertEquals(refused.reason, assertThrows<RemoteException> { controller().seekTo(1_000) }.reason)
+        assertEquals(refused.reason, assertThrows<RemoteException> { controller().send(RemoteKey.NEXT) }.reason)
     }
 
     @Test

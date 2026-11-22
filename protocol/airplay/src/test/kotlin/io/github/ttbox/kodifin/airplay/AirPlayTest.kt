@@ -8,7 +8,6 @@ import io.github.ttbox.kodifin.model.RemoteError
 import io.github.ttbox.kodifin.model.RemoteKey
 import io.github.ttbox.kodifin.model.Setup
 import io.github.ttbox.kodifin.model.UnsupportedAction
-import io.github.ttbox.kodifin.testing.assertFailsWithMessage
 import io.github.ttbox.kodifin.testing.assertFailsWithReason
 import io.github.ttbox.kodifin.testing.assertUnsupported
 import io.github.ttbox.kodifin.testing.awaitRequest
@@ -31,6 +30,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
@@ -137,7 +137,7 @@ class AirPlayTest {
     fun `playUrl rejects line breaks and control characters that would inject parameters`() = runTest {
         val forbidden = listOf('\r', '\n', '\u0085', ' ', ' ', '\u0000')
         forbidden.forEach { c ->
-            assertFailsWithMessage<IllegalArgumentException>("URL invalide") {
+            assertFailsWithReason(RemoteError.InvalidAddress()) {
                 controller().playUrl("http://nas/a.mp4${c}Start-Position: 0.9")
             }
         }
@@ -182,6 +182,28 @@ class AirPlayTest {
         assertEquals("/playback-info", server.awaitRequest().url.encodedPath)
         assertEquals("/scrub", server.awaitRequest().url.encodedPath)
         assertEquals("/playback-info", server.awaitRequest().url.encodedPath)
+    }
+
+    @Test
+    fun `playback state ends with the error after consecutive failed polls`() = runBlocking {
+        // Trois sondages complets en échec (/playback-info puis /scrub) : le flux se termine.
+        repeat(AirPlayController.MAX_POLL_FAILURES * 2) { server.enqueue(MockResponse.Builder().code(503).build()) }
+        val e = assertFailsWith<HttpStatusException> {
+            withTimeout(5_000) { controller(pollIntervalMs = 0).playbackState().toList() }
+        }
+        assertEquals(RemoteError.Http(503), e.reason)
+        assertEquals(AirPlayController.MAX_POLL_FAILURES * 2, server.requestCount)
+    }
+
+    @Test
+    fun `a successful poll resets the failure count`() = runBlocking {
+        repeat(4) { server.enqueue(MockResponse.Builder().code(503).build()) }
+        server.enqueue(MockResponse.Builder().body(PLAYING_PLIST).build())
+        repeat(4) { server.enqueue(MockResponse.Builder().code(503).build()) }
+        server.enqueue(MockResponse.Builder().body(PLAYING_PLIST).build())
+        val states = withTimeout(5_000) { controller(pollIntervalMs = 0).playbackState().take(2).toList() }
+        assertEquals(2, states.size)
+        assertEquals(10, server.requestCount)
     }
 
     @Test

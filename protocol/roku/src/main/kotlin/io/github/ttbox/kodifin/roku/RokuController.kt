@@ -99,7 +99,8 @@ class RokuController(
 
     /** Lance une chaîne par son identifiant (numérique, ou « dev » pour la chaîne en développement). */
     suspend fun launch(appId: String) {
-        require(APP_ID.matches(appId)) { "Identifiant de chaîne Roku invalide : $appId" }
+        // Identifiant inséré dans le chemin : tout autre format est refusé (traversée de chemin).
+        if (!APP_ID.matches(appId)) throw RemoteException(RemoteError.ItemNotFound)
         post(listOf("launch", appId))
     }
 

@@ -145,8 +145,18 @@ class AdbPairingTest {
         try {
             AdbPairingClient(tempKeys()).pair("127.0.0.1", 1, "12345")
             fail()
-        } catch (e: IllegalArgumentException) {
-            // attendu
+        } catch (e: RemoteException) {
+            assertEquals(RemoteError.CodeRejected, e.reason)
+        }
+    }
+
+    @Test
+    fun `out of range port is an invalid address`() {
+        try {
+            AdbPairingClient(tempKeys()).pair("127.0.0.1", 70_000, "123456")
+            fail()
+        } catch (e: RemoteException) {
+            assertEquals(RemoteError.InvalidAddress("127.0.0.1:70000"), e.reason)
         }
     }
 

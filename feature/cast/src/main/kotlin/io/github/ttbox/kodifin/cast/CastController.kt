@@ -25,6 +25,9 @@ import io.github.ttbox.kodifin.model.RemoteError
 import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.RemoteKey
 import io.github.ttbox.kodifin.model.requireKey
+import io.github.ttbox.kodifin.model.HostResolver
+import io.github.ttbox.kodifin.model.SYSTEM_HOST_RESOLVER
+import io.github.ttbox.kodifin.model.fetchImage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -37,6 +40,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
 import java.io.IOException
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -52,8 +56,13 @@ class CastController internal constructor(
     private val main: CoroutineContext,
     private val sessionTimeoutMs: Long = SESSION_TIMEOUT_MS,
     private val settings: suspend () -> CastSettings = { CastSettings() },
-    /** Téléchargement des pochettes (adresses publiées par l'application émettrice) ; `null` : sans image. */
+    /**
+     * Téléchargement des pochettes (adresses publiées par l'application émettrice) ; `null` :
+     * sans image. En production : [lanImageFetcher], qui refuse tout hôte public.
+     */
     private val imageFetcher: (suspend (String) -> ByteArray?)? = null,
+    /** Délai d'initialisation du SDK ([CastPlatform.ready]), appelée sous [sessionLock]. */
+    private val readyTimeoutMs: Long = READY_TIMEOUT_MS,
 ) : RemoteController, SupportsTracks, SupportsSeekStep, SupportsSpeed, SupportsPlayMode, SupportsQueue,
     SupportsImages, SupportsPower, SupportsTransferOut {
 
@@ -107,10 +116,22 @@ class CastController internal constructor(
     private suspend fun session(): CastSessionPort = sessionLock.withLock {
         withContext(main) {
             translating {
-                platform.ready()
+                ready()
                 platform.currentSession()?.takeIf { it.isConnected && isOurs(it) }?.let { return@translating it }
                 openSession()
             }
+        }
+    }
+
+    /**
+     * Initialisation du SDK bornée dans le temps : elle se fait sous [sessionLock], et un SDK
+     * bloqué (services Google Play) gèlerait sinon toutes les commandes suivantes.
+     */
+    private suspend fun ready() {
+        try {
+            withTimeout(readyTimeoutMs) { platform.ready() }
+        } catch (e: TimeoutCancellationException) {
+            throw RemoteException(RemoteError.Timeout, e)
         }
     }
 
@@ -298,7 +319,7 @@ class CastController internal constructor(
     suspend fun endSession() {
         withContext(main) {
             runCatching {
-                platform.ready()
+                ready()
                 if (isOurs(platform.currentSession())) platform.endCurrentSession()
             }
         }
@@ -310,16 +331,20 @@ class CastController internal constructor(
         val media = s.media ?: return@onMain MediaDetails(speed = 0)
         val tracks = media.tracks
         val active = media.activeTrackIds
-        fun list(type: CastTrackType) = tracks.filter { it.type == type }.mapIndexed { i, t ->
-            MediaTrack(t.id.toInt(), t.name?.takeIf { it.isNotBlank() } ?: t.language ?: "Piste ${i + 1}", t.language)
+        // Libellé : nom ou langue de la piste ; vide sinon, l'application affiche alors un
+        // libellé traduit (« Piste N ») : aucun texte destiné à l'utilisateur n'est rédigé ici.
+        val ids = tracks.map { it.id }
+        fun list(type: CastTrackType) = tracks.filter { it.type == type }.map { t ->
+            MediaTrack(trackKey(t.id, ids), t.name?.takeIf { it.isNotBlank() } ?: t.language?.takeIf { it.isNotBlank() }.orEmpty(), t.language)
         }
+        fun current(type: CastTrackType) = tracks.firstOrNull { it.type == type && it.id in active }?.let { trackKey(it.id, ids) }
         val audio = list(CastTrackType.AUDIO)
         val text = list(CastTrackType.TEXT)
         MediaDetails(
             audioTracks = audio,
-            currentAudio = audio.firstOrNull { it.id.toLong() in active }?.id,
+            currentAudio = current(CastTrackType.AUDIO),
             subtitles = text,
-            currentSubtitle = text.firstOrNull { it.id.toLong() in active }?.id,
+            currentSubtitle = current(CastTrackType.TEXT),
             repeat = when (media.repeat) {
                 CastRepeat.OFF -> RepeatMode.OFF
                 CastRepeat.SINGLE -> RepeatMode.ONE
@@ -350,8 +375,45 @@ class CastController internal constructor(
         selectTrack(type, cycle[(cycle.indexOf(current) + 1) % cycle.size])
     }
 
-    override suspend fun setAudioTrack(id: Int) = selectTrack(CastTrackType.AUDIO, id.toLong())
-    override suspend fun setSubtitle(id: Int?) = selectTrack(CastTrackType.TEXT, id?.toLong())
+    /**
+     * Clés `Int` attribuées aux pistes dont l'identifiant Cast (`Long`) ne tient pas dans un
+     * `Int` ; les autres sont publiées sous leur propre identifiant.
+     */
+    private val syntheticTrackKeys = HashMap<Long, Int>()
+
+    /**
+     * Clé `Int` de la piste [id] pour [MediaTrack] (dont l'identifiant est un `Int`) : l'identifiant
+     * lui-même s'il tient dans un `Int` (cas usuel), sinon une clé attribuée pour la durée du
+     * contrôleur, distincte des identifiants réels [allIds]. La sélection repasse toujours par
+     * l'identifiant `Long` d'origine : aucune troncature.
+     */
+    private fun trackKey(id: Long, allIds: Collection<Long>): Int {
+        if (id in Int.MIN_VALUE..Int.MAX_VALUE) return id.toInt()
+        return synchronized(syntheticTrackKeys) {
+            syntheticTrackKeys.getOrPut(id) {
+                val used = syntheticTrackKeys.values.toSet()
+                generateSequence(Int.MIN_VALUE) { it + 1 }.first { it.toLong() !in allIds && it !in used }
+            }
+        }
+    }
+
+    /**
+     * Retrouve l'identifiant Cast (Long, non tronqué) de la piste de nature [type] publiée sous
+     * la clé [key] ; piste disparue entre-temps : [RemoteError.ItemNotFound].
+     */
+    private suspend fun selectTrackByKey(type: CastTrackType, key: Int?) {
+        if (key == null) return selectTrack(type, null)
+        val id = onMain { s ->
+            val ofType = s.media().tracks.filter { it.type == type }.map { it.id }
+            // Correspondance exacte d'abord : une clé condensée ne masque jamais un identifiant réel.
+            ofType.firstOrNull { it == key.toLong() }
+                ?: synchronized(syntheticTrackKeys) { ofType.firstOrNull { syntheticTrackKeys[it] == key } }
+        } ?: throw RemoteException(RemoteError.ItemNotFound)
+        selectTrack(type, id)
+    }
+
+    override suspend fun setAudioTrack(id: Int) = selectTrackByKey(CastTrackType.AUDIO, id)
+    override suspend fun setSubtitle(id: Int?) = selectTrackByKey(CastTrackType.TEXT, id)
     override suspend fun nextSubtitle() = cycleTrack(CastTrackType.TEXT, allowNone = true)
     override suspend fun nextAudioTrack() = cycleTrack(CastTrackType.AUDIO, allowNone = false)
 
@@ -391,7 +453,9 @@ class CastController internal constructor(
         s.media?.queueItems.orEmpty().map { item ->
             MediaEntry(
                 id = item.itemId.toString(),
-                title = item.title?.takeIf { it.isNotBlank() } ?: "Élément ${item.itemId}",
+                // Sans titre : chaîne vide, l'application affiche « Élément N » traduit d'après la
+                // position dans la file (l'identifiant Cast est interne, sans sens pour l'utilisateur).
+                title = item.title?.takeIf { it.isNotBlank() }.orEmpty(),
                 subtitle = item.subtitle,
                 imageKey = item.imageUrl.takeIf { imageFetcher != null },
             )
@@ -443,6 +507,20 @@ class CastController internal constructor(
     }
 
     companion object {
+        /**
+         * Téléchargeur de pochettes respectant la vie privée : seul [device] (le Chromecast) ou
+         * un hôte dont toutes les adresses sont locales (serveur multimédia du LAN qui diffuse)
+         * est contacté, via [fetchImage]. Les pochettes servies par un CDN public (YouTube,
+         * Netflix, Spotify… : `i.ytimg.com` par exemple) ne sont VOLONTAIREMENT plus affichées :
+         * les télécharger révélerait l'adresse IP du téléphone et le contenu regardé à un tiers.
+         * Refus → `null` (pas d'image), sans requête vers l'hôte public.
+         */
+        fun lanImageFetcher(
+            http: OkHttpClient,
+            device: Device,
+            resolve: HostResolver = SYSTEM_HOST_RESOLVER,
+        ): suspend (String) -> ByteArray? = { url -> http.fetchImage(url, device.host, resolve = resolve) }
+
         /** Vitesses proposées par le récepteur multimédia par défaut (0,5 à 2). */
         internal val RATES = listOf(0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 
@@ -457,6 +535,9 @@ class CastController internal constructor(
         private const val SEEK_STEP_MS = 10_000L
         private const val VOLUME_STEP = 0.05
         private const val SESSION_TIMEOUT_MS = 15_000L
+
+        /** Un peu plus que le délai propre de [castContext] : c'est lui qui répond d'ordinaire. */
+        private const val READY_TIMEOUT_MS = CAST_INIT_TIMEOUT_MS + 5_000L
         private const val POLL_INTERVAL_MS = 1_000L
     }
 }

@@ -51,17 +51,19 @@ interface CastMediaPort {
     val contentUrl: String? get() = null
     val contentType: String? get() = null
 
-    fun setActiveTracks(ids: Set<Long>) {}
-    fun setPlaybackRate(rate: Double) {}
-    fun setRepeat(mode: CastRepeat) {}
-    fun jumpTo(itemId: Int) {}
-    fun removeItems(itemIds: List<Int>) {}
+    // Commandes : chacune attend la réponse du récepteur et lève
+    // [io.github.ttbox.kodifin.model.RemoteException] si elle est refusée ou sans réponse.
+    suspend fun setActiveTracks(ids: Set<Long>) {}
+    suspend fun setPlaybackRate(rate: Double) {}
+    suspend fun setRepeat(mode: CastRepeat) {}
+    suspend fun jumpTo(itemId: Int) {}
+    suspend fun removeItems(itemIds: List<Int>) {}
 
-    fun togglePlayback()
-    fun stop()
-    fun next()
-    fun previous()
-    fun seek(positionMs: Long)
+    suspend fun togglePlayback()
+    suspend fun stop()
+    suspend fun next()
+    suspend fun previous()
+    suspend fun seek(positionMs: Long)
 
     /**
      * Charge et lance un média avec les [options] (style des sous-titres, plafond de débit) ;
@@ -70,7 +72,7 @@ interface CastMediaPort {
     suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions)
 
     /** Applique le style des sous-titres au média en cours (RemoteMediaClient.setTextTrackStyle). */
-    fun setTextTrackStyle(style: CastSubtitleStyle)
+    suspend fun setTextTrackStyle(style: CastSubtitleStyle)
 }
 
 /** Session Cast (CastSession). */

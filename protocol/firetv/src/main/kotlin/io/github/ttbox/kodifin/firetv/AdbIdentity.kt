@@ -36,10 +36,13 @@ class AdbIdentity internal constructor(
     companion object {
         /** Charge (ou génère) la paire de clés de [keyDir] et en dérive le certificat. */
         fun load(keyDir: File): AdbIdentity {
-            AdbKeys.load(keyDir)
-            val privateKey = readPrivateKey(File(keyDir, "adbkey").readText())
-            val adbPublicKey = File(keyDir, "adbkey.pub").readText().trim()
-            return fromPrivateKey(privateKey, adbPublicKey)
+            // Lecture sous le verrou d'[AdbKeys] : une connexion concurrente pourrait sinon
+            // régénérer la paire entre son chargement et la lecture des fichiers.
+            val (privatePem, adbPublicKey) = AdbKeys.locked(keyDir) {
+                AdbKeys.load(keyDir)
+                File(keyDir, "adbkey").readText() to File(keyDir, "adbkey.pub").readText().trim()
+            }
+            return fromPrivateKey(readPrivateKey(privatePem), adbPublicKey)
         }
 
         internal fun fromPrivateKey(privateKey: PrivateKey, adbPublicKey: String): AdbIdentity {

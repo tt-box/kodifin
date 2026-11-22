@@ -3,6 +3,8 @@ package io.github.ttbox.kodifin.upnp
 import io.github.ttbox.kodifin.model.TransferableMedia
 import io.github.ttbox.kodifin.model.SupportsTransferOut
 import io.github.ttbox.kodifin.model.fetchImage
+import io.github.ttbox.kodifin.model.HostResolver
+import io.github.ttbox.kodifin.model.SYSTEM_HOST_RESOLVER
 import io.github.ttbox.kodifin.model.SupportsSeekStep
 import io.github.ttbox.kodifin.model.SupportsPlayMode
 import io.github.ttbox.kodifin.model.SupportsMediaDetails
@@ -42,6 +44,8 @@ class UpnpRendererController(
     private val http: OkHttpClient,
     private val soap: SoapClient = SoapClient(http),
     private val pollIntervalMs: Long = 1_000,
+    /** Résolveur des hôtes de pochette (politique de [fetchImage]) ; injectable pour les tests. */
+    private val resolve: HostResolver = SYSTEM_HOST_RESOLVER,
 ) : RemoteController, SupportsMediaDetails, SupportsPlayMode, SupportsSeekStep, SupportsImages, SupportsTransferOut {
 
     override val capabilities = setOf(
@@ -99,9 +103,9 @@ class UpnpRendererController(
     }
 
     /**
-     * Plage de `Volume` annoncée par le SCPD de RenderingControl, lue une fois. SCPD absent,
-     * plage absente ou incohérente : 0–100 (mémorisé). Erreur de transport : 0–100 pour cette
-     * fois, nouvelle lecture à l'appel suivant.
+     * Plage de `Volume` annoncée par le SCPD de RenderingControl, lue une fois pour la session.
+     * SCPD absent, plage absente ou incohérente, ou erreur de transport : 0–100, mémorisé aussi
+     * (sinon le SCPD serait relu à chaque sondage de l'état).
      */
     private suspend fun volumeRange(): VolumeRange {
         volumeRange?.let { return it }
@@ -113,7 +117,7 @@ class UpnpRendererController(
                 val request = runCatching { Request.Builder().url(scpdUrl).build() }.getOrNull()
                 request?.let { http.fetchString(it) }
             } catch (_: RemoteException) {
-                return VolumeRange.DEFAULT
+                null
             }
             xml?.let { runCatching { UpnpXml.parseVolumeRange(it) }.getOrNull() } ?: VolumeRange.DEFAULT
         }
@@ -223,8 +227,13 @@ class UpnpRendererController(
         return TransferableMedia(uri, title, positionMs = parseHms(position["RelTime"]))
     }
 
-    /** Pochette annoncée par le renderer (`upnp:albumArtURI`), téléchargée sans authentification. */
-    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? = http.fetchImage(imageKey)
+    /**
+     * Pochette annoncée par le renderer (`upnp:albumArtURI`), téléchargée sans authentification
+     * et seulement depuis le renderer lui-même ou un hôte du réseau local (NAS servant la
+     * pochette) : une adresse publique (service de streaming) n'est jamais contactée, `null`.
+     */
+    override suspend fun image(imageKey: String, maxWidth: Int): ByteArray? =
+        http.fetchImage(imageKey, device.host, resolve = resolve)
 
     /** Option « DLNA alternatif » : métadonnées minimales pour les renderers capricieux. */
     private val alternativeDidl: Boolean
