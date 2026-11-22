@@ -75,6 +75,12 @@ class KodiClient(private val transport: KodiTransport) {
 
     suspend fun ping(): Boolean = (call(KodiMethod.PING) as? JsonPrimitive)?.contentOrNull == "pong"
 
+    /** Valeur booléenne d'un réglage Kodi (`Settings.GetSettingValue`) ; `null` si absente ou d'un autre type. */
+    suspend fun booleanSetting(id: String): Boolean? {
+        val result = call(KodiMethod.SETTINGS_GET_VALUE, buildJsonObject { put("setting", id) }) as? JsonObject
+        return (result?.get("value") as? JsonPrimitive)?.booleanOrNull
+    }
+
     /** Téléchargeur d'images du transport HTTP (même hôte, mêmes identifiants) ; `null` pour un autre transport. */
     internal val httpImages: KodiImageFetcher? get() = (transport as? KodiHttpTransport)?.images
 

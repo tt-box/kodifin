@@ -2,7 +2,9 @@ package io.github.ttbox.kodifin.mediaserver
 
 import io.github.ttbox.kodifin.model.Device
 import io.github.ttbox.kodifin.model.DeviceKind
+import io.github.ttbox.kodifin.model.HttpStatusException
 import io.github.ttbox.kodifin.model.RemoteError
+import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.RemoteKey
 import io.github.ttbox.kodifin.model.Setup
 import kotlinx.coroutines.test.runTest
@@ -103,6 +105,32 @@ class MediaServerAccountsTest {
             listOf("/System/Info/Public", "/jellyfin/System/Info/Public", "/emby/System/Info/Public"),
             List(3) { server.next().url.encodedPath },
         )
+    }
+
+    @Test
+    fun `locate base path propagates refused access instead of asking for a base path`() = runTest {
+        server.enqueue(MockResponse.Builder().code(401).build())
+        val e = runCatching { client().locateBasePath() }.exceptionOrNull()
+        assertTrue("$e", e is HttpStatusException && e.code == 401)
+        assertEquals("/System/Info/Public", server.next().url.encodedPath)
+        assertNoMoreRequests()
+    }
+
+    @Test
+    fun `locate base path propagates network failures`() = runTest {
+        val unreachable = MediaServerClient(http, "http://127.0.0.1:1", MediaServerFlavor.JELLYFIN, "dev-1")
+        val e = runCatching { unreachable.locateBasePath() }.exceptionOrNull()
+        assertTrue("$e", e is RemoteException && e.reason is RemoteError.Unreachable)
+    }
+
+    @Test
+    fun `non json or id-less answers are not a server`() = runTest {
+        server.enqueue(json("""{"Id":""}"""))
+        assertFalse(client().isServer())
+        server.enqueue(json("""[1,2]"""))
+        assertFalse(client().isServer())
+        server.enqueue(MockResponse.Builder().code(500).build())
+        assertFalse(client().isServer())
     }
 
     @Test

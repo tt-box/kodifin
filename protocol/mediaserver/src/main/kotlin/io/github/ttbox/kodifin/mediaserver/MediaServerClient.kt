@@ -246,6 +246,8 @@ class MediaServerClient(
     /**
      * Recale le client sur l'URL qui expose l'API : `""` si l'URL actuelle convient, sinon le
      * premier chemin de [candidates] qui répond (client recalé dessus), ou `null` si aucun.
+     * Une erreur réseau ou un accès refusé est propagé (voir [isServer]) : `null` signifie
+     * seulement qu'aucune URL n'expose l'API.
      */
     suspend fun locateBasePath(candidates: List<String> = DEFAULT_BASE_PATHS): String? {
         val root = baseUrl ?: return null
@@ -415,17 +417,31 @@ class MediaServerClient(
     /**
      * `true` si [rootUrl] (par défaut l'URL courante) expose l'API publique du serveur :
      * `GET …/System/Info/Public` renvoie un objet JSON portant un `Id`. Une redirection vers
-     * l'interface web (chemin de base mal réglé) ou une page HTML donne `false`.
+     * l'interface web (chemin de base mal réglé), une page HTML, un corps démesuré ou un statut
+     * d'échec autre qu'un refus d'accès donnent `false`.
+     *
+     * Les échecs qui ne disent rien du chemin sont propagés plutôt que pris pour « pas un
+     * serveur » (ce qui conduirait à réclamer à tort un chemin de base) : réseau injoignable,
+     * délai dépassé, TLS, redirection refusée ([RemoteException]) et accès refusé (401/403,
+     * [HttpStatusException]).
      */
     suspend fun isServer(rootUrl: String? = null): Boolean {
         val root = (rootUrl?.trimEnd('/')?.toHttpUrlOrNull() ?: base) ?: return false
         val url = root.newBuilder().addPathSegments("System/Info/Public").build()
-        return try {
-            val text = http.fetchString(Request.Builder().url(url).header("Accept", "application/json").get().build())
-            json.decodeFromString(PublicInfoDto.serializer(), text).id.isNotBlank()
-        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+        val text = try {
+            http.fetchString(Request.Builder().url(url).header("Accept", "application/json").get().build())
+        } catch (e: HttpStatusException) {
+            if (e.code == 401 || e.code == 403) throw e
+            return false
+        } catch (e: RemoteException) {
+            if (e.reason is RemoteError.ResponseTooLarge) return false
             throw e
-        } catch (_: Exception) {
+        }
+        return try {
+            json.decodeFromString(PublicInfoDto.serializer(), text).id.isNotBlank()
+        } catch (_: SerializationException) {
+            false
+        } catch (_: IllegalArgumentException) {
             false
         }
     }

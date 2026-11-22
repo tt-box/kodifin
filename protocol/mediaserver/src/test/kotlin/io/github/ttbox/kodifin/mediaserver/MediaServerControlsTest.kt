@@ -255,6 +255,26 @@ class MediaServerControlsTest {
     }
 
     @Test
+    fun `info falls back to MoveUp when the client ignores ToggleOsdMenu`() = runTest {
+        val c = controller(DeviceKind.EMBY)
+        json("[" + session(extra = """"SupportedCommands":["MoveUp","MoveDown"]""") + "]")
+        c.targets()
+        server.next()
+        assertTrue(RemoteKey.INFO in c.supportedKeys)
+        noContent()
+        c.send(RemoteKey.INFO)
+        assertEquals("""{"Name":"MoveUp","Arguments":{}}""", server.next().text())
+    }
+
+    @Test
+    fun `info is hidden when neither ToggleOsdMenu nor MoveUp is accepted`() = runTest {
+        val c = controller(DeviceKind.EMBY)
+        json("[" + session(extra = """"SupportedCommands":["PageUp"]""") + "]")
+        c.targets()
+        assertFalse(RemoteKey.INFO in c.supportedKeys)
+    }
+
+    @Test
     fun `every ui command maps to its general command`() = runTest {
         val c = controller()
         val expected = mapOf(

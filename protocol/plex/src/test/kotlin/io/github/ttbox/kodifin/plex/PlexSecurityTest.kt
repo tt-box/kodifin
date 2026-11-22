@@ -45,7 +45,10 @@ class PlexTokenTest {
     /** Résolution simulée des noms courts (aucun accès DNS réel). */
     private val fakeDns = Dns { name ->
         when (name) {
-            "htpc" -> listOf(InetAddress.getByName("192.168.1.20"))
+            "htpc", "htpc.home.loc", "salon.local", "box.lan", "nas.home.arpa" -> listOf(InetAddress.getByName("192.168.1.20"))
+            "localhost" -> listOf(InetAddress.getByName("127.0.0.1"))
+            "public.local" -> listOf(InetAddress.getByName("8.8.8.8"))
+            "plex.mixed.example" -> listOf(InetAddress.getByName("10.0.0.9"), InetAddress.getByName("1.1.1.1"))
             "dual" -> listOf(InetAddress.getByName("fd00::7"), InetAddress.getByName("10.1.2.3"))
             "public" -> listOf(InetAddress.getByName("8.8.8.8"))
             "mixed" -> listOf(InetAddress.getByName("192.168.1.20"), InetAddress.getByName("8.8.4.4"))
@@ -70,7 +73,9 @@ class PlexTokenTest {
             "134744072", "0x08080808", "8.8.2056", "010.0.0.1", "evil.local.", "100.64.1.2", "salon.example",
             "192.168.1.5.evil.com", "10.0.0.8.nip.io",
             // Noms courts : non résolus, résolus vers une IP publique, partiellement publics ou sans adresse.
-            "inconnu", "public", "mixed", "empty",
+            "inconnu", "public", "mixed", "empty", "plex.mixed.example",
+            // Suffixe local qui ne résout pas, ou qui résout vers une IP publique : plus cru sur parole.
+            "public.local", "absent.local",
         )
         for (host in refused) {
             val (effective, token) = sentToken(host)
@@ -82,12 +87,45 @@ class PlexTokenTest {
     fun `token is sent to private, link-local, unique-local and local names`() = runTest {
         val allowed = listOf(
             "192.168.1.5", "10.0.0.8", "172.16.3.4", "172.31.255.1", "127.0.0.1", "fe80::1", "fd00::5", "fd12:3456::1",
-            "::ffff:192.168.1.5", "htpc", "dual", "salon.local", "box.lan", "nas.home.arpa", "localhost",
+            "::ffff:192.168.1.5", "htpc", "dual", "htpc.home.loc", "salon.local", "box.lan", "nas.home.arpa", "localhost",
         )
         for (host in allowed) {
             val (effective, token) = sentToken(host)
             assertEquals("jeton attendu pour $host (hôte effectif $effective)", "secret", token)
         }
+    }
+
+    @Test
+    fun `token connection is pinned on the vetted addresses, no DNS rebinding`() = runTest {
+        val server = mockwebserver3.MockWebServer()
+        server.enqueue(mockwebserver3.MockResponse.Builder().code(200).build())
+        server.start()
+        try {
+            // Première réponse privée (vérifiée), puis bascule vers une adresse publique.
+            val lookups = java.util.concurrent.atomic.AtomicInteger()
+            val rebinding = Dns { name ->
+                if (name != "htpc") throw UnknownHostException(name)
+                if (lookups.getAndIncrement() == 0) listOf(InetAddress.getByName("127.0.0.1")) else listOf(InetAddress.getByName("8.8.8.8"))
+            }
+            val http = OkHttpClient.Builder().dns(rebinding).build()
+            val device = Device("PLEX:abc", "Lecteur", DeviceKind.PLEX, "htpc", server.port, mapOf("token" to "secret", "clientIdentifier" to "abc"))
+            PlexController(device, http, identity).send(RemoteKey.SELECT)
+            val recorded = server.takeRequest()
+            assertEquals("secret", recorded.headers["X-Plex-Token"])
+            assertEquals("une seule résolution : la connexion réutilise les adresses vérifiées", 1, lookups.get())
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `token addresses come from the resolver, without trusting any suffix`() {
+        val local = listOf(InetAddress.getByName("192.168.1.20"))
+        assertEquals(local, PlexController.tokenAddresses("salon.local") { local })
+        assertNull(PlexController.tokenAddresses("salon.local") { throw UnknownHostException(it) })
+        assertNull(PlexController.tokenAddresses("salon.local") { listOf(InetAddress.getByName("8.8.8.8")) })
+        assertEquals(listOf(InetAddress.getByName("127.0.0.1")), PlexController.tokenAddresses("127.0.0.1") { error("pas de DNS") })
+        assertNull(PlexController.tokenAddresses("8.8.8.8") { error("pas de DNS") })
     }
 
     @Test
@@ -100,8 +138,14 @@ class PlexTokenTest {
         assertTrue(PlexController.isLocalHost("HTPC") { listOf(InetAddress.getByName("10.0.0.2")) })
         assertFalse(PlexController.isLocalHost("HTPC") { listOf(InetAddress.getByName("1.1.1.1")) })
         assertFalse(PlexController.isLocalHost("HTPC") { throw UnknownHostException(it) })
-        // Les noms qualifiés ne sont jamais résolus (seuls les suffixes locaux sont admis).
-        assertFalse(PlexController.isLocalHost("nas.example.org") { listOf(InetAddress.getByName("10.0.0.2")) })
+        // Nom qualifié hors suffixe local : local seulement si TOUTES ses adresses sont privées.
+        assertTrue(PlexController.isLocalHost("htpc.home.loc") { listOf(InetAddress.getByName("192.168.1.20")) })
+        assertTrue(PlexController.isLocalHost("nas.example.org") { listOf(InetAddress.getByName("10.0.0.2"), InetAddress.getByName("fd00::2")) })
+        assertFalse(PlexController.isLocalHost("plex.example.org") { listOf(InetAddress.getByName("10.0.0.2"), InetAddress.getByName("8.8.8.8")) })
+        assertFalse(PlexController.isLocalHost("plex.example.org") { listOf(InetAddress.getByName("2a00::1")) })
+        assertFalse(PlexController.isLocalHost("htpc.home.loc") { emptyList() })
+        assertFalse(PlexController.isLocalHost("htpc.home.loc") { throw UnknownHostException(it) })
+        assertFalse("sans résolveur : non local", PlexController.isLocalHost("htpc.home.loc"))
     }
 
     @Test

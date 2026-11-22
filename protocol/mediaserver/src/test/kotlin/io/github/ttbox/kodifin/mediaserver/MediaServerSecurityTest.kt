@@ -3,6 +3,8 @@ package io.github.ttbox.kodifin.mediaserver
 import io.github.ttbox.kodifin.model.Device
 import io.github.ttbox.kodifin.model.DeviceKind
 import io.github.ttbox.kodifin.model.HttpStatusException
+import io.github.ttbox.kodifin.model.RemoteError
+import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.RemoteKey
 import io.github.ttbox.kodifin.model.UdpDestination
 import kotlinx.coroutines.async
@@ -90,8 +92,10 @@ class MediaServerSecurityTest {
         start { r ->
             if (r.url.encodedPath == "/Users/AuthenticateByName") ok("""{"AccessToken":"neuf","User":{"Id":"u1"}}""") else status(401)
         }
-        val e = expectFailure<HttpStatusException> { controller(credentials).send(RemoteKey.STOP) }
-        assertEquals(401, e.code)
+        val e = expectFailure<RemoteException> { controller(credentials).send(RemoteKey.STOP) }
+        // Jeton neuf refusé : session expirée (et non une erreur HTTP brute).
+        assertEquals(RemoteError.SessionExpired, e.reason)
+        assertEquals(401, (e.cause as HttpStatusException).code)
         assertEquals(1, authCount.get())
         assertEquals(3, requests.size) // commande, authentification, unique nouvelle tentative
     }
