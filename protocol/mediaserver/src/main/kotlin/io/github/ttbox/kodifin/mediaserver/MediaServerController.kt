@@ -59,7 +59,10 @@ import okhttp3.OkHttpClient
  * ou, à défaut, la session contrôlable la plus pertinente (hors Kodifin elle-même).
  *
  * Une session disparue (404) entraîne une nouvelle sélection ; un jeton refusé (401)
- * entraîne une nouvelle authentification si les identifiants sont encore en mémoire.
+ * entraîne UNE nouvelle authentification, avec le mot de passe encore en mémoire (première
+ * connexion de cette session) ou, à défaut, le mot de passe vide (compte sans mot de passe).
+ * Après un renouvellement refusé, le jeton est déclaré expiré ([RemoteError.SessionExpired]) sans plus solliciter le serveur : le suivi
+ * de lecture ne relance pas `AuthenticateByName` à chaque tour (risque de verrouillage du compte).
  *
  * Les touches ([supportedKeys]) et commandes d'interface ([uiCommands]) sont filtrées selon
  * les `SupportedCommands` déclarées par la session cible (liste absente ou vide : tout est permis).
@@ -185,13 +188,23 @@ class MediaServerController(
         get() {
             val commands = knownCommands()
             return RemoteKey.entries.filterTo(LinkedHashSet()) { key ->
-                KEY_COMMANDS[key]?.let { accepts(commands, it) } ?: true
+                if (key == RemoteKey.INFO) infoCommand(commands) != null
+                else KEY_COMMANDS[key]?.let { accepts(commands, it) } ?: true
             }
         }
+
+    /**
+     * Commande de la touche Info : `ToggleOsdMenu` si le client l'accepte, sinon `MoveUp`, qui
+     * affiche la barre de lecture de Jellyfin Web (il ignore `ToggleOsdMenu`) ; `null` : aucune.
+     */
+    private fun infoCommand(commands: Set<String>): String? =
+        listOf(INFO_COMMAND, INFO_FALLBACK).firstOrNull { accepts(commands, it) }
 
     override val uiCommands: Set<UiCommand>
         get() {
             val commands = knownCommands()
+            // Plein écran non forcé : un navigateur refuse requestFullscreen() hors geste de
+            // l'utilisateur (« API can only be initiated by a user gesture »).
             return UiCommand.entries.filterTo(LinkedHashSet()) { accepts(commands, UI_COMMANDS.getValue(it)) }
         }
 
@@ -228,7 +241,8 @@ class MediaServerController(
             if (!looksLikeWrongPath(e) || !detectBasePath()) throw e
             mutex.withLock { if (client.accessToken == null) authenticateLocked() }
         }
-        session()
+        // Jeton enregistré révoqué : 401 traduit (renouvellement ou session expirée).
+        withAuth { session() }
     }
 
     private fun looksLikeWrongPath(e: Exception): Boolean =
@@ -249,16 +263,44 @@ class MediaServerController(
         }
     }
 
+    /**
+     * Mot de passe utilisable pour renouveler le jeton : celui saisi pour cette session (extra
+     * transitoire, jamais persisté) ou le mot de passe vide qui a effectivement permis la
+     * connexion initiale (compte sans mot de passe). `null` : aucun renouvellement possible.
+     */
+    @Volatile private var renewalPassword: String? = device.extras[EXTRA_PASSWORD]
+
+    /**
+     * Renouvellement refusé (ou impossible) : plus aucune authentification automatique ni
+     * requête authentifiée, chaque appel lève [RemoteError.SessionExpired].
+     */
+    @Volatile private var authLost = false
+
+    /**
+     * Authentification explicite de [connect] : sans mot de passe en mémoire, essaie le mot de
+     * passe vide (Jellyfin et Emby acceptent les comptes sans mot de passe).
+     */
     private suspend fun authenticateLocked() {
+        val password = renewalPassword.orEmpty()
+        authenticateWith(password)
+        renewalPassword = password
+        authLost = false
+    }
+
+    private suspend fun authenticateWith(password: String) {
         val user = device.extras[EXTRA_USERNAME]
             ?: throw RemoteException(RemoteError.SessionExpired)
-        // Jellyfin et Emby acceptent les comptes sans mot de passe.
         userId = try {
-            client.authenticate(user, device.extras[EXTRA_PASSWORD].orEmpty()).user.id
+            client.authenticate(user, password).user.id
         } catch (e: HttpStatusException) {
             if (e.code != 401) throw e
             throw RemoteException(RemoteError.CredentialsRejected, e)
         }
+    }
+
+    /** Lève [RemoteError.SessionExpired] sans requête si l'authentification est perdue. */
+    private fun ensureAuthUsable() {
+        if (authLost && client.accessToken == null) throw RemoteException(RemoteError.SessionExpired)
     }
 
     private suspend fun session(): String {
@@ -292,17 +334,36 @@ class MediaServerController(
      * Renouvelle le jeton [refused] s'il est encore le jeton courant : des requêtes parallèles
      * refusées avec le même jeton ne déclenchent qu'une seule authentification. Le jeton refusé
      * reste en place pendant l'authentification et n'est oublié qu'en cas d'échec.
+     *
+     * Une seule tentative par jeton refusé : sans mot de passe en mémoire, le mot de passe vide
+     * est essayé une fois (compte sans mot de passe ; refusé : session expirée) ; identifiants refusés, l'authentification est déclarée perdue et les
+     * appels suivants échouent sans contacter le serveur. Une panne réseau pendant le
+     * renouvellement n'est pas un refus : la tentative pourra être refaite.
      */
     private suspend fun renewToken(refused: String?) = mutex.withLock {
-        if (client.accessToken == refused) {
-            try {
-                authenticateLocked()
-            } catch (e: Throwable) {
-                if (client.accessToken == refused) client.accessToken = null
-                throw e
+        if (client.accessToken != refused) return@withLock
+        ensureAuthUsable()
+        // Connexion par jeton enregistré : aucun mot de passe en mémoire. Le mot de passe vide
+        // est tenté (une seule fois pour ce jeton, comme dans authenticateLocked) : un compte
+        // sans mot de passe retrouve ainsi un jeton au lieu de rester bloqué sur l'ancien.
+        val guessed = renewalPassword == null
+        try {
+            authenticateWith(renewalPassword.orEmpty())
+            if (guessed) renewalPassword = ""
+        } catch (e: Throwable) {
+            if (client.accessToken == refused) client.accessToken = null
+            val reason = (e as? RemoteException)?.reason
+            if (reason == RemoteError.SessionExpired || reason == RemoteError.CredentialsRejected) {
+                authLost = true
+                // Mot de passe vide refusé : l'utilisateur n'a rien saisi de faux, sa session a expiré.
+                if (guessed && reason == RemoteError.CredentialsRejected) throw RemoteException(RemoteError.SessionExpired, e)
             }
+            throw e
         }
     }
+
+    /** Second refus après un renouvellement réussi : jeton inutilisable, session expirée. */
+    private fun expired(e: HttpStatusException): Nothing = throw RemoteException(RemoteError.SessionExpired, e)
 
     /**
      * Exécute [action] sur la session courante. Au plus une nouvelle authentification (401) et
@@ -313,8 +374,18 @@ class MediaServerController(
         var renewed = false
         var reselected = false
         while (true) {
+            ensureAuthUsable()
             val token = client.accessToken
-            val id = session()
+            val id = try {
+                session()
+            } catch (e: HttpStatusException) {
+                // Sélection de session refusée : même règle que pour l'action.
+                if (e.code != 401) throw e
+                if (renewed) expired(e)
+                renewed = true
+                renewToken(token)
+                continue
+            }
             try {
                 return action(id)
             } catch (e: HttpStatusException) {
@@ -323,6 +394,7 @@ class MediaServerController(
                         renewed = true
                         renewToken(token)
                     }
+                    e.code == 401 -> expired(e)
                     e.code == 404 && !reselected -> {
                         reselected = true
                         forgetSession(id)
@@ -335,6 +407,7 @@ class MediaServerController(
 
     override suspend fun send(key: RemoteKey) {
         requireKey(key)
+        if (resumeIdleQueue(key)) return
         withSession { id ->
             when (key) {
                 RemoteKey.UP -> client.generalCommand(id, "MoveUp")
@@ -345,7 +418,7 @@ class MediaServerController(
                 RemoteKey.BACK -> client.generalCommand(id, "Back")
                 RemoteKey.HOME -> client.generalCommand(id, "GoHome")
                 RemoteKey.MENU -> client.generalCommand(id, "ToggleContextMenu")
-                RemoteKey.INFO -> client.generalCommand(id, "ToggleOsdMenu")
+                RemoteKey.INFO -> client.generalCommand(id, infoCommand(knownCommands()) ?: INFO_COMMAND)
                 RemoteKey.VOLUME_UP -> client.generalCommand(id, "VolumeUp")
                 RemoteKey.VOLUME_DOWN -> client.generalCommand(id, "VolumeDown")
                 RemoteKey.MUTE -> client.generalCommand(id, "ToggleMute")
@@ -357,6 +430,31 @@ class MediaServerController(
                 RemoteKey.FAST_FORWARD -> client.playstate(id, "FastForward")
             }
         }
+    }
+
+    /**
+     * Lecteur arrêté (fin d'épisode, Stop) mais file conservée : le client (Jellyfin Web…)
+     * n'a plus de lecteur actif et ignore `PlayPause`/`NextTrack`/`PreviousTrack`. La file est
+     * alors relancée (`PlayNow` + `startIndex`) sur l'élément courant, suivant ou précédent.
+     * S'appuie sur le dernier état connu de la session (rafraîchi par [playbackState]).
+     * `true` si la commande a été traitée ainsi.
+     */
+    private suspend fun resumeIdleQueue(key: RemoteKey): Boolean {
+        val offset = when (key) {
+            RemoteKey.PLAY_PAUSE -> 0
+            RemoteKey.NEXT -> 1
+            RemoteKey.PREVIOUS -> -1
+            else -> return false
+        }
+        val s = lastSession?.takeIf { it.id == sessionId && it.nowPlaying == null } ?: return false
+        val queue = s.nowPlayingQueue.orEmpty().filter { it.id.isNotBlank() }
+        val current = s.playlistItemId?.let { pid -> queue.indexOfFirst { it.playlistItemId == pid } }?.takeIf { it >= 0 }
+            ?: return false
+        val index = (current + offset).coerceIn(0, queue.lastIndex)
+        // Après le dernier élément, « suivant » ne relance pas la fin de la file.
+        if (offset > 0 && current == queue.lastIndex) return false
+        withSession { client.play(it, "PlayNow", queue.map { q -> q.id }, startIndex = index) }
+        return true
     }
 
     override suspend fun setVolume(percent: Int) {
@@ -409,13 +507,18 @@ class MediaServerController(
 
     /** Exécute [action] hors session, avec au plus une nouvelle authentification (401). */
     private suspend fun <T> withAuth(action: suspend () -> T): T {
+        ensureAuthUsable()
         val token = client.accessToken
         return try {
             action()
         } catch (e: HttpStatusException) {
             if (e.code != 401) throw e
             renewToken(token)
-            action()
+            try {
+                action()
+            } catch (again: HttpStatusException) {
+                if (again.code == 401) expired(again) else throw again
+            }
         }
     }
 
@@ -848,6 +951,11 @@ class MediaServerController(
         private const val MAX_PAGE = 500
         private const val MAX_KNOWN_TYPES = 2_000
 
+        internal const val INFO_COMMAND = "ToggleOsdMenu"
+
+        /** Repli de la touche Info : flèche haut, qui affiche la barre de lecture de Jellyfin Web. */
+        internal const val INFO_FALLBACK = "MoveUp"
+
         /** Touches envoyées comme commandes générales (filtrables par `SupportedCommands`). */
         internal val KEY_COMMANDS = mapOf(
             RemoteKey.UP to "MoveUp",
@@ -858,7 +966,7 @@ class MediaServerController(
             RemoteKey.BACK to "Back",
             RemoteKey.HOME to "GoHome",
             RemoteKey.MENU to "ToggleContextMenu",
-            RemoteKey.INFO to "ToggleOsdMenu",
+            RemoteKey.INFO to INFO_COMMAND,
             RemoteKey.VOLUME_UP to "VolumeUp",
             RemoteKey.VOLUME_DOWN to "VolumeDown",
             RemoteKey.MUTE to "ToggleMute",

@@ -33,6 +33,15 @@ fun transferTargets(devices: List<Device>, currentId: String): List<TransferTarg
     .map { TransferTarget(it, UpnpRendererController.isBubbleUpnpServer(it)) }
     .sortedWith(compareByDescending<TransferTarget> { it.bubble }.thenBy { it.device.name.lowercase() })
 
+/**
+ * L'adresse transmise au lecteur cible contient des identifiants en clair (`utilisateur:motdepasse@`,
+ * cas d'un Kodi protégé) : le dialogue de transfert le signale avant l'envoi.
+ */
+fun TransferableMedia.carriesCredentials(): Boolean =
+    listOfNotNull(url, transcodedUrl).any { address ->
+        runCatching { java.net.URI(address).rawUserInfo }.getOrNull()?.isNotEmpty() == true
+    }
+
 /** En deçà, la reprise se fait au début (inutile d'attendre le démarrage pour sauter). */
 const val MIN_RESUME_MS = 5_000L
 

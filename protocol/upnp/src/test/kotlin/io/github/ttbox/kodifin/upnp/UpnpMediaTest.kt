@@ -11,7 +11,11 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -21,6 +25,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import java.net.InetAddress
+import java.net.UnknownHostException
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** Métadonnées, pochette, modes de lecture et sauts relatifs d'un renderer DLNA. */
@@ -132,6 +138,36 @@ class UpnpMediaTest {
         assertNull(c.image(server.url("/huge.jpg").toString(), 300))
         assertNull(c.image(server.url("/absent.jpg").toString(), 300))
         assertNull(c.image("ftp://nas/a.jpg", 300))
+    }
+
+    @Test
+    fun `artwork from a public host is never requested`() = runTest {
+        val requested = CopyOnWriteArrayList<String>()
+        // Intercepteur d'application : il voit toute requête avant le réseau et répond lui-même.
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            requested += chain.request().url.host
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(byteArrayOf(1).toResponseBody("image/jpeg".toMediaType())).build()
+        }.build()
+        val resolver: (String) -> List<InetAddress> = { host ->
+            when (host) {
+                "nas.example.org" -> listOf(InetAddress.getByName("192.168.1.20"))
+                "i.scdn.co" -> listOf(InetAddress.getByName("151.101.2.248"))
+                else -> throw UnknownHostException(host)
+            }
+        }
+        val c = UpnpRendererController(
+            Device("u", "Enceinte", DeviceKind.UPNP_RENDERER, "192.168.1.9", 1400, mapOf("location" to "http://192.168.1.9:1400/d.xml")),
+            http, pollIntervalMs = 0, resolve = resolver,
+        )
+        assertNull(c.image("https://i.scdn.co/image/ab67", 300))
+        assertNull(c.image("http://8.8.8.8/a.jpg", 300))
+        assertNull(c.image("http://127.0.0.1:8080/a.jpg", 300))
+        assertTrue(requested.isEmpty())
+        // Le renderer lui-même et le NAS du réseau local restent autorisés.
+        assertArrayEquals(byteArrayOf(1), c.image("http://192.168.1.9:1400/art.jpg", 300))
+        assertArrayEquals(byteArrayOf(1), c.image("http://nas.example.org:8200/cover.jpg", 300))
+        assertEquals(listOf("192.168.1.9", "nas.example.org"), requested.toList())
     }
 
     @Test

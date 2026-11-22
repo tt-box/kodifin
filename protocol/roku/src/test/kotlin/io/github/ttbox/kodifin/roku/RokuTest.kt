@@ -77,7 +77,8 @@ class RokuTest {
             try {
                 controller().launch(bad)
                 fail("identifiant accepté : $bad")
-            } catch (_: IllegalArgumentException) {
+            } catch (e: RemoteException) {
+                assertEquals(RemoteError.ItemNotFound, e.reason)
             }
         }
         assertEquals(1, server.requestCount)

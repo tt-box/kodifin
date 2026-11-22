@@ -53,7 +53,14 @@ class SeriesFeature internal constructor(private val session: RemoteSession) {
     }
 
     private suspend fun loadEpisodes(seasonId: String) {
-        val c = session.connectedAs<SupportsLibrary>() ?: return
+        val c = session.connectedAs<SupportsLibrary>()
+        if (c == null) {
+            // Déconnecté (ou bibliothèque absente) : pas de chargement infini.
+            session.update { s ->
+                if (s.series.seasonId != seasonId) s else s.copy(series = s.series.copy(episodesLoading = false))
+            }
+            return
+        }
         var error: UiText? = null
         val episodes = try {
             withContext(session.io) { c.browse(seasonId, 0, SEASON_PAGE_SIZE) }

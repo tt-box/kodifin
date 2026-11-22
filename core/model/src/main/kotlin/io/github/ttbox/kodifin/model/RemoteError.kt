@@ -74,6 +74,19 @@ sealed interface RemoteError {
     /** Action réservée à un administrateur du serveur. */
     data object AdminRequired : RemoteError
 
+    /**
+     * Mot de passe ou jeton enregistré illisible sur le téléphone (clé du Keystore perdue ou
+     * invalidée, données abîmées) : il a été effacé, l'utilisateur doit le ressaisir.
+     */
+    data object StoredSecretUnreadable : RemoteError
+
+    /**
+     * Coffre de clés du téléphone (Android Keystore) momentanément indisponible : le mot de passe
+     * ou jeton enregistré n'a pas pu être déchiffré cette fois-ci, mais il est CONSERVÉ ;
+     * réessayer suffit en général.
+     */
+    data object SecretStoreUnavailable : RemoteError
+
     // --- État de l'appareil ---
 
     /** Rien n'est en cours de lecture. */

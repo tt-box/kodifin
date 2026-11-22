@@ -149,15 +149,6 @@ private fun InfoLine(label: String, value: String?) {
     }
 }
 
-/** Carte repliable « Résumé » du média en cours (volet de lecture). */
-@Composable
-fun NowPlayingInfoCard(info: MediaItemInfo, modifier: Modifier = Modifier) {
-    val summary = infoFactsText(info) ?: info.overview?.take(80)
-    CollapsibleCard(stringResource(R.string.remote_info_title), summary = summary, modifier = modifier.fillMaxWidth()) {
-        ItemInfoContent(info, showTitle = false, showImage = true)
-    }
-}
-
 /**
  * Fiche d'un épisode ouverte depuis la liste : image, repères, résumé complet, équipe, puis
  * lecture. Ouverte dépliée d'emblée (pas d'état intermédiaire qui se recale au chargement).

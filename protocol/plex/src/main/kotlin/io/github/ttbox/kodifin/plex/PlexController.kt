@@ -7,6 +7,8 @@ import io.github.ttbox.kodifin.model.RemoteController
 import io.github.ttbox.kodifin.model.RemoteError
 import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.RemoteKey
+import io.github.ttbox.kodifin.model.LocalNetwork
+import io.github.ttbox.kodifin.model.PinnedDns
 import io.github.ttbox.kodifin.model.fetchString
 import io.github.ttbox.kodifin.model.requireKey
 import io.github.ttbox.kodifin.model.UdpDestination
@@ -20,7 +22,6 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.net.Inet6Address
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.TimeSource
@@ -37,7 +38,7 @@ class PlexController(
     private val http: OkHttpClient,
     private val identity: PlexIdentity,
     /**
-     * Résolution des noms courts (sans domaine) pour décider de l'envoi du jeton ; par défaut
+     * Résolution des noms d'hôte (hors suffixes locaux) pour décider de l'envoi du jeton ; par défaut
      * le résolveur du client [http], celui-là même qui servira à la connexion.
      */
     private val dns: Dns = http.dns,
@@ -62,19 +63,26 @@ class PlexController(
     private val token: String? = device.extras[EXTRA_TOKEN]?.ifBlank { null }
 
     /**
-     * Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local, en HTTP comme en
-     * HTTPS : un certificat auto-signé accepté par l'appelant n'authentifie pas l'hôte, et
-     * l'envoyer à un hôte public l'exposerait. Un nom court n'est jugé local qu'après résolution
-     * (bloquante, donc hors du fil principal) vers des adresses toutes privées.
+     * Appel GET de [url]. Le jeton n'est joint que si l'hôte EFFECTIF de l'URL appelée est local,
+     * en HTTP comme en HTTPS : un certificat auto-signé accepté par l'appelant n'authentifie pas
+     * l'hôte, et l'envoyer à un hôte public l'exposerait. Tout nom DNS (suffixe `.local` compris)
+     * n'est jugé local qu'après résolution (bloquante, donc hors du fil principal) vers des
+     * adresses toutes privées, et la connexion est alors ÉPINGLÉE sur ces adresses ([PinnedDns]) :
+     * OkHttp ne résout pas le nom une seconde fois (pas de DNS rebinding vers un hôte public).
      */
-    private suspend fun request(url: HttpUrl): Request.Builder {
+    private suspend fun get(url: HttpUrl, accept: String? = null): String {
         val builder = identity.apply(Request.Builder().url(url))
         targetClientId?.let { builder.header("X-Plex-Target-Client-Identifier", it) }
+        accept?.let { builder.header("Accept", it) }
+        var client = http
         if (token != null) {
-            val local = withContext(Dispatchers.IO) { isLocalHost(url.host, dns::lookup) }
-            if (local) builder.header("X-Plex-Token", token)
+            val addresses = withContext(Dispatchers.IO) { tokenAddresses(url.host, dns::lookup) }
+            if (addresses != null) {
+                builder.header("X-Plex-Token", token)
+                client = http.newBuilder().dns(PinnedDns(url.host, addresses)).build()
+            }
         }
-        return builder.get()
+        return client.fetchString(builder.get().build())
     }
 
     private fun url(path: String, params: Map<String, String>): HttpUrl {
@@ -86,13 +94,13 @@ class PlexController(
     }
 
     internal suspend fun command(path: String, params: Map<String, String> = emptyMap()) {
-        http.fetchString(request(url(path, params)).build())
+        get(url(path, params))
     }
 
     /** Résout l'identifiant du lecteur via `/resources` s'il manque (appareil saisi à la main). */
     override suspend fun connect() {
         if (targetClientId != null) return
-        val xml = http.fetchString(request(url("/resources", emptyMap())).header("Accept", "application/xml").build())
+        val xml = get(url("/resources", emptyMap()), accept = "application/xml")
         targetClientId = xmlElements(xml, "Player").firstNotNullOfOrNull { it["machineIdentifier"]?.ifBlank { null } }
             ?: throw RemoteException(RemoteError.UnexpectedResponse("Plex"))
     }
@@ -115,9 +123,7 @@ class PlexController(
     private suspend fun currentVolume(): Int {
         volume.get().takeIf { it >= 0 }?.let { return it }
         val read = runCatching {
-            val xml = http.fetchString(
-                request(url("/player/timeline/poll", mapOf("wait" to "0"))).header("Accept", "application/xml").build(),
-            )
+            val xml = get(url("/player/timeline/poll", mapOf("wait" to "0")), accept = "application/xml")
             parseTimelineVolume(xml)
         }.getOrNull() ?: DEFAULT_VOLUME
         volume.compareAndSet(-1, read)
@@ -188,60 +194,17 @@ class PlexController(
             return (active + timelines).firstNotNullOfOrNull { it["volume"]?.toIntOrNull() }?.coerceIn(0, 100)
         }
 
-        private val DOTTED_QUAD = Regex("""(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}""")
-        private val HEX = Regex("0x[0-9a-f]*")
-        private val LABEL = Regex("[a-z0-9]([a-z0-9-]*[a-z0-9])?")
-
         /**
-         * Hôte du réseau local :
-         * - adresse littérale privée (RFC 1918), de lien local, de boucle ou IPv6 ULA (`fc00::/7`) ;
-         * - `localhost`, ou nom en `.local` (mDNS), `.lan` ou `.home.arpa` (RFC 8375) ;
-         * - nom court (sans domaine) UNIQUEMENT s'il résout, via [resolve], vers des adresses
-         *   toutes locales : un suffixe de recherche DNS (`htpc` → `htpc.exemple.com`) peut sinon
-         *   désigner un hôte public. Échec ou absence de résolution : non local.
-         *
-         * Les formes numériques ambiguës (`134744072`, `0x08080808`, `8.8.2056`, zéros de tête
-         * interprétés en octal) sont refusées : un résolveur les traduirait en adresse publique.
-         * Le point final (`nom.local.`) et l'adresse joker `0.0.0.0` sont refusés.
-         * [resolve] peut bloquer (DNS) : appeler hors du fil principal.
+         * Adresses vérifiées auxquelles le jeton peut être envoyé pour [host] : toutes locales
+         * (boucle comprise), nom résolu via [resolve] sans croire aucun suffixe sur parole ;
+         * `null` : jeton refusé. Voir [LocalNetwork.lanAddresses].
          */
-        internal fun isLocalHost(host: String, resolve: (String) -> List<InetAddress> = { emptyList() }): Boolean {
-            val h = host.removePrefix("[").removeSuffix("]").lowercase()
-            if (h.isEmpty()) return false
-            if (':' in h) return isLocalAddress(h)
-            if (DOTTED_QUAD.matches(h)) return isLocalAddress(h)
-            val labels = h.split('.')
-            // Nombre seul, hexadécimal ou quadruplet non canonique : potentiellement une IPv4 déguisée.
-            if (labels.all { it.isNotEmpty() && (it.all(Char::isDigit) || HEX.matches(it)) }) return false
-            if (labels.any { !LABEL.matches(it) }) return false // vide (point final) ou caractère invalide
-            if (labels.last().all(Char::isDigit)) return false
-            if (h == "localhost" || h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa")) return true
-            if (labels.size != 1) return false
-            val addresses = try {
-                resolve(h)
-            } catch (_: Exception) {
-                return false
-            }
-            return addresses.isNotEmpty() && addresses.all(::isLocalAddress)
-        }
+        internal fun tokenAddresses(host: String, resolve: (String) -> List<InetAddress>): List<InetAddress>? =
+            LocalNetwork.lanAddresses(host, resolve, allowLoopback = true)
 
-        /** Adresse littérale (IPv4 canonique ou IPv6) du réseau local ; IPv4 mappée évaluée en IPv4. */
-        private fun isLocalAddress(literal: String): Boolean {
-            val address = runCatching { InetAddress.getByName(literal) }.getOrNull() ?: return false
-            return isLocalAddress(address)
-        }
-
-        private fun isLocalAddress(address: InetAddress): Boolean {
-            val bytes = address.address
-            // ::ffff:a.b.c.d : certaines JVM la renvoient en Inet6Address, on évalue l'IPv4 incluse.
-            if (address is Inet6Address && bytes.size == 16 &&
-                (0 until 10).all { bytes[it].toInt() == 0 } && bytes[10].toInt() == -1 && bytes[11].toInt() == -1
-            ) {
-                return isLocalAddress(bytes.copyOfRange(12, 16).joinToString(".") { (it.toInt() and 0xff).toString() })
-            }
-            val uniqueLocalV6 = address is Inet6Address && (bytes[0].toInt() and 0xfe) == 0xfc
-            return address.isSiteLocalAddress || address.isLinkLocalAddress || address.isLoopbackAddress || uniqueLocalV6
-        }
+        /** Hôte du réseau local, boucle locale comprise : voir [LocalNetwork.isLocalHost]. */
+        internal fun isLocalHost(host: String, resolve: (String) -> List<InetAddress> = { emptyList() }): Boolean =
+            LocalNetwork.isLocalHost(host, resolve)
 
         /** Analyse une réponse GDM (`HTTP/1.0 200 OK` + en-têtes `Clé: valeur`). */
         fun parseGdm(payload: String, address: String): Device? {

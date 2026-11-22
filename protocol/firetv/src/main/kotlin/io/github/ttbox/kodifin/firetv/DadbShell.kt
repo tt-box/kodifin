@@ -11,6 +11,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.NoRouteToHostException
+import java.net.PortUnreachableException
+import java.net.UnknownHostException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
@@ -52,8 +56,15 @@ class DadbShell internal constructor(
 
     private val lock = Mutex()
 
+    /** Hôte seul (sans le port), pour les erreurs « injoignable ». */
+    private val host = label.substringBeforeLast(':')
+
     @Volatile
     private var connection: AdbLink? = null
+
+    /** Posé par [close] : plus aucune (re)connexion ni commande n'est permise ensuite. */
+    @Volatile
+    private var closed = false
 
     override suspend fun shell(command: String): String = lock.withLock {
         withContext(Dispatchers.IO) {
@@ -62,18 +73,19 @@ class DadbShell internal constructor(
                 run(command)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: ShellFailure) {
                 dropConnection()
                 // Une connexion conservée peut être morte (téléviseur en veille, Wi-Fi coupé) :
-                // on retente une seule fois avec une connexion neuve.
-                if (!reused) throw unavailable(e)
+                // on retente une seule fois avec une connexion neuve, mais seulement si la
+                // commande n'a vraisemblablement pas été exécutée (voir [ShellFailure.retryable]).
+                if (!reused || !e.retryable || closed) throw toRemote(e)
                 try {
                     run(command)
                 } catch (retry: CancellationException) {
                     throw retry
-                } catch (retry: Exception) {
+                } catch (retry: ShellFailure) {
                     dropConnection()
-                    throw unavailable(retry)
+                    throw toRemote(retry)
                 }
             }
             if (result.exitCode != 0) {
@@ -86,8 +98,39 @@ class DadbShell internal constructor(
         }
     }
 
-    private fun run(command: String): ShellResult =
-        (connection ?: connector().also { connection = it }).shell(command)
+    /** Exécute [command] ; les échecs sont rangés par phase (connexion ou commande). */
+    private fun run(command: String): ShellResult {
+        ensureOpen()
+        val link = connection ?: openLink()
+        return try {
+            link.shell(command)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ShellFailure(e, connecting = false)
+        }
+    }
+
+    private fun openLink(): AdbLink {
+        val link = try {
+            connector()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ShellFailure(e, connecting = true)
+        }
+        connection = link
+        // [close] a pu passer pendant la connexion : il n'a pas vu ce lien, on le ferme ici.
+        if (closed) {
+            dropConnection()
+            ensureOpen()
+        }
+        return link
+    }
+
+    private fun ensureOpen() {
+        if (closed) throw RemoteException(RemoteError.Interrupted(host))
+    }
 
     private fun dropConnection() {
         val current = connection
@@ -95,16 +138,44 @@ class DadbShell internal constructor(
         runCatching { current?.close() }
     }
 
-    /** Connexion impossible : débogage réseau désactivé ou clé non acceptée sur [label]. */
-    private fun unavailable(cause: Exception) =
-        RemoteException(RemoteError.SetupRequired(Setup.ADB_DEBUGGING), cause)
+    /**
+     * Traduit un échec : délai dépassé ou appareil injoignable ne sont pas des refus ;
+     * seul un port fermé ou une connexion refusée par l'appareil (clé non acceptée,
+     * débogage désactivé) demande un réglage sur le téléviseur.
+     */
+    private fun toRemote(failure: ShellFailure): RemoteException {
+        val cause = failure.cause
+        if (cause is RemoteException) return cause
+        if (closed) return RemoteException(RemoteError.Interrupted(host), cause)
+        val reason = when {
+            cause is InterruptedIOException -> RemoteError.Timeout
+            cause is UnknownHostException || cause is NoRouteToHostException || cause is PortUnreachableException ->
+                RemoteError.Unreachable(host)
+            failure.connecting -> RemoteError.SetupRequired(Setup.ADB_DEBUGGING)
+            else -> RemoteError.Interrupted(host)
+        }
+        return RemoteException(reason, cause)
+    }
 
     /**
      * Ferme sans attendre le verrou : fermer le socket débloque une commande en cours
-     * au lieu d'attendre l'expiration de son délai.
+     * au lieu d'attendre l'expiration de son délai. Définitif : les commandes suivantes
+     * échouent au lieu de rouvrir une connexion qui ne serait jamais fermée.
      */
     override suspend fun close() = withContext(Dispatchers.IO) {
+        closed = true
         dropConnection()
+    }
+
+    /**
+     * Échec d'une phase : [connecting] vrai si la connexion n'a pas pu s'ouvrir.
+     * [retryable] : une commande sur une connexion conservée ne se rejoue que si l'échec ne
+     * vient pas d'un délai de lecture (la commande a pu être exécutée : `am start` ou
+     * `input text` ne doivent pas l'être deux fois) ; une coupure franche (socket fermé,
+     * réinitialisé) signale une connexion périmée avant que l'appareil n'ait traité la commande.
+     */
+    private class ShellFailure(override val cause: Exception, val connecting: Boolean) : Exception(cause) {
+        val retryable get() = !connecting && cause !is InterruptedIOException && cause !is RemoteException
     }
 
     companion object {
@@ -163,15 +234,26 @@ internal object AdbKeys {
      * générer deux paires différentes (clé privée et publique dépareillées).
      */
     fun load(keyDir: File, generate: (File, File) -> Unit = AdbKeyPair::generate): AdbKeyPair =
-        synchronized(locks.computeIfAbsent(keyDir.canonicalPath) { Any() }) {
+        locked(keyDir) {
             val private = File(keyDir, PRIVATE)
             val public = File(keyDir, PUBLIC)
-            if (private.isFile && public.isFile) {
-                runCatching { AdbKeyPair.read(private, public) }.getOrNull()?.let { return it }
+            val existing = if (private.isFile && public.isFile) {
+                runCatching { AdbKeyPair.read(private, public) }.getOrNull()
+            } else {
+                null
             }
-            generateAtomically(keyDir, generate)
-            AdbKeyPair.read(private, public)
+            existing ?: run {
+                generateAtomically(keyDir, generate)
+                AdbKeyPair.read(private, public)
+            }
         }
+
+    /**
+     * Exécute [block] sous le verrou du répertoire [keyDir] (réentrant) : toute lecture des
+     * fichiers de clé doit s'y faire, sinon elle peut voir une paire en cours de régénération.
+     */
+    fun <T> locked(keyDir: File, block: () -> T): T =
+        synchronized(locks.computeIfAbsent(keyDir.canonicalPath) { Any() }, block)
 
     /** Génère dans des fichiers temporaires puis renomme : jamais de paire à moitié écrite. */
     internal fun generateAtomically(keyDir: File, generate: (File, File) -> Unit) {

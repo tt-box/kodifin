@@ -155,9 +155,8 @@ class RemoteViewModelBehaviorTest {
     fun `missing device reports it and stops connecting`() = runTest(dispatcher) {
         val store = ViewModelStore()
         val vm = newVm(Deps(this, device = null), store)
-        vm.messages.test {
-            assertEquals(UiText.Res(R.string.remote_device_not_found), awaitItem())
-        }
+        advanceUntilIdle()
+        assertEquals(UiText.Res(R.string.remote_device_not_found), vm.state.value.connectionError?.title)
         assertFalse(vm.state.value.connecting)
         assertFalse(vm.state.value.connected)
         store.clear()
@@ -169,7 +168,9 @@ class RemoteViewModelBehaviorTest {
         val store = ViewModelStore()
         val vm = newVm(deps, store)
         vm.messages.test {
-            assertEquals(UiText.Raw("Hôte injoignable"), awaitItem())
+            advanceUntilIdle()
+            // Erreur conservée dans l'état (carte persistante), message brut non affiché.
+            assertEquals(UiText.Res(R.string.remote_connection_failed), vm.state.value.connectionError?.title)
             vm.press(RemoteKey.SELECT)
             assertEquals(UiText.Res(R.string.remote_not_connected), awaitItem())
         }

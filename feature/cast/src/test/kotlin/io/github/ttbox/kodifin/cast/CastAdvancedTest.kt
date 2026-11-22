@@ -50,18 +50,18 @@ private class RichMedia : CastMediaPort {
     override val contentType: String? = "video/mp4"
     val calls = mutableListOf<String>()
 
-    override fun togglePlayback() { calls += "toggle" }
-    override fun stop() { calls += "stop" }
-    override fun next() { calls += "next" }
-    override fun previous() { calls += "previous" }
-    override fun seek(positionMs: Long) { calls += "seek:$positionMs" }
+    override suspend fun togglePlayback() { calls += "toggle" }
+    override suspend fun stop() { calls += "stop" }
+    override suspend fun next() { calls += "next" }
+    override suspend fun previous() { calls += "previous" }
+    override suspend fun seek(positionMs: Long) { calls += "seek:$positionMs" }
     override suspend fun load(url: String, contentType: String, title: String, options: CastLoadOptions) = Unit
-    override fun setTextTrackStyle(style: CastSubtitleStyle) = Unit
-    override fun setActiveTracks(ids: Set<Long>) { activeTrackIds = ids }
-    override fun setPlaybackRate(rate: Double) { this.rate = rate }
-    override fun setRepeat(mode: CastRepeat) { this.mode = mode }
-    override fun jumpTo(itemId: Int) { calls += "jump:$itemId" }
-    override fun removeItems(itemIds: List<Int>) { calls += "remove:$itemIds" }
+    override suspend fun setTextTrackStyle(style: CastSubtitleStyle) = Unit
+    override suspend fun setActiveTracks(ids: Set<Long>) { activeTrackIds = ids }
+    override suspend fun setPlaybackRate(rate: Double) { this.rate = rate }
+    override suspend fun setRepeat(mode: CastRepeat) { this.mode = mode }
+    override suspend fun jumpTo(itemId: Int) { calls += "jump:$itemId" }
+    override suspend fun removeItems(itemIds: List<Int>) { calls += "remove:$itemIds" }
 }
 
 private class RichSession(override var media: CastMediaPort?) : CastSessionPort {
@@ -130,7 +130,8 @@ class CastAdvancedTest {
         val d = controller.mediaDetails()
         assertEquals(listOf("Français", "en"), d.audioTracks.map { it.label })
         assertEquals(2, d.currentAudio)
-        assertEquals(listOf("Sous-titres FR", "Piste 2"), d.subtitles.map { it.label })
+        // Piste sans nom ni langue : libellé vide, l'application affiche « Piste N » traduit.
+        assertEquals(listOf("Sous-titres FR", ""), d.subtitles.map { it.label })
         assertNull(d.currentSubtitle)
         assertEquals(RepeatMode.OFF, d.repeat)
         assertEquals(false, d.shuffle)
@@ -154,6 +155,38 @@ class CastAdvancedTest {
         assertEquals(setOf(1L, 3L, 4L), media.activeTrackIds)
         controller.setSubtitle(null)
         assertEquals(setOf(1L, 3L), media.activeTrackIds)
+    }
+
+    @Test
+    fun `track ids beyond the Int range are kept without truncation`() = runTest {
+        val big = Int.MAX_VALUE.toLong() + 5
+        media.tracks = listOf(
+            CastTrack(1, CastTrackType.VIDEO, "Vidéo", null),
+            CastTrack(big, CastTrackType.AUDIO, "Français", "fr"),
+            // Même valeur que `big` tronquée en Int : ne doit pas être confondue avec lui.
+            CastTrack(big.toInt().toLong(), CastTrackType.AUDIO, "Anglais", "en"),
+        )
+        media.activeTrackIds = setOf(1L, big)
+        val d = controller.mediaDetails()
+        val french = d.audioTracks.first { it.label == "Français" }
+        assertEquals(french.id, d.currentAudio)
+        controller.setAudioTrack(d.audioTracks.first { it.label == "Anglais" }.id)
+        assertEquals(setOf(1L, big.toInt().toLong()), media.activeTrackIds)
+        controller.setAudioTrack(french.id)
+        assertEquals(setOf(1L, big), media.activeTrackIds)
+        // Clés distinctes, et l'identifiant réel (dans la plage Int) publié tel quel.
+        assertEquals(big.toInt(), d.audioTracks.first { it.label == "Anglais" }.id)
+        assertTrue(french.id != big.toInt())
+    }
+
+    @Test
+    fun `selecting a track that disappeared is reported`() = runTest {
+        try {
+            controller.setAudioTrack(99)
+            fail("piste inconnue acceptée")
+        } catch (e: RemoteException) {
+            assertEquals(RemoteError.ItemNotFound, e.reason)
+        }
     }
 
     @Test
@@ -226,7 +259,9 @@ class CastAdvancedTest {
     @Test
     fun `queue lists receiver items and acts on item ids`() = runTest {
         val queue = controller.queue()
-        assertEquals(listOf("Un", "Élément 11", "Trois"), queue.map { it.title })
+        // Élément sans titre : titre vide (l'application le nomme d'après sa position), jamais l'id interne.
+        assertEquals(listOf("Un", "", "Trois"), queue.map { it.title })
+        assertEquals("11", queue[1].id)
         assertEquals("http://img/1.jpg", queue.first().imageKey)
         assertEquals(1, controller.queuePosition())
         controller.playQueueItem(2)

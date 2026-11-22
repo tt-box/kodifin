@@ -19,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,7 +38,9 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -83,7 +87,8 @@ fun RemoteScreen(
         if (keepScreenOn) view.keepScreenOn = true
         onDispose { view.keepScreenOn = previous }
     }
-    val state by vm.state.collectAsStateWithLifecycle()
+    val stateHolder = vm.state.collectAsStateWithLifecycle()
+    val state by stateHolder
     val saved by context.container.devices.saved.collectAsStateWithLifecycle(emptyList())
     val switchable = remember(saved, deviceId) { RemoteSwitcher.entries(saved, deviceId) }
     val snackbar = remember { SnackbarHostState() }
@@ -93,7 +98,14 @@ fun RemoteScreen(
     var sheet by rememberSaveable { mutableStateOf(false) }
 
     val resources = LocalResources.current
-    LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it.resolve(resources)) } }
+    // Messages lus seulement écran visible : ceux émis en arrière-plan restent dans le canal
+    // et s'affichent au retour, au lieu d'être consommés sans être vus.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(vm, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            vm.messages.collect { snackbar.showSnackbar(it.resolve(resources)) }
+        }
+    }
     DisposableEffect(vm) { onDispose { vm.setVisiblePanels(emptySet()) } }
 
     val actions = remember(vm) { RemoteActions(vm::press, vm::uiCommand, vm::seekTo, vm::seekBy, vm::setVolume) }
@@ -104,6 +116,13 @@ fun RemoteScreen(
             subtitleDelay = vm::subtitleDelay, audioDelay = vm::audioDelay, setRepeat = vm::setRepeat,
             setShuffle = vm::setShuffle, previousChapter = vm::previousChapter, nextChapter = vm::nextChapter,
         )
+    }
+
+    // Instance unique pour toute la vie de l'écran : l'état y est lu à la demande, si bien qu'une
+    // mise à jour de la position ne recompose que ce qui en dépend (pas les listes de la bibliothèque).
+    val onClearQueue = remember { { dialog = RemoteDialog.ClearQueue } }
+    val content = remember(vm, stateHolder, actions, playbackActions) {
+        RemoteContent(stateHolder, actions, playbackActions, vm, onClearQueue)
     }
 
     // Touches de volume du téléphone : elles pilotent l'appareil tant que la télécommande a le focus.
@@ -133,6 +152,7 @@ fun RemoteScreen(
                 onWake = vm::wake,
                 onPower = { powerConfirm = it },
                 onRetry = vm::retry,
+                onCancelConnect = vm::cancelConnect,
                 onOpenTargets = vm::refreshTargets,
                 onSelectTarget = vm::selectTarget,
                 onMore = { sheet = true },
@@ -145,16 +165,12 @@ fun RemoteScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.networkBlocked?.let { NetworkBlockedCard(it.asString()) }
+            state.connectionError?.let { error ->
+                ConnectionErrorCard(error.title.asString(), error.advice?.asString(), onRetry = vm::retry)
+            }
             CompositionLocalProvider(LocalImageLoader provides vm.images.takeIf { state.features.images }) {
             BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
                 val layout = RemoteLayouts.forSize(maxWidth.value, maxHeight.value)
-                val content = RemoteContent(
-                    state = state,
-                    actions = actions,
-                    playbackActions = playbackActions,
-                    vm = vm,
-                    onClearQueue = { dialog = RemoteDialog.ClearQueue },
-                )
                 RemoteBackdrop(state.playback)
                 when (layout) {
                     RemoteLayout.PHONE -> PhoneLayout(content)
@@ -269,14 +285,20 @@ fun RemoteScreen(
     }
 }
 
-/** Données et rappels partagés par les trois dispositions. */
+/**
+ * Données et rappels partagés par les trois dispositions. Une seule instance par écran
+ * ([Stable]) : [state] est relu dans l'état Compose [holder] par chaque fonction qui en a
+ * besoin, au lieu d'une nouvelle instance à chaque émission qui recomposerait tout.
+ */
+@Stable
 internal class RemoteContent(
-    val state: RemoteUiState,
+    private val holder: State<RemoteUiState>,
     val actions: RemoteActions,
     val playbackActions: PlaybackActions,
     val vm: RemoteViewModel,
     val onClearQueue: () -> Unit,
 ) {
+    val state: RemoteUiState get() = holder.value
     val features get() = state.features
     val keys get() = state.supportedKeys
     val playbackRows get() = Capability.PLAYBACK in state.capabilities

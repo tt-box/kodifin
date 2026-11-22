@@ -4,7 +4,7 @@ import io.github.ttbox.kodifin.ui.devices.deviceIcon
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.automirrored.filled.StopScreenShare
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Edit
@@ -41,6 +42,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -71,6 +73,8 @@ internal fun RemoteTopBar(
     onWake: () -> Unit,
     onPower: (PowerAction) -> Unit,
     onRetry: () -> Unit,
+    /** Abandonne la connexion en cours (tentatives répétées après un réveil). */
+    onCancelConnect: () -> Unit,
     onOpenTargets: () -> Unit,
     onSelectTarget: (String) -> Unit,
     onMore: () -> Unit,
@@ -78,6 +82,8 @@ internal fun RemoteTopBar(
     onSwitch: (String) -> Unit = {},
 ) {
     val status = when {
+        state.connecting && state.connectAttempts > 1 ->
+            stringResource(R.string.remote_connect_attempt, state.connectAttempt.coerceAtLeast(1), state.connectAttempts)
         state.connecting -> stringResource(R.string.remote_status_connecting)
         !state.connected -> stringResource(R.string.remote_status_disconnected)
         else -> state.targets.current?.let { stringResource(R.string.remote_status_target, it.name) }
@@ -96,6 +102,12 @@ internal fun RemoteTopBar(
             val canWake = DeviceOptions.wakeTarget(state.device) != null
             if (canWake || state.features.powerActions.isNotEmpty()) {
                 PowerMenu(canWake, state.features.powerActions, onWake, onPower)
+            }
+            if (state.connecting) {
+                val cancel = stringResource(R.string.remote_connect_cancel)
+                WithTooltip(cancel) {
+                    IconButton(onClick = onCancelConnect) { Icon(Icons.Filled.Close, contentDescription = cancel) }
+                }
             }
             if (!state.connected && !state.connecting) {
                 val reconnect = stringResource(R.string.remote_reconnect)
@@ -252,7 +264,7 @@ internal fun MoreSheet(
                 SheetItem(Icons.Filled.FileUpload, stringResource(R.string.remote_more_send_file), onSendFile)
             }
             if (state.sharing) {
-                SheetItem(Icons.Filled.StopScreenShare, stringResource(R.string.remote_more_stop_sharing), onStopSharing)
+                SheetItem(Icons.AutoMirrored.Filled.StopScreenShare, stringResource(R.string.remote_more_stop_sharing), onStopSharing)
             }
             if (state.features.transferOut) {
                 SheetItem(Icons.Filled.Devices, stringResource(R.string.remote_more_transfer), onTransfer)
@@ -289,6 +301,21 @@ internal fun MoreSheet(
 private fun SheetItem(icon: ImageVector, label: String, onClick: () -> Unit) {
     Surface(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         ListItem(headlineContent = { Text(label) }, leadingContent = { Icon(icon, contentDescription = null) })
+    }
+}
+
+/**
+ * Carte persistante d'un échec de connexion : ce qui s'est passé, quoi faire, et « Réessayer ».
+ * Reste affichée jusqu'à la tentative suivante (un message éphémère serait manqué).
+ */
+@Composable
+internal fun ConnectionErrorCard(title: String, advice: String?, onRetry: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(16.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+            Text(advice ?: stringResource(R.string.remote_connection_error_hint), style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onRetry, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.remote_retry)) }
+        }
     }
 }
 

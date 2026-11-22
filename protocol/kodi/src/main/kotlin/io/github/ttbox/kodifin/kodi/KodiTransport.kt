@@ -198,7 +198,11 @@ class KodiImageFetcher(
  * - Maintien de connexion : ping WebSocket toutes les [PING_INTERVAL_MS] si le client n'en a pas.
  * - Connexion perdue : les appels en cours échouent aussitôt, puis la connexion est rétablie
  *   automatiquement avec un délai croissant ([reconnectDelaysMs]) ; une notification
- *   [RECONNECTED] est alors émise pour que l'état soit relu. [close] arrête définitivement.
+ *   [RECONNECTED] est alors émise pour que l'état soit relu. [close] arrête définitivement
+ *   (plus aucune reconnexion).
+ * - Ouverture paresseuse : rien n'est ouvert à la construction, seulement au premier appel
+ *   (ou [open]) ; un contrôleur créé puis abandonné sans appel ne laisse aucune connexion.
+ * - Réponse d'erreur sans identifiant (`"id": null`) : imputée à l'appel en attente le plus ancien.
  */
 class KodiWebSocketTransport(
     client: OkHttpClient,
@@ -287,8 +291,26 @@ class KodiWebSocketTransport(
         }
     }
 
+    /**
+     * Connexion courante ; `null` tant qu'aucun appel n'a eu lieu : le WebSocket n'est ouvert
+     * qu'au premier appel (ou [open]), pas à la construction, et jamais après [close].
+     */
     @Volatile
-    private var connection: Connection = Connection(reconnect = false)
+    private var connection: Connection? = null
+
+    /** Connexion courante, ouverte au besoin ; lève l'erreur de fermeture après [close]. */
+    private fun currentConnection(): Connection {
+        connection?.let { return it }
+        return synchronized(this) {
+            closedError?.let { throw it }
+            connection ?: Connection(reconnect = false).also { connection = it }
+        }
+    }
+
+    /** Ouvre le WebSocket sans attendre (sinon fait au premier appel) ; sans effet après [close]. */
+    fun open() {
+        runCatching { currentConnection() }
+    }
 
     private fun scheduleReconnect(failed: Connection) {
         if (closedError != null || reconnectDelaysMs.isEmpty()) return
@@ -309,6 +331,13 @@ class KodiWebSocketTransport(
             pending.remove(id)?.complete(obj)
             return
         }
+        // Erreur sans identifiant (`"id": null`, ex. requête illisible -32700) : elle ne peut
+        // concerner qu'un appel en attente, le plus ancien ; sinon il finirait en délai dépassé.
+        val error = obj["error"]
+        if (error != null && error != JsonNull) {
+            pending.keys.minOrNull()?.let { oldest -> pending.remove(oldest)?.complete(obj) }
+            return
+        }
         val method = (obj["method"] as? JsonPrimitive)?.contentOrNull ?: return
         _notifications.tryEmit(KodiNotification(method, obj["params"] ?: JsonNull))
     }
@@ -323,7 +352,7 @@ class KodiWebSocketTransport(
         val deferred = CompletableDeferred<JsonObject>()
         pending[id] = deferred
         try {
-            val conn = connection
+            val conn = currentConnection()
             // Revérifié après l'enregistrement : couvre une fermeture ou une perte concurrente.
             closedError?.let { throw it }
             conn.error?.let { throw it }
@@ -346,9 +375,9 @@ class KodiWebSocketTransport(
         val error = RemoteException(RemoteError.Interrupted(host))
         synchronized(this) { if (closedError == null) closedError = error }
         scope.cancel()
-        val conn = connection
-        conn.opened.completeExceptionally(error)
         failPending(error)
+        val conn = connection ?: return
+        conn.opened.completeExceptionally(error)
         // Fermeture propre ; OkHttp coupe de lui-même si Kodi ne répond pas à la trame de fermeture.
         conn.socket.close(1000, null)
     }

@@ -8,7 +8,6 @@ import io.github.ttbox.kodifin.firetv.DadbShell
 import io.github.ttbox.kodifin.firetv.FireTvController
 import io.github.ttbox.kodifin.model.Device
 import io.github.ttbox.kodifin.model.RemoteController
-import io.github.ttbox.kodifin.model.fetchImage
 import kotlinx.coroutines.flow.first
 import okhttp3.OkHttpClient
 import java.io.File
@@ -17,7 +16,10 @@ import java.io.File
 class AndroidPlatformControllers(
     private val context: Context,
     private val settings: SettingsRepository,
-    /** Client des pochettes Cast (sans cookie ni authentification) ; `null` : pas d'images. */
+    /**
+     * Client des pochettes Cast (sans cookie ni authentification) ; `null` : pas d'images.
+     * Seuls le Chromecast et les hôtes du LAN sont contactés ([CastController.lanImageFetcher]).
+     */
     private val imageHttp: OkHttpClient? = null,
 ) : PlatformControllers {
     override fun fireTv(device: Device): RemoteController =
@@ -26,6 +28,6 @@ class AndroidPlatformControllers(
     override fun cast(device: Device): RemoteController = CastController(
         device, context,
         settings = { settings.cast.first() },
-        imageFetcher = imageHttp?.let { client -> { url: String -> client.fetchImage(url) } },
+        imageFetcher = imageHttp?.let { client -> CastController.lanImageFetcher(client, device) },
     )
 }

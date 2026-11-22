@@ -131,7 +131,7 @@ class TransferViewModelTest {
 
         vm.importFrom { throw IOException("disque") }
         advanceUntilIdle()
-        assertEquals(UiText.Res(R.string.transfer_error_read, UiText.Raw("disque")), vm.state.value.message)
+        assertEquals(UiText.Res(R.string.transfer_error_read, UiText.Res(R.string.transfer_error_io_generic)), vm.state.value.message)
 
         vm.dismissMessage()
         vm.importFrom { null } // presse-papiers vide

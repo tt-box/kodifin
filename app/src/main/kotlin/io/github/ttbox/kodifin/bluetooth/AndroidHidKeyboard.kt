@@ -33,7 +33,9 @@ class AndroidHidKeyboard(context: Context) : HidKeyboardPort {
 
     private var hid: BluetoothHidDevice? = null
     private var host: BluetoothDevice? = null
-    private var requested = false
+
+    /** Demandes de proxy numérotées : seul le proxy de la dernière demande active est gardé. */
+    private val requests = HidProxyRequests()
 
     override fun availability(): HidAvailability = when {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.P -> HidAvailability.UNSUPPORTED
@@ -49,24 +51,33 @@ class AndroidHidKeyboard(context: Context) : HidKeyboardPort {
 
     override fun start() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || availability() != HidAvailability.READY) return
-        if (requested) return
-        requested = true
-        val ok = adapter?.getProfileProxy(context, listener, BluetoothProfile.HID_DEVICE) == true
+        val id = requests.begin() ?: return
+        val ok = adapter?.getProfileProxy(context, listener(id), BluetoothProfile.HID_DEVICE) == true
         if (!ok) {
-            requested = false
+            requests.failed(id)
             state.update { it.copy(error = UiText.Res(R.string.sys_hid_profile_unavailable)) }
         }
     }
 
-    private val listener = object : BluetoothProfile.ServiceListener {
+    /** Écouteur propre à la demande [id] : un proxy d'une demande périmée est rendu aussitôt. */
+    private fun listener(id: Int) = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
             val device = proxy as BluetoothHidDevice
+            if (!requests.accept(id)) {
+                // stop() appelé avant que le proxy n'arrive, ou demande remplacée par une plus
+                // récente : ne pas enregistrer le clavier (il resterait visible sans écran pour
+                // l'arrêter, ou le serait deux fois) et rendre ce proxy aussitôt.
+                runCatching { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, device) }
+                return
+            }
             hid = device
             register(device)
         }
 
         override fun onServiceDisconnected(profile: Int) {
+            // Déconnexion d'un ancien proxy : sans effet sur le proxy courant.
+            if (!requests.isCurrent(id)) return
             hid = null
             host = null
             state.value = HidLinkState()
@@ -128,13 +139,15 @@ class AndroidHidKeyboard(context: Context) : HidKeyboardPort {
     override fun stop() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
         val device = hid
-        if (device != null && hasPermission()) {
-            runCatching { device.unregisterApp() }
-            adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, device)
+        if (device != null) {
+            if (hasPermission()) runCatching { device.unregisterApp() }
+            // Le proxy est rendu même si la permission a été retirée entre-temps.
+            runCatching { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, device) }
         }
+        // Proxy encore en attente : onServiceConnected le rendra (demande annulée).
         hid = null
         host = null
-        requested = false
+        requests.cancel()
         state.value = HidLinkState()
     }
 

@@ -42,6 +42,9 @@ import io.github.ttbox.kodifin.model.UnsupportedAction
 import io.github.ttbox.kodifin.model.UnsupportedActionException
 import io.github.ttbox.kodifin.model.requireKey
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.channelFlow
@@ -65,6 +68,10 @@ import kotlin.math.abs
  *
  * Avec un [eventServer] (option `kodi_eventserver`), les touches de navigation et de lecture
  * passent par l'Event Server UDP, plus réactif ; en cas d'échec d'envoi, repli sur JSON-RPC.
+ * À la connexion, les réglages de Kodi (`services.esenabled`, `services.esallinterfaces`) sont
+ * lus : un Event Server désactivé ou limité à l'hôte local ignorerait les touches en silence,
+ * elles passent alors en JSON-RPC pour toute la session. De même si l'Event Server se révèle
+ * injoignable (port fermé, [KodiEventServer.isUnavailable]).
  * Volume, texte, lecture d'URL et état restent en JSON-RPC.
  *
  * Avec un transport qui pousse les notifications (WebSocket), l'état est relu à chaque
@@ -87,6 +94,12 @@ class KodiController(
      * inclus s'il en faut), pour le transfert de la lecture ; `null` : transfert impossible.
      */
     private val webBaseUrl: String? = null,
+    /**
+     * Contexte des vérifications bornées de [connect] (PVR, Event Server) : par défaut
+     * [Dispatchers.Default], pour que leur délai soit mesuré en temps réel même quand
+     * l'appelant tourne sur une horloge virtuelle.
+     */
+    private val probeContext: CoroutineContext = Dispatchers.Default,
 ) : RemoteController,
     SupportsTransferOut,
     SupportsItemInfo,
@@ -184,15 +197,38 @@ class KodiController(
         } catch (_: UnsupportedActionException) {
             null
         }
-        // Chaînes TV proposées à la recherche seulement si le PVR répond (sans bloquer la connexion).
-        pvrAvailable = try {
-            library.hasPvr()
-        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            false
+        // Chaînes TV proposées à la recherche seulement si le PVR répond, dans un délai borné :
+        // un PVR lent ou muet ne doit ni bloquer ni faire échouer la connexion.
+        pvrAvailable = probe(PVR_PROBE_TIMEOUT_MS) { library.hasPvr() } ?: false
+        eventServer?.let { events ->
+            eventServerUsable = probe(EVENT_SERVER_PROBE_TIMEOUT_MS) { eventServerEnabled() } ?: true
+            // HELO et vérification d'un éventuel refus dès la connexion (pas au premier appui).
+            if (eventServerUsable) probe(EVENT_SERVER_PROBE_TIMEOUT_MS) { events.start() }
         }
     }
+
+    /** Exécute [block] au plus [timeoutMs] ms ; `null` en cas d'échec ou de délai dépassé. */
+    private suspend fun <T> probe(timeoutMs: Long, block: suspend () -> T): T? = try {
+        withContext(probeContext) { withTimeoutOrNull(timeoutMs) { block() } }
+    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * `false` si Kodi déclare l'Event Server désactivé ou limité à l'hôte local (« Autoriser le
+     * contrôle à distance depuis d'autres systèmes » décoché) ; réglages illisibles : `true`.
+     */
+    private suspend fun eventServerEnabled(): Boolean {
+        val enabled = client.booleanSetting(SETTING_ES_ENABLED)
+        val allInterfaces = client.booleanSetting(SETTING_ES_ALL_INTERFACES)
+        return enabled != false && allInterfaces != false
+    }
+
+    /** Event Server à utiliser pour les touches : faux si Kodi l'a désactivé (lu à la connexion). */
+    @Volatile
+    private var eventServerUsable = true
 
     /** Version majeure JSON-RPC lue à la connexion ; `null` (inconnue) = API récente supposée. */
     @Volatile
@@ -221,14 +257,14 @@ class KodiController(
 
     override suspend fun send(key: RemoteKey) {
         requireKey(key)
-        val events = eventServer
+        val events = eventServer?.takeIf { eventServerUsable && !it.isUnavailable }
         val button = EVENT_BUTTONS[key]
         if (events != null && button != null) {
             try {
                 events.sendButton(button)
                 return
             } catch (_: RemoteException) {
-                // Échec UDP : repli sur JSON-RPC ci-dessous.
+                // Échec UDP : repli sur JSON-RPC ci-dessous (définitif si le port est fermé).
             }
         }
         sendJsonRpc(key)
@@ -638,6 +674,15 @@ class KodiController(
     companion object {
         const val EXTRA_USERNAME = "username"
         const val EXTRA_PASSWORD = "password"
+
+        /** Délai de détection du PVR à la connexion : au-delà, PVR ignoré (connexion non bloquée). */
+        internal const val PVR_PROBE_TIMEOUT_MS = 2_000L
+
+        /** Délai de lecture des réglages / de vérification de l'Event Server à la connexion. */
+        internal const val EVENT_SERVER_PROBE_TIMEOUT_MS = 2_000L
+
+        internal const val SETTING_ES_ENABLED = "services.esenabled"
+        internal const val SETTING_ES_ALL_INTERFACES = "services.esallinterfaces"
 
         internal val DETAIL_PROPERTIES = listOf(
             "speed", "repeat", "shuffled",

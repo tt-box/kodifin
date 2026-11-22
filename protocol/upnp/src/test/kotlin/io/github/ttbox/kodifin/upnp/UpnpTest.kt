@@ -12,6 +12,7 @@ import io.github.ttbox.kodifin.model.UdpDestination
 import io.github.ttbox.kodifin.model.UdpOptions
 import io.github.ttbox.kodifin.model.UdpSocket
 import io.github.ttbox.kodifin.model.UdpSocketFactory
+import io.github.ttbox.kodifin.model.sameHostRedirectsOnly
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
@@ -250,6 +251,9 @@ class UpnpRendererTest {
 
     @Volatile private var scpdFetches = 0
 
+    /** SCPD annoncé mais en erreur (500) : erreur de transport lors de sa lecture. */
+    @Volatile private var scpdFails = false
+
     private fun description() = """<?xml version="1.0"?>
         <root xmlns="urn:schemas-upnp-org:device-1-0">
           <device>
@@ -279,6 +283,7 @@ class UpnpRendererTest {
                 if (request.url.encodedPath == "/bad.xml") return MockResponse.Builder().body("<root><!-- tronqué").build()
                 if (request.url.encodedPath == "/RC/scpd.xml") {
                     scpdFetches++
+                    if (scpdFails) return error500()
                     return MockResponse.Builder().body(rcScpd.orEmpty()).build()
                 }
                 soapRequests += request
@@ -420,6 +425,19 @@ class UpnpRendererTest {
         val c = controller()
         c.setVolume(70)
         assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>70</DesiredVolume>"))
+        c.setVolume(20)
+        assertEquals(1, scpdFetches)
+    }
+
+    @Test
+    fun `scpd transport error is remembered for the session`() = runTest {
+        rcScpd = "<scpd/>"
+        scpdFails = true
+        val c = controller()
+        c.setVolume(70)
+        assertTrue(soapRequests.last().body!!.utf8().contains("<DesiredVolume>70</DesiredVolume>"))
+        // Chaque sondage lit le volume : le SCPD en échec ne doit pas être relu à chaque fois.
+        c.playbackState().take(3).toList()
         c.setVolume(20)
         assertEquals(1, scpdFetches)
     }
@@ -590,5 +608,77 @@ class UpnpRendererTest {
         assertTrue("annulation trop lente", System.nanoTime() - start < 2_000_000_000)
         assertTrue(job.isCancelled)
         gate.countDown()
+    }
+}
+
+class SoapClientTest {
+    private lateinit var server: MockWebServer
+
+    @Before
+    fun setUp() {
+        server = MockWebServer()
+        server.start()
+    }
+
+    @After
+    fun tearDown() {
+        server.close()
+    }
+
+    private val avt = "urn:schemas-upnp-org:service:AVTransport:1"
+
+    @Test
+    fun `oversized response is refused without being read whole`() = runTest {
+        // Corps sans Content-Length (fragmenté) : seule la lecture bornée le détecte.
+        server.enqueue(MockResponse.Builder().chunkedBody("x".repeat(5_000), 512).build())
+        val e = expectFailure<RemoteException> { SoapClient(OkHttpClient(), maxBodyBytes = 1_000).invoke(server.url("/c").toString(), avt, "Stop") }
+        assertEquals(RemoteError.ResponseTooLarge(server.hostName, 1_000), e.reason)
+        // Taille annoncée trop grande : refus immédiat.
+        server.enqueue(MockResponse.Builder().body("y".repeat(2_000)).build())
+        val announced = expectFailure<RemoteException> { SoapClient(OkHttpClient(), maxBodyBytes = 1_000).invoke(server.url("/c").toString(), avt, "Stop") }
+        assertEquals(RemoteError.ResponseTooLarge(server.hostName, 1_000), announced.reason)
+    }
+
+    @Test
+    fun `soap fault of a 500 status is still read within the limit`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(500).body(
+                "﻿<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><s:Fault><detail>" +
+                    "<UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>701</errorCode>" +
+                    "<errorDescription>Transition not available</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>",
+            ).build(),
+        )
+        val fault = expectFailure<UpnpSoapFault> { SoapClient(OkHttpClient(), maxBodyBytes = 4_096).invoke(server.url("/c").toString(), avt, "Play") }
+        assertEquals("701", fault.errorCode)
+        assertEquals("Transition not available", fault.description)
+    }
+
+    @Test
+    fun `invalid service type from the device is refused before any request`() = runTest {
+        val client = SoapClient(OkHttpClient())
+        for (bad in listOf("urn:é:service:AVTransport:1", "urn:a:service:AVT\r\nX: y:1", "urn:a\" onload=\"x:service:A:1", "AVTransport")) {
+            val e = expectFailure<RemoteException> { client.invoke(server.url("/c").toString(), bad, "Play") }
+            assertEquals(RemoteError.UnexpectedResponse("UPnP"), e.reason)
+        }
+        assertEquals(0, server.requestCount)
+        // Fournisseur tiers valide.
+        server.enqueue(MockResponse.Builder().build())
+        client.invoke(server.url("/c").toString(), "urn:schemas-sony-com:service:IRCC:1", "X_SendIRCC")
+        assertEquals("\"urn:schemas-sony-com:service:IRCC:1#X_SendIRCC\"", server.next().headers["SOAPACTION"])
+    }
+
+    @Test
+    fun `envelope escapes the namespace attribute`() {
+        val xml = SoapClient(OkHttpClient()).envelope("urn:a\"b<c", "Play", emptyList())
+        assertTrue(xml, xml.contains("xmlns:u=\"urn:a&quot;b&lt;c\""))
+    }
+
+    @Test
+    fun `cross host redirect is reported as refused`() = runTest {
+        server.enqueue(MockResponse.Builder().code(307).addHeader("Location", "http://203.0.113.9/c").build())
+        val http = OkHttpClient.Builder().sameHostRedirectsOnly().build()
+        val e = expectFailure<RemoteException> { SoapClient(http).invoke(server.url("/c").toString(), avt, "Play") }
+        assertEquals(RemoteError.RedirectRefused, e.reason)
+        assertEquals(1, server.requestCount)
     }
 }

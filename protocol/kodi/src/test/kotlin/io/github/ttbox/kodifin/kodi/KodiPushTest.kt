@@ -161,6 +161,8 @@ class KodiPushTest {
         try {
             withTimeout(5_000) {
                 transport.notifications.test {
+                    // Ouverture paresseuse : rien n'est ouvert avant le premier appel ou open().
+                    transport.open()
                     assertEquals(KodiWebSocketTransport.RECONNECTED, awaitItem().method)
                     cancelAndIgnoreRemainingEvents()
                 }

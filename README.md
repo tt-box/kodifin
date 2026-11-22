@@ -3,7 +3,7 @@
 [![CI](https://github.com/tt-box/kodifin/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tt-box/kodifin/actions/workflows/ci.yml)
 [![Fusion auto Dependabot](https://github.com/tt-box/kodifin/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/tt-box/kodifin/actions/workflows/dependabot-automerge.yml)
 [![Dependabot](https://img.shields.io/badge/Dependabot-activé-025E8C?logo=dependabot&logoColor=white)](https://github.com/tt-box/kodifin/security/dependabot)
-[![Scan CVE](https://img.shields.io/badge/CVE-OSV--Scanner-4285F4?logo=google&logoColor=white)](https://github.com/google/osv-scanner)
+[![Scan CVE](.github/badges/cve.svg)](https://github.com/tt-box/kodifin/actions/workflows/ci.yml)
 [![Couverture](.github/badges/coverage.svg)](https://github.com/tt-box/kodifin/actions/workflows/ci.yml)
 [![Traceurs](https://img.shields.io/badge/traceurs-0-brightgreen)](scripts/check-no-trackers.sh)
 
@@ -48,6 +48,8 @@ Le code a été écrit à partir des spécifications publiques de chaque protoco
 - `scripts/check-no-trackers.sh` fait échouer la CI si une bibliothèque de pistage
   apparaît dans le classpath release ou dans l'APK.
 - Seuls échanges hors du réseau local : plex.tv, uniquement si l'utilisateur lie un compte Plex.
+- Pochettes UPnP/DLNA et Chromecast : téléchargées seulement depuis l'appareil lui-même ou un
+  hôte du réseau local ; celles d'un CDN public (YouTube, Spotify…) ne sont pas affichées.
 - Mots de passe Jellyfin/Emby : échangés contre un jeton puis supprimés. Le mot de passe
   Kodi (authentification HTTP Basic) reste stocké localement, dans le stockage privé de
   l'application, exclu des sauvegardes.
@@ -135,7 +137,9 @@ Secrets requis (`Settings ▸ Secrets and variables ▸ Actions`) — sans eux, 
 - **CI** (`.github/workflows/ci.yml`) : tests unitaires, lint, build debug et release,
   contrôle anti-pistage (le build release y reste non signé : aucun secret n'est exposé
   aux PR), scan CVE (inventaire CycloneDX analysé par OSV-Scanner,
-  aussi lancé chaque jour), soumission du graphe de dépendances pour les alertes Dependabot.
+  aussi lancé chaque semaine ; le badge `.github/badges/cve.svg` donne le nombre de
+  vulnérabilités connues sur `main`). Le graphe de dépendances pour les alertes Dependabot
+  est soumis par `dependency-graph.yml` quand les fichiers Gradle changent, et chaque semaine.
 - **Couverture** : rapport Kover agrégé publié en artefact `coverage` ; sur `main`, le badge
   `.github/badges/coverage.svg` est recalculé et commité par la CI s'il change (aucun
   service externe type Codecov : le code reste privé).
@@ -149,4 +153,4 @@ Secrets requis (`Settings ▸ Secrets and variables ▸ Actions`) — sans eux, 
   Dependabot est fusionnée (squash) dès que tous les jobs de la CI sont verts sur son
   dernier commit, si tous ses commits sont de Dependabot. La fusion utilisant le
   `GITHUB_TOKEN`, elle ne relance pas la CI sur `main` : le graphe de dépendances est
-  republié par l'exécution quotidienne.
+  republié par l'exécution hebdomadaire de `dependency-graph.yml`.

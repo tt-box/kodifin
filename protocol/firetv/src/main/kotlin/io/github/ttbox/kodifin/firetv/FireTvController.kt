@@ -56,7 +56,7 @@ class FireTvController(
     }
 
     override suspend fun playUrl(url: String, title: String?) {
-        require(url.isNotBlank()) { "URL vide" }
+        if (url.isBlank()) throw RemoteException(RemoteError.InvalidAddress())
         val output = shell.shell(
             "am start -a android.intent.action.VIEW -d ${shellQuote(url)} -t ${shellQuote(mimeFor(url))}",
         )

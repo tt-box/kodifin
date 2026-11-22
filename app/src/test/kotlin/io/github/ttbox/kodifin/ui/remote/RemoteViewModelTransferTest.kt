@@ -70,7 +70,11 @@ class RemoteViewModelTransferTest {
         override suspend fun seekTo(positionMs: Long) { log += "seek:$positionMs" }
         override fun playbackState(): Flow<PlaybackState> = playback
         override suspend fun disconnect() { log += "disconnect" }
-        override suspend fun currentMedia() = media
+        var mediaFailure: Exception? = null
+        override suspend fun currentMedia(): TransferableMedia? {
+            mediaFailure?.let { throw it }
+            return media
+        }
     }
 
     private class Share : LocalShare {
@@ -199,6 +203,17 @@ class RemoteViewModelTransferTest {
         advanceUntilIdle()
         assertFalse(env.vm.state.value.transfer.open)
         assertTrue(env.messages.toString(), UiText.Res(R.string.remote_transfer_no_media) in env.messages)
+        close(env)
+    }
+
+    @Test
+    fun `unreadable current media gives a single error message`() = runTest(dispatcher) {
+        val env = connected(film)
+        env.deps.created.getValue(source.id).mediaFailure = RemoteException(RemoteError.Timeout)
+        env.vm.transfer.open()
+        advanceUntilIdle()
+        assertFalse(env.vm.state.value.transfer.open)
+        assertEquals(listOf<UiText>(UiText.Res(R.string.error_timeout)), env.messages)
         close(env)
     }
 

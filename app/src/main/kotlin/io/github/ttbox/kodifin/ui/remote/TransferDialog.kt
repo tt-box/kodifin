@@ -71,6 +71,13 @@ fun TransferDialog(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+                if (media?.carriesCredentials() == true) {
+                    Text(
+                        stringResource(R.string.remote_transfer_credentials_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 if (!transfer.loading && transfer.targets.isEmpty()) {
                     Text(
                         stringResource(R.string.remote_transfer_no_target),

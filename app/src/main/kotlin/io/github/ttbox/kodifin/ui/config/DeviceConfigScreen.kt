@@ -38,6 +38,9 @@ import io.github.ttbox.kodifin.connection.AdvancedOptions
 import io.github.ttbox.kodifin.connection.usesCredentials
 import io.github.ttbox.kodifin.connection.quickConnectDevice
 import io.github.ttbox.kodifin.connection.buildDevice
+import io.github.ttbox.kodifin.connection.RetypeHint
+import io.github.ttbox.kodifin.connection.retypeHint
+import io.github.ttbox.kodifin.connection.targetChanged
 import io.github.ttbox.kodifin.connection.DeviceDraft
 import io.github.ttbox.kodifin.connection.ConfigValidation
 import io.github.ttbox.kodifin.connection.AndroidNetworkInfo
@@ -91,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import io.github.ttbox.kodifin.R
 import io.github.ttbox.kodifin.container
 import io.github.ttbox.kodifin.data.DeviceSecrets
+import io.github.ttbox.kodifin.data.EditableDevice
 import io.github.ttbox.kodifin.mediaserver.MediaServerController
 import io.github.ttbox.kodifin.ui.config.accounts.MediaServerUserPicker
 import io.github.ttbox.kodifin.ui.config.accounts.QuickConnectPanel
@@ -128,14 +132,20 @@ fun DeviceConfigScreen(
     val context = LocalContext.current
     if (editDeviceId != null) {
         // Appareil enregistré : chargé depuis le dépôt (les secrets ne transitent pas par la route).
-        var loaded by remember { mutableStateOf<Device?>(null) }
+        // Les secrets devenus illisibles (clé du Keystore perdue) sont purgés au chargement :
+        // le formulaire ne doit pas annoncer un mot de passe « enregistré » inutilisable.
+        var loaded by remember { mutableStateOf<EditableDevice?>(null) }
         var missing by remember { mutableStateOf(false) }
         LaunchedEffect(editDeviceId) {
-            val device = context.container.devices.get(editDeviceId)
+            val device = context.container.devices.getForEdit(editDeviceId)
             if (device == null) missing = true else loaded = device
         }
+        val edited = loaded
         when {
-            loaded != null -> DeviceConfigForm(loaded, editing = true, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras, onAdbPairing = onAdbPairing)
+            edited != null -> DeviceConfigForm(
+                edited.device, editing = true, onSaved = onSaved, onBack = onBack, accountExtras = accountExtras,
+                onAdbPairing = onAdbPairing, storedSecretLost = edited.secretLost,
+            )
             missing -> Text(stringResource(R.string.config_device_not_found), Modifier.padding(16.dp))
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
@@ -156,6 +166,8 @@ private fun DeviceConfigForm(
     onBack: () -> Unit,
     accountExtras: AccountExtras? = null,
     onAdbPairing: () -> Unit = {},
+    /** Un mot de passe enregistré était illisible et vient d'être effacé : le signaler. */
+    storedSecretLost: Boolean = false,
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -167,13 +179,17 @@ private fun DeviceConfigForm(
     var port by rememberSaveable { mutableStateOf((prefill?.port ?: kind.defaultPort).toString()) }
     var location by rememberSaveable { mutableStateOf(prefill?.extras?.get("location").orEmpty()) }
     var username by rememberSaveable { mutableStateOf(if (editing) prefill?.extras?.get("username").orEmpty() else "") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // Mot de passe en clair : `remember` et non `rememberSaveable`, pour qu'il ne soit jamais
+    // écrit dans l'état sauvegardé de l'activité (Bundle, conservé hors du processus).
+    var password by remember { mutableStateOf("") }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
-    val hasStoredPassword = editing && prefill?.extras?.containsKey(DeviceSecrets.ENCRYPTED_PASSWORD) == true
+    // Mot de passe enregistré réutilisable : présent, et même cible (un hôte ou port modifié
+    // ne reçoit pas l'ancien mot de passe, cf. buildDevice).
+    val storedPasswordExists = editing && prefill?.extras?.containsKey(DeviceSecrets.ENCRYPTED_PASSWORD) == true
 
     // Options : mode de connexion, délai, réseau, WebSocket Kodi, Wake-on-LAN…
     val initial = remember(prefill) { DeviceOptions.read(prefill) }
@@ -207,6 +223,11 @@ private fun DeviceConfigForm(
         wolMac = wolMac, wolBroadcast = wolBroadcast, wolPort = wolPort, wolAuto = wolAuto, basePath = basePath,
         tlsPin = tlsPin, plexClientId = plexClientId,
     )
+    // Cible changée (hôte, port ou schéma, même règle que buildDevice) : les secrets enregistrés
+    // ne la suivent pas, l'indice « à ressaisir » le dit au lieu de les supprimer en silence.
+    val targetMoved = editing && targetChanged(prefill, kind, host, port, location, options)
+    val retype = if (editing) retypeHint(prefill, targetMoved) else null
+    val hasStoredPassword = storedPasswordExists && !targetMoved
     val plexToken: String? = when {
         kind != DeviceKind.PLEX -> null
         plexTokenInput.isNotBlank() -> plexTokenInput.trim()
@@ -245,7 +266,8 @@ private fun DeviceConfigForm(
 
     /** Valide le formulaire et construit l'appareil, ou affiche l'erreur et renvoie `null`. */
     fun draftOrNull(): DeviceDraft? {
-        error = (ConfigValidation.error(kind, host, port, location) ?: DeviceOptions.error(kind, options))?.resolve(resources)
+        error = (ConfigValidation.error(kind, host, port, location, username, password) ?: DeviceOptions.error(kind, options))
+            ?.resolve(resources)
         return if (error == null) buildDevice(prefill, kind, name, host, port, location, username, password, options, plexToken) else null
     }
 
@@ -426,6 +448,19 @@ private fun DeviceConfigForm(
                         },
                     ),
                 )
+                if (password.isEmpty()) {
+                    when {
+                        storedSecretLost -> Text(
+                            stringResource(R.string.config_stored_password_unreadable),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+                        )
+                        retype == RetypeHint.PASSWORD -> Hint(stringResource(R.string.config_password_reenter_new_target))
+                        retype == RetypeHint.MEDIA_SERVER_TOKEN -> Text(
+                            stringResource(R.string.config_token_reenter_new_target),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
                 val portNumber = port.toIntOrNull()
                 val serverUrl = portNumber?.let {
                     DeviceOptions.formBaseUrl(mode, host, it, if (DeviceOptions.supportsBasePath(kind)) basePath else "")
@@ -519,7 +554,7 @@ private fun DeviceConfigForm(
             OutlinedTextField(
                 plexTokenInput, { plexTokenInput = it; if (it.isNotBlank()) plexTokenCleared = false },
                 label = { Text(stringResource(R.string.config_plex_device_token)) },
-                placeholder = if (hasStoredPlexToken && !plexTokenCleared) ({ Text(stringResource(R.string.config_unchanged_if_empty)) }) else null,
+                placeholder = if (hasStoredPlexToken && !plexTokenCleared && !targetMoved) ({ Text(stringResource(R.string.config_unchanged_if_empty)) }) else null,
                 supportingText = {
                     Text(stringResource(R.string.config_plex_device_token_help))
                 },
@@ -528,7 +563,9 @@ private fun DeviceConfigForm(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (hasStoredPlexToken && !plexTokenCleared && plexTokenInput.isBlank()) {
+            if (retype == RetypeHint.PLEX_TOKEN && plexTokenInput.isBlank()) {
+                Hint(stringResource(R.string.config_plex_token_reenter_new_target))
+            } else if (hasStoredPlexToken && !plexTokenCleared && plexTokenInput.isBlank()) {
                 TextButton(onClick = { plexTokenCleared = true }) { Text(stringResource(R.string.config_plex_delete_token)) }
             } else if (plexTokenCleared) {
                 Hint(stringResource(R.string.config_plex_token_will_be_deleted))

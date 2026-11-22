@@ -53,6 +53,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -88,7 +92,6 @@ data class AdbPairingState(
     val code: String = "",
     val connectPort: String = "",
     val name: String = "",
-    val candidates: List<AdbCandidate> = emptyList(),
     val step: AdbPairingStep = AdbPairingStep.Idle,
     /** Vrai une fois le code accepté : on peut retenter la connexion sans réappairer. */
     val paired: Boolean = false,
@@ -106,15 +109,15 @@ class AdbPairingViewModel(
     val state: StateFlow<AdbPairingState> = _state.asStateFlow()
     private var job: Job? = null
 
-    init {
-        viewModelScope.launch {
-            runCatching {
-                deps.services.collect { services ->
-                    _state.update { it.copy(candidates = AdbPairingLogic.candidates(services)) }
-                }
-            }
-        }
-    }
+    /**
+     * Téléviseurs découverts. La découverte mDNS ne tourne que tant que l'écran collecte ce flux
+     * (`collectAsStateWithLifecycle` : écran au moins STARTED), et s'arrête [STOP_TIMEOUT_MS]
+     * après : pas de multicast en arrière-plan tant que le ViewModel survit (pile de navigation).
+     */
+    val candidates: StateFlow<List<AdbCandidate>> = deps.services
+        .map(AdbPairingLogic::candidates)
+        .catch { emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptyList())
 
     fun edit(transform: AdbPairingState.() -> AdbPairingState) {
         _state.update { current ->
@@ -175,6 +178,11 @@ class AdbPairingViewModel(
             }
         }
     }
+
+    private companion object {
+        /** Délai de grâce (rotation d'écran) avant d'arrêter la découverte. */
+        const val STOP_TIMEOUT_MS = 5_000L
+    }
 }
 
 /** Implémentation réelle : clé ADB de l'application (filesDir/adb), dépôt des appareils. */
@@ -212,6 +220,7 @@ fun AdbPairingScreen(onPaired: (String) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     val vm: AdbPairingViewModel = viewModel(factory = viewModelFactory { initializer { AdbPairingViewModel(androidDependencies(context)) } })
     val state by vm.state.collectAsStateWithLifecycle()
+    val candidates by vm.candidates.collectAsStateWithLifecycle()
 
     val done = state.step as? AdbPairingStep.Done
     LaunchedEffect(done) { done?.let { onPaired(it.deviceId) } }
@@ -238,14 +247,14 @@ fun AdbPairingScreen(onPaired: (String) -> Unit, onBack: () -> Unit) {
                 stringResource(R.string.adb_instructions),
                 style = MaterialTheme.typography.bodyMedium,
             )
-            if (state.candidates.isEmpty()) {
+            if (candidates.isEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Text(stringResource(R.string.adb_searching), style = MaterialTheme.typography.bodySmall)
                 }
             } else {
                 Text(stringResource(R.string.adb_detected_on_network), style = MaterialTheme.typography.titleSmall)
-                state.candidates.forEach { candidate ->
+                candidates.forEach { candidate ->
                     ListItem(
                         headlineContent = { Text(candidate.host) },
                         supportingContent = {

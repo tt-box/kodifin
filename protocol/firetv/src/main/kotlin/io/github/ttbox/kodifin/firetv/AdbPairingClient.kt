@@ -44,7 +44,9 @@ class AdbPairingClient(
     /** Bloquant : à appeler hors du fil principal. */
     fun pair(host: String, port: Int, code: String): Result {
         val trimmed = code.trim()
-        require(PAIRING_CODE.matches(trimmed)) { "Le code d'appairage comporte 6 chiffres" }
+        // Code mal formé (6 chiffres attendus) : refusé sans contacter le téléviseur.
+        if (!PAIRING_CODE.matches(trimmed)) throw RemoteException(RemoteError.CodeRejected)
+        if (port !in 1..MAX_PORT) throw RemoteException(RemoteError.InvalidAddress("$host:$port"))
         val identity = AdbIdentity.load(keyDir)
         val socket = try {
             AdbTls.connect(host, port, connectTimeoutMs, socketTimeoutMs)
@@ -164,6 +166,7 @@ class AdbPairingClient(
 
     internal companion object {
         val PAIRING_CODE = Regex("^\\d{6}$")
+        const val MAX_PORT = 65_535
         const val EXPORTED_KEY_LABEL = "adb-label\u0000"
         const val EXPORTED_KEY_SIZE = 64
         val CLIENT_NAME = "adb pair client\u0000".toByteArray(Charsets.US_ASCII)

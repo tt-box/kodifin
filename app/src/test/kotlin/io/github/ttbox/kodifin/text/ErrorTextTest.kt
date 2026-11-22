@@ -52,14 +52,15 @@ class ErrorTextTest {
     }
 
     @Test
-    fun `toUiText choisit la raison typée, puis le message système, puis le repli`() {
+    fun `toUiText choisit la raison typée, puis le repli, jamais le message brut`() {
         assertEquals(UiText.Res(R.string.error_timeout), RemoteException(RemoteError.Timeout).toUiText())
         assertEquals(
             UiText.Res(R.string.unsupported_by, UiText.Res(R.string.unsupported_seek), "AirPlay"),
             UnsupportedActionException(UnsupportedAction.Seek, DeviceKind.AIRPLAY).toUiText(),
         )
         assertEquals(UiText.Res(1), AppException(UiText.Res(1)).toUiText())
-        assertEquals(UiText.Raw("disque plein"), IOException("disque plein").toUiText(UiText.Res(2)))
+        assertEquals(UiText.Res(2), IOException("disque plein").toUiText(UiText.Res(2)))
+        assertEquals(UiText.Res(R.string.error_unknown, "IOException"), IOException("No route to host").toUiText())
         assertEquals(UiText.Res(2), IOException().toUiText(UiText.Res(2)))
         assertEquals(UiText.Res(R.string.error_unknown, "IOException"), IOException().toUiText())
     }

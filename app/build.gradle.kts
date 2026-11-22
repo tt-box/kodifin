@@ -36,9 +36,10 @@ android {
         applicationId = "io.github.ttbox.kodifin"
         minSdk = 26
         targetSdk = 36
-        // Le workflow de release surcharge ces valeurs depuis le tag git.
-        versionCode = System.getenv("KODIFIN_VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = System.getenv("KODIFIN_VERSION_NAME") ?: "0.1.0"
+        // Valeurs par défaut ; le workflow de release les surcharge pour la seule variante
+        // release (androidComponents ci-dessous).
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     signingConfigs {
@@ -48,7 +49,7 @@ android {
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
-                // Clé ECDSA P-256. minSdk 26 : v1 (JAR) inutile, v2 couvre Android 7+,
+                // Clé d'envoi RSA 4096 (alias kodifin-upload). minSdk 26 : v1 (JAR) inutile, v2 couvre Android 7+,
                 // v3 / v3.1 permettent une future rotation de clé (Android 9+ / 13+).
                 enableV1Signing = false
                 enableV2Signing = true
@@ -88,6 +89,9 @@ android {
         abortOnError = true
         warningsAsErrors = false
         checkDependencies = true
+        // Sources de test non analysées : supprime les tâches lintAnalyze*UnitTest/AndroidTest
+        // (30 à 60 s en CI quand le cache est invalidé) ; les tests ne sont pas livrés.
+        ignoreTestSources = true
         // Les mises à jour de dépendances sont gérées par Dependabot.
         disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
         // Cible Android 16 (API 36) volontaire.
@@ -110,6 +114,20 @@ configurations.configureEach {
     exclude(group = "com.google.firebase", module = "firebase-encoders")
     exclude(group = "com.google.firebase", module = "firebase-encoders-json")
     exclude(group = "com.google.firebase", module = "firebase-encoders-proto")
+}
+
+// Version issue du tag git (KODIFIN_VERSION_*), appliquée à la seule variante release : les
+// tâches debug (tests, lint) gardent les mêmes entrées qu'en CI et restent reprises du cache
+// quand la release les lance dans le même appel Gradle.
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        val code = System.getenv("KODIFIN_VERSION_CODE")?.toIntOrNull()
+        val name = System.getenv("KODIFIN_VERSION_NAME")
+        variant.outputs.forEach { output ->
+            code?.let { output.versionCode.set(it) }
+            name?.let { output.versionName.set(it) }
+        }
+    }
 }
 
 dependencies {

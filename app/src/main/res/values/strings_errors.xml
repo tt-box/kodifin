@@ -31,6 +31,8 @@
     <string name="error_code_rejected">Code refusé&#160;: vérifiez le code affiché sur l\'appareil</string>
     <string name="error_code_expired">Code expiré, recommencez.</string>
     <string name="error_admin_required">Action réservée à un administrateur du serveur</string>
+    <string name="error_secret_store_unavailable">Coffre de clés du téléphone momentanément indisponible&#160;: le mot de passe enregistré est conservé, réessayez</string>
+    <string name="error_stored_secret_unreadable">Mot de passe enregistré illisible sur ce téléphone&#160;: ressaisissez-le</string>
 
     <!-- État de l'appareil -->
     <string name="error_nothing_playing">Aucune lecture en cours</string>

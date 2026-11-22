@@ -18,16 +18,15 @@ import io.github.ttbox.kodifin.model.UnsupportedActionException
 class AppException(val text: UiText, cause: Throwable? = null) : Exception(text.toString(), cause)
 
 /**
- * Texte d'une erreur quelconque : raison typée si elle existe, sinon message brut de
- * l'exception (erreur système, déjà localisée par Android), sinon [fallback].
+ * Texte d'une erreur quelconque : raison typée si elle existe, sinon [fallback] (libellé
+ * localisé choisi par l'appelant), sinon un libellé générique. Le message brut d'une exception
+ * non typée n'est jamais affiché : souvent en anglais, technique, voire porteur d'adresses.
  */
 fun Throwable.toUiText(fallback: UiText? = null): UiText = when (this) {
     is RemoteException -> reason.text
     is UnsupportedActionException -> action.text(kind)
     is AppException -> text
-    else -> message?.takeIf { it.isNotBlank() }?.let(UiText::Raw)
-        ?: fallback
-        ?: UiText.Res(R.string.error_unknown, javaClass.simpleName)
+    else -> fallback ?: UiText.Res(R.string.error_unknown, javaClass.simpleName)
 }
 
 val RemoteError.text: UiText
@@ -51,6 +50,8 @@ val RemoteError.text: UiText
         RemoteError.CodeRejected -> UiText.Res(R.string.error_code_rejected)
         RemoteError.CodeExpired -> UiText.Res(R.string.error_code_expired)
         RemoteError.AdminRequired -> UiText.Res(R.string.error_admin_required)
+        RemoteError.StoredSecretUnreadable -> UiText.Res(R.string.error_stored_secret_unreadable)
+        RemoteError.SecretStoreUnavailable -> UiText.Res(R.string.error_secret_store_unavailable)
         RemoteError.NothingPlaying -> UiText.Res(R.string.error_nothing_playing)
         RemoteError.NoControllableClient -> UiText.Res(R.string.error_no_controllable_client)
         RemoteError.ItemNotFound -> UiText.Res(R.string.error_item_not_found)

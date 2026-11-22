@@ -20,10 +20,24 @@ internal fun usesCredentials(kind: DeviceKind) = kind in setOf(DeviceKind.KODI, 
 object ConfigValidation {
     private val HOST = Regex("""^[A-Za-z0-9.\-:\[\]]+$""")
 
-    fun error(kind: DeviceKind, host: String, port: String, location: String): UiText? = when {
+    /**
+     * Première erreur du formulaire, ou `null`. [username] / [password] : un mot de passe saisi
+     * sans utilisateur serait ignoré (Kodi n'envoie l'authentification Basic qu'avec un
+     * utilisateur ; Jellyfin/Emby s'authentifient par nom) : l'utilisateur est alors exigé.
+     */
+    fun error(
+        kind: DeviceKind,
+        host: String,
+        port: String,
+        location: String,
+        username: String = "",
+        password: String = "",
+    ): UiText? = when {
         kind == DeviceKind.UPNP_RENDERER && locationEndpoint(location) == null -> UiText.Res(R.string.config_error_upnp_location_required)
         kind != DeviceKind.UPNP_RENDERER && !HOST.matches(host.trim()) -> UiText.Res(R.string.config_error_invalid_address)
         kind != DeviceKind.UPNP_RENDERER && (port.toIntOrNull() ?: 0) !in 1..65535 -> UiText.Res(R.string.config_error_invalid_port)
+        usesCredentials(kind) && password.isNotEmpty() && username.isBlank() ->
+            UiText.Res(if (kind == DeviceKind.KODI) R.string.config_error_username_required_kodi else R.string.config_error_username_required)
         else -> null
     }
 
@@ -84,22 +98,30 @@ internal fun buildDevice(
     // Changement de type : les extras (jeton Plex/Jellyfin, identifiant de session…) et
     // l'identifiant de l'appareil pré-rempli appartiennent à un autre protocole.
     val base = prefill?.takeIf { it.kind == kind }
+    val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
+    val effectiveHost = endpoint?.first ?: host.trim()
+    val effectivePort = endpoint?.second ?: port.toInt()
     // Édition : même utilisateur et mot de passe laissé vide = identifiants inchangés
     // (jeton et mot de passe chiffré conservés).
     val sameAccount = base != null && username.trim() == base.extras["username"] && password.isEmpty()
-    val newCredentials = usesCredentials(kind) && username.isNotBlank() && !sameAccount
+    val newCredentials = when {
+        usesCredentials(kind) -> username.isNotBlank() && !sameAccount
+        // AirPlay : mot de passe seul (pas d'utilisateur) ; vide = inchangé.
+        kind == DeviceKind.AIRPLAY -> password.isNotEmpty()
+        else -> false
+    }
     val extras = buildMap {
         base?.extras?.let { putAll(it - DeviceSecrets.PASSWORD) }
         if (kind == DeviceKind.UPNP_RENDERER) put("location", location.trim())
         if (newCredentials) {
             STALE_CREDENTIALS.forEach { remove(it) }
-            put("username", username.trim())
+            if (usesCredentials(kind)) put("username", username.trim())
         }
     }.let { if (options != null) DeviceOptions.apply(it, kind, options) else it }
+        // Cible changée (hôte, port ou schéma) : mot de passe chiffré et jetons de l'ancienne cible
+        // ne la suivent pas, sauf ressaisie (même règle que l'import, DeviceExport.preservedSecrets).
+        .let { if (base != null && !sameTarget(base, effectiveHost, effectivePort, it)) it - DeviceSecrets.SECRET_KEYS else it }
         .let { if (kind == DeviceKind.PLEX && plexToken != null) withPlexDeviceToken(it, plexToken) else it }
-    val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
-    val effectiveHost = endpoint?.first ?: host.trim()
-    val effectivePort = endpoint?.second ?: port.toInt()
     val device = Device(
         id = base?.id ?: Device.manualId(kind, effectiveHost, effectivePort),
         name = name.trim().ifBlank { "${kind.label} $effectiveHost" },
@@ -109,6 +131,61 @@ internal fun buildDevice(
         extras = extras,
     )
     return DeviceDraft(device, password.takeIf { newCredentials })
+}
+
+/**
+ * L'appareil édité vise-t-il toujours la même cible ? Un secret enregistré pour `http(s)://hôte:port`
+ * ne doit jamais partir vers un autre hôte, un autre port, ni passer de HTTPS à HTTP.
+ */
+private fun sameTarget(base: Device, host: String, port: Int, extras: Map<String, String>): Boolean =
+    base.host.equals(host, ignoreCase = true) && base.port == port &&
+        base.extras[DeviceOptions.SCHEME] == extras[DeviceOptions.SCHEME]
+
+/**
+ * Le formulaire change-t-il la cible de l'appareil enregistré [prefill] (hôte, port ou schéma
+ * HTTP/HTTPS, exactement comme [buildDevice]) ? Un port illisible compte comme un changement.
+ * Changement de type : `false` (ce n'est plus le même appareil, tous ses extras sont abandonnés).
+ */
+internal fun targetChanged(
+    prefill: Device?,
+    kind: DeviceKind,
+    host: String,
+    port: String,
+    location: String,
+    options: AdvancedOptions?,
+): Boolean {
+    val base = prefill?.takeIf { it.kind == kind } ?: return false
+    val endpoint = if (kind == DeviceKind.UPNP_RENDERER) ConfigValidation.locationEndpoint(location) else null
+    val effectiveHost = endpoint?.first ?: host.trim()
+    val effectivePort = endpoint?.second ?: port.trim().toIntOrNull() ?: return true
+    val extras = if (options != null) DeviceOptions.apply(base.extras, kind, options) else base.extras
+    return !sameTarget(base, effectiveHost, effectivePort, extras)
+}
+
+/** Secret enregistré que le changement de cible va supprimer, et que l'utilisateur doit ressaisir. */
+internal enum class RetypeHint {
+    /** Mot de passe chiffré (Kodi, AirPlay). */
+    PASSWORD,
+
+    /** Jeton Jellyfin/Emby : la connexion suivante se ré-authentifie avec le mot de passe. */
+    MEDIA_SERVER_TOKEN,
+
+    /** Jeton propre à l'appareil Plex. */
+    PLEX_TOKEN,
+}
+
+/**
+ * Indice « à ressaisir » à afficher : `null` si la cible ne change pas ([targetChanged]) ou si
+ * aucune entrée de [DeviceSecrets.SECRET_KEYS] ne serait supprimée.
+ */
+internal fun retypeHint(prefill: Device?, targetChanged: Boolean): RetypeHint? {
+    val extras = prefill?.extras ?: return null
+    if (!targetChanged || extras.keys.none { it in DeviceSecrets.SECRET_KEYS }) return null
+    return when {
+        DeviceSecrets.ENCRYPTED_PASSWORD in extras || DeviceSecrets.PASSWORD in extras -> RetypeHint.PASSWORD
+        prefill.kind == DeviceKind.PLEX -> RetypeHint.PLEX_TOKEN
+        else -> RetypeHint.MEDIA_SERVER_TOKEN
+    }
 }
 
 /** Remplace (ou efface si [token] est vide) le jeton Plex propre à l'appareil. */

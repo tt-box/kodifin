@@ -55,18 +55,33 @@ fun interface UdpSocketFactory {
     }
 }
 
+/**
+ * Crée le socket par [create] (multicast ou non) et le règle ; si un réglage échoue (interface
+ * disparue, TTL refusé, diffusion interdite), le socket déjà ouvert est fermé avant de propager
+ * l'erreur, pour ne pas le laisser fuir.
+ */
+internal fun openDatagramSocket(
+    options: UdpOptions,
+    create: (multicast: Boolean) -> DatagramSocket = { if (it) MulticastSocket(null) else DatagramSocket() },
+): DatagramSocket {
+    val socket = create(options.multicastTtl != null || options.networkInterface != null)
+    try {
+        if (socket is MulticastSocket) {
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(0))
+            options.multicastTtl?.let { socket.timeToLive = it }
+            options.networkInterface?.let { socket.networkInterface = it }
+        }
+        socket.broadcast = options.broadcast
+    } catch (e: Throwable) {
+        socket.close()
+        throw e
+    }
+    return socket
+}
+
 private class JavaUdpSocket(options: UdpOptions) : UdpSocket {
-    private val socket: DatagramSocket =
-        if (options.multicastTtl != null || options.networkInterface != null) {
-            MulticastSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(0))
-                options.multicastTtl?.let { timeToLive = it }
-                options.networkInterface?.let { networkInterface = it }
-            }
-        } else {
-            DatagramSocket()
-        }.apply { broadcast = options.broadcast }
+    private val socket: DatagramSocket = openDatagramSocket(options)
 
     private val buffer = ByteArray(MAX_DATAGRAM)
 

@@ -9,7 +9,9 @@ import io.github.ttbox.kodifin.bluetooth.HidReport
 import io.github.ttbox.kodifin.bluetooth.HidReports
 import io.github.ttbox.kodifin.bluetooth.KeyboardLayout
 import io.github.ttbox.kodifin.text.UiText
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -88,6 +90,18 @@ class BluetoothKeyboardViewModelTest {
 
         vm.disconnect()
         assertFalse(vm.state.value.canSend)
+    }
+
+    @Test
+    fun `a key pressed when the screen closes is still released`() = runTest {
+        val vm = BluetoothKeyboardViewModel(port, holdMs = 10_000)
+        vm.refresh()
+        vm.connect(HidHost("TV Salon", "AA"))
+        vm.press(UiText.Res(R.string.bt_keyboard_key_ok), HidReports.ENTER)
+        // Annulation pendant l'appui (ViewModel détruit) : la touche ne doit pas rester enfoncée.
+        assertEquals(listOf(HidReports.press(HidReports.ENTER)), port.sent)
+        vm.viewModelScope.cancel()
+        assertEquals(listOf(HidReports.press(HidReports.ENTER), HidReports.release(HidReports.ENTER)), port.sent)
     }
 
     @Test

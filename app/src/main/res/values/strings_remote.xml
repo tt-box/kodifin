@@ -33,6 +33,8 @@
     <string name="remote_tab_remote">Télécommande</string>
     <string name="remote_tab_now_playing_short">Lecture</string>
     <string name="remote_tab_now_playing">Lecture en cours</string>
+    <string name="remote_tab_info_short">Fiche</string>
+    <string name="remote_tab_info">Fiche du média en cours</string>
     <string name="remote_tab_queue_short">File</string>
     <string name="remote_tab_queue">File d\'attente</string>
     <string name="remote_tab_library_short">Médias</string>
@@ -41,6 +43,8 @@
     <string name="remote_pane_collapse">Réduire le volet</string>
     <string name="remote_pane_expand">Agrandir le volet en plein écran</string>
     <string name="remote_pane_hide">Masquer la file et les médias</string>
+    <string name="remote_details_to_pane">Masquer et placer dans le volet de droite</string>
+    <string name="remote_details_to_left">Remettre la lecture en cours à gauche</string>
     <string name="remote_collapse_show">Afficher %1$s</string>
     <string name="remote_collapse_hide">Masquer %1$s</string>
     <string name="remote_more_commands">Plus de commandes</string>
@@ -135,6 +139,7 @@
     <string name="remote_tracks_refresh">Actualiser les pistes</string>
     <string name="remote_tracks_none">Aucune piste annoncée</string>
     <string name="remote_track_number">Piste %1$d</string>
+    <string name="remote_queue_item_number">Élément %1$d</string>
     <string name="remote_audio_next">Piste audio suivante</string>
     <string name="remote_subtitles_off">Désactivés</string>
     <string name="remote_subtitles_next">Sous-titres suivants</string>
@@ -169,6 +174,9 @@
     </plurals>
     <string name="remote_info_no_overview">Aucun résumé disponible.</string>
     <string name="remote_info_none">Aucune information disponible.</string>
+    <string name="remote_info_loading">Chargement de la fiche…</string>
+    <string name="remote_info_failed">Impossible de charger la fiche&#160;: %1$s</string>
+    <string name="remote_info_nothing_playing">Rien en lecture : la fiche du film ou de l\'épisode s\'affichera ici.</string>
     <string name="remote_info_directors">Réalisation</string>
     <string name="remote_info_writers">Scénario</string>
     <string name="remote_info_cast">Distribution</string>
@@ -217,6 +225,7 @@
     <string name="remote_transfer_bubble">%1$s · conversion par BubbleUPnP Server</string>
     <string name="remote_transfer_transcode">Conversion par le serveur (H.264 / AAC)</string>
     <string name="remote_transfer_transcode_detail">Pour un lecteur qui ne lit pas le fichier d\'origine</string>
+    <string name="remote_transfer_credentials_warning">L\'adresse envoyée au lecteur choisi contient l\'identifiant et le mot de passe de ce Kodi : il pourra les conserver. Préférez un compte Kodi dédié.</string>
     <string name="remote_transfer_stop_here">Arrêter la lecture sur %1$s</string>
     <string name="remote_transfer_confirm">Transférer</string>
 
@@ -225,6 +234,11 @@
     <string name="remote_wake_failed">Réveil impossible&#160;: %1$s</string>
     <string name="remote_device_not_found">Appareil introuvable</string>
     <string name="remote_connection_failed">Connexion impossible</string>
+    <string name="remote_connection_lost">Connexion perdue</string>
+    <string name="remote_connection_error_hint">Vérifiez que l\'appareil est allumé et sur le même réseau, puis réessayez.</string>
+    <string name="remote_connect_attempt">Tentative %1$d sur %2$d…</string>
+    <string name="remote_connect_cancel">Annuler la connexion</string>
+    <string name="remote_wake_error_generic">le signal n\'a pas pu être envoyé</string>
     <string name="remote_not_connected">Appareil non connecté</string>
     <string name="remote_command_refused">Commande refusée</string>
     <string name="remote_not_supported">Action non prise en charge par cet appareil</string>

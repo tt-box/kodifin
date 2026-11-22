@@ -5,8 +5,9 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Scan CVE quotidien même sans commit (nouvelles vulnérabilités publiées).
-    - cron: "17 5 * * *"
+    # Scan CVE hebdomadaire même sans commit (nouvelles vulnérabilités publiées), comme
+    # gabuzomeu et geoPing.
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 # Droits minimaux par défaut ; chaque job déclare ce dont il a besoin.
@@ -16,13 +17,61 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   # Seules les PR annulent l'exécution précédente : sur main, un push ne doit pas
-  # interrompre le scan quotidien ni la soumission du graphe de dépendances.
+  # interrompre le scan hebdomadaire ni la publication des badges.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions épinglées par SHA (le tag n'est qu'un commentaire, tenu à jour par Dependabot).
+# Le graphe de dépendances (alertes Dependabot) est dans dependency-graph.yml : il ne
+# tourne que quand les dépendances changent.
 jobs:
+  # Un commit qui ne touche que la documentation ne relance ni Gradle ni le scan CVE. Pas
+  # de `paths-ignore` au niveau du workflow : si ces jobs sont des checks requis, un
+  # workflow non déclenché laisserait la PR « en attente » ; un job sauté par `if:` compte
+  # comme réussi. Cron, déclenchement manuel ou base introuvable : tout tourne.
+  changes:
+    name: Détection des changements
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Le commit touche-t-il autre chose que la documentation ?
+        id: diff
+        env:
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base="$BASE_PR" ;;
+            push) base="$BEFORE" ;;
+            *) base="" ;;
+          esac
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] \
+              || ! files="$(git diff --name-only "$base...$GITHUB_SHA" 2>/dev/null)"; then
+            echo "Pas de base de comparaison : CI complète."
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "$files"
+          # Documentation : docs/, tout *.md, cartes graft, badges.
+          if echo "$files" | grep -qvE '^(docs/|graft/|\.github/badges/)|\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Documentation seule : build et scan sautés."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build, tests unitaires, lint
+    needs: changes
+    # Le cron hebdomadaire ne sert qu'au scan CVE : le code n'a pas changé depuis le dernier
+    # push, inutile de tout reconstruire.
+    if: github.event_name != 'schedule' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -37,8 +86,12 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      # Valide aussi la somme de contrôle du gradle-wrapper.jar.
+      # Valide aussi la somme de contrôle du gradle-wrapper.jar. La clé chiffre le cache de
+      # configuration Gradle (qui peut contenir des secrets) : sans elle (PR de fork ou
+      # Dependabot), il n'est simplement pas sauvegardé.
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       # koverVerify : échoue sous 80 % de couverture des lignes (seuil du build.gradle.kts racine).
       - name: Tests unitaires, lint, assemblage et seuil de couverture
@@ -90,8 +143,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    # Même groupe que le badge CVE : une seule écriture à la fois sur main.
     concurrency:
-      group: coverage-badge
+      group: badges
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -125,10 +179,15 @@ jobs:
 
   vulnerabilities:
     name: Scan CVE des dépendances (OSV)
+    needs: changes
+    # Cron : toujours (nouvelles CVE publiées) ; sinon seulement si autre chose que la doc change.
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      count: ${{ steps.scan.outputs.count }}
     env:
       OSV_VERSION: v2.7.0
       # Empreinte du binaire osv-scanner_linux_amd64 publié pour OSV_VERSION
@@ -145,6 +204,8 @@ jobs:
           java-version: "25"
 
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Inventaire CycloneDX (SBOM)
         run: ./gradlew cyclonedxBom
@@ -158,8 +219,28 @@ jobs:
           echo "${OSV_SHA256}  osv-scanner" | sha256sum --check --strict
           chmod +x osv-scanner
 
+      # OSV-Scanner sort en 1 s'il trouve une vulnérabilité, autre chose s'il plante. On
+      # compte d'abord (pour le badge), le job n'échoue qu'à la dernière étape. Nombre de
+      # vulnérabilités distinctes : OSV regroupe sous un même « group » les identifiants
+      # alias d'une même faille (CVE, GHSA…), on compte donc les groupes.
       - name: Scan des vulnérabilités connues
-        run: ./osv-scanner scan source --lockfile build/reports/cyclonedx/bom.json --format table
+        id: scan
+        run: |
+          set -uo pipefail
+          ./osv-scanner scan source --lockfile build/reports/cyclonedx/bom.json \
+            --format json --output osv-results.json
+          rc=$?
+          if [ "$rc" -gt 1 ] || [ ! -s osv-results.json ]; then
+            # Ni rapport ni succès : le scanner a planté. Afficher « 0 » serait mentir.
+            echo "::error::OSV-Scanner a échoué (code $rc) sans produire de rapport"
+            exit 1
+          fi
+          n="$(jq '[.results[]?.packages[]?.groups[]?] | length' osv-results.json)"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "Vulnérabilités distinctes : $n"
+          if [ "$n" -gt 0 ]; then
+            jq -r '.results[]?.packages[]? | "\(.package.name) \(.package.version) : \([.groups[]?.ids[0]] | join(", "))"' osv-results.json
+          fi
 
       - name: SBOM
         if: always()
@@ -169,28 +250,58 @@ jobs:
           path: build/reports/cyclonedx/bom.json
           retention-days: 30
 
-  dependency-graph:
-    name: Graphe de dépendances (alertes Dependabot)
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: Résultats OSV
+        if: always() && hashFiles('osv-results.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: osv-results
+          path: osv-results.json
+          retention-days: 30
+
+      # Une PR vulnérable reste bloquée : le job échoue après le comptage et les artefacts.
+      - name: Échouer si des vulnérabilités sont connues
+        env:
+          COUNT: ${{ steps.scan.outputs.count }}
+        run: |
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::$COUNT vulnérabilité(s) connue(s) — détail dans l'étape « Scan des vulnérabilités connues »"
+            exit 1
+          fi
+
+  # Badge « CVE » du README (.github/badges/cve.svg), commité sur main s'il change. Job
+  # séparé : le scan garde un jeton en lecture seule. Jamais sur une PR : le badge reflète
+  # main. Publié même (surtout) quand le scan a échoué sur des vulnérabilités.
+  cve-badge:
+    name: Publication du badge CVE
+    needs: vulnerabilities
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.vulnerabilities.outputs.count != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # contents: write est requis par l'API de soumission du graphe de dépendances.
+    timeout-minutes: 10
     permissions:
       contents: write
+    concurrency:
+      group: badges
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
 
-      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
-        with:
-          distribution: temurin
-          java-version: "25"
-
-      # Publie les dépendances transitives résolues par Gradle : Dependabot peut ainsi
-      # signaler les CVE de toutes les bibliothèques, pas seulement celles déclarées.
-      # Périmètre : bibliothèques embarquées (les classpaths de plugins/outillage sont exclus,
-      # ils ne sont pas livrés dans l'APK et sont mis à jour via Dependabot de toute façon).
-      - uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
-        with:
-          dependency-graph-include-configurations: '.*[Rr]untimeClasspath'
+      - name: Commit du badge s'il a changé
+        env:
+          COUNT: ${{ needs.vulnerabilities.outputs.count }}
+        run: |
+          set -euo pipefail
+          bash scripts/cve-badge.sh "$COUNT" .github/badges/cve.svg
+          if [ -z "$(git status --porcelain -- .github/badges/cve.svg)" ]; then
+            echo "Badge CVE inchangé ($COUNT)."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/cve.svg
+          git commit -m "Badge CVE : $COUNT [skip ci]"
+          for attempt in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          echo "::error::Impossible de publier le badge"
+          exit 1
