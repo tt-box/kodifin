@@ -14,6 +14,8 @@ import io.github.ttbox.kodifin.model.DeviceKind
 import io.github.ttbox.kodifin.model.InsecureTls
 import io.github.ttbox.kodifin.model.PinnedTrustManager
 import io.github.ttbox.kodifin.model.RemoteController
+import io.github.ttbox.kodifin.model.RemoteError
+import io.github.ttbox.kodifin.model.RemoteException
 import io.github.ttbox.kodifin.model.RemoteKey
 import io.github.ttbox.kodifin.plex.PlexController
 import io.github.ttbox.kodifin.roku.RokuController
@@ -27,6 +29,7 @@ import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -149,6 +152,65 @@ class ControllerFactoryRoutingTest {
         // Empreinte ignorée hors mode non vérifié.
         val verified = device(DeviceKind.KODI, mapOf("scheme" to "https", "tls_pin" to pin))
         assertTrue(factory.httpFor(verified).x509TrustManager !is PinnedTrustManager)
+    }
+
+    @Test
+    fun `an unreadable stored password refuses to connect and is purged`() = runBlocking {
+        val (factory, repo) = factory()
+        val kodi = device(DeviceKind.KODI, mapOf("username" to "kodi"))
+        // Clé du Keystore perdue : le chiffré enregistré ne se déchiffre plus.
+        val lost = kodi.copy(extras = kodi.extras + (DeviceSecrets.ENCRYPTED_PASSWORD to "illisible"))
+        repo.save(lost, null)
+        assertEquals("illisible", repo.get(kodi.id)?.extras?.get(DeviceSecrets.ENCRYPTED_PASSWORD))
+
+        val e = assertThrows(RemoteException::class.java) { runBlocking { factory.create(checkNotNull(repo.get(kodi.id))) } }
+        assertEquals(RemoteError.StoredSecretUnreadable, e.reason)
+        // Purgé : la fiche n'annonce plus de mot de passe enregistré, l'utilisateur le ressaisit.
+        assertEquals(mapOf("username" to "kodi"), repo.get(kodi.id)?.extras)
+        // Mot de passe saisi (bouton « Tester ») : prioritaire, la connexion se construit.
+        assertTrue(factory.create(lost, "pw") is KodiController)
+    }
+
+    @Test
+    fun `a keystore temporarily unavailable fails the connection but keeps the stored secrets`() = runBlocking {
+        val (factory, repo) = factory()
+        val kodi = DeviceSecrets.forStorage(device(DeviceKind.KODI, mapOf("username" to "kodi")), "pw", secrets)
+        repo.save(kodi, null)
+        val sealed = checkNotNull(repo.get(kodi.id)?.extras?.get(DeviceSecrets.ENCRYPTED_PASSWORD))
+        secrets.unavailable = true
+
+        val e = assertThrows(RemoteException::class.java) { runBlocking { factory.create(checkNotNull(repo.get(kodi.id))) } }
+        assertEquals(RemoteError.SecretStoreUnavailable, e.reason)
+        // Rien n'est purgé : le mot de passe enregistré resservira dès que le Keystore répondra.
+        assertEquals(sealed, repo.get(kodi.id)?.extras?.get(DeviceSecrets.ENCRYPTED_PASSWORD))
+        assertEquals(false, repo.getForEdit(kodi.id)?.secretLost)
+        secrets.unavailable = false
+        assertTrue(factory.create(checkNotNull(repo.get(kodi.id))) is KodiController)
+    }
+
+    @Test
+    fun `a keystore temporarily unavailable keeps a media server token too`() = runBlocking {
+        val (factory, _) = factory()
+        val jelly = device(DeviceKind.JELLYFIN, mapOf("username" to "u", DeviceSecrets.ENCRYPTED_TOKEN to "enc:t"))
+        secrets.unavailable = true
+        val e = assertThrows(RemoteException::class.java) { runBlocking { factory.create(jelly) } }
+        assertEquals(RemoteError.SecretStoreUnavailable, e.reason)
+    }
+
+    @Test
+    fun `an unreadable media server token also refuses to connect`() = runBlocking {
+        val (factory, _) = factory()
+        val jelly = device(DeviceKind.JELLYFIN, mapOf("username" to "u", DeviceSecrets.ENCRYPTED_TOKEN to "illisible"))
+        val e = assertThrows(RemoteException::class.java) { runBlocking { factory.create(jelly) } }
+        assertEquals(RemoteError.StoredSecretUnreadable, e.reason)
+    }
+
+    @Test
+    fun `kodi web base for playback transfer carries the credentials`() {
+        val (factory, _) = factory()
+        assertEquals("http://kodi:pw@10.0.0.2:8080/", factory.kodiWebBase("http://10.0.0.2:8080", "kodi", "pw"))
+        assertEquals("http://10.0.0.2:8080/", factory.kodiWebBase("http://10.0.0.2:8080", null, "pw"))
+        assertEquals(null, factory.kodiWebBase("pas une url", "kodi", "pw"))
     }
 
     @Test

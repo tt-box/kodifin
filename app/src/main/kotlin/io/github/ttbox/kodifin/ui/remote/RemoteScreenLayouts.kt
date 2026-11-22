@@ -32,9 +32,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
+import io.github.ttbox.kodifin.ui.text.asString
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,6 +75,7 @@ internal val RemoteTab.icon: ImageVector
     get() = when (this) {
         RemoteTab.REMOTE -> Icons.Filled.SettingsRemote
         RemoteTab.NOW_PLAYING -> Icons.Filled.PlayCircle
+        RemoteTab.INFO -> Icons.Filled.Movie
         RemoteTab.QUEUE -> Icons.AutoMirrored.Filled.QueueMusic
         RemoteTab.LIBRARY -> Icons.Filled.VideoLibrary
     }
@@ -114,8 +119,9 @@ internal fun PhoneLayout(content: RemoteContent) {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     PlaybackHeader(content)
-                    PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+                    PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
                 }
+                RemoteTab.INFO -> InfoContent(content)
                 RemoteTab.QUEUE -> QueueContent(content)
                 RemoteTab.LIBRARY -> LibraryContent(content)
             }
@@ -248,7 +254,7 @@ internal fun TabletLandscapeLayout(content: RemoteContent) {
                         }) { Icon(Icons.Filled.VisibilityOff, contentDescription = moveLabel) }
                     }
                 }
-                PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+                PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
             }
         }
         Column(Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -263,17 +269,6 @@ internal fun TabletLandscapeLayout(content: RemoteContent) {
         }
     }
     }
-}
-
-/**
- * Choix « volet masqué », commun à toutes les télécommandes ouvertes pendant la session (passer
- * d'un appareil à l'autre le garde masqué).
- */
-private object PanePreferences {
-    var hidden by mutableStateOf(false)
-
-    /** Paysage : détails de lecture déplacés de la colonne de gauche vers le volet de droite. */
-    var detailsInPane by mutableStateOf(false)
 }
 
 /** Volet masqué : une colonne d'icônes, une par onglet, pour le rouvrir directement. */
@@ -327,8 +322,9 @@ private fun SidePane(
                                 onClick = { onSelect(tab) },
                                 text = if (iconsOnly) null else ({ Text(stringResource(tab.shortRes), maxLines = 1, overflow = TextOverflow.Ellipsis) }),
                                 icon = {
+                                    // Libellé visible : TalkBack le lit déjà, l'icône reste muette.
                                     if (iconsOnly) WithTooltip(label) { Icon(tab.icon, contentDescription = label) }
-                                    else Icon(tab.icon, contentDescription = label)
+                                    else Icon(tab.icon, contentDescription = null)
                                 },
                             )
                         }
@@ -367,10 +363,11 @@ private fun SidePane(
                         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press, info = content.state.nowPlayingInfo)
+                        PlaybackDetails(content.features, content.state.mediaDetails, content.keys, content.playbackActions, content.actions.press)
                         // Paysage, détails déplacés : « Plus de commandes » les accompagne.
                         if (onDetailsBack != null) MoreCommandsCard(content)
                     }
+                    RemoteTab.INFO -> InfoContent(content)
                     RemoteTab.QUEUE -> QueueContent(content)
                     RemoteTab.LIBRARY -> LibraryContent(content)
                     RemoteTab.REMOTE, null -> Unit
@@ -382,10 +379,18 @@ private fun SidePane(
 
 // --- Briques communes -------------------------------------------------------------------------
 
-/** Carte dépliante « Plus de commandes » (commandes d'interface hors OSD et menu contextuel). */
+/**
+ * Carte dépliante « Plus de commandes » : commandes d'interface hors OSD, menu contextuel et
+ * simple bascule plein écran (déjà sous le pavé) ; le plein écran explicite (Kodi) y reste.
+ */
 @Composable
 private fun MoreCommandsCard(content: RemoteContent) {
-    val extra = content.features.uiCommands - setOf(UiCommand.OSD, UiCommand.CONTEXT_MENU)
+    val onPad = buildSet {
+        add(UiCommand.OSD)
+        add(UiCommand.CONTEXT_MENU)
+        if (content.navigation && !content.features.fullscreen) add(UiCommand.FULLSCREEN)
+    }
+    val extra = content.features.uiCommands - onPad
     if (extra.isEmpty()) return
     CollapsibleCard(
         stringResource(R.string.remote_more_commands),
@@ -537,6 +542,38 @@ private fun QueueContent(content: RemoteContent) {
         queueActions = queueActions,
         seriesActions = seriesActions,
     )
+}
+
+/** Onglet « Fiche » : fiche complète du média en cours (affiche, résumé, équipe, flux). */
+@Composable
+private fun InfoContent(content: RemoteContent) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        val state = content.state
+        val info = state.nowPlayingInfo
+        val error = state.nowPlayingInfoError
+        when {
+            info != null -> ItemInfoContent(info, showImage = true)
+            state.nowPlayingInfoLoading -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                InfoMessage(stringResource(R.string.remote_info_loading))
+            }
+            error != null -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                InfoMessage(stringResource(R.string.remote_info_failed, error.asString()))
+                TextButton(onClick = content.vm::retryNowPlayingInfo) { Text(stringResource(R.string.remote_retry)) }
+            }
+            else -> InfoMessage(
+                stringResource(if (state.playback?.title != null) R.string.remote_info_none else R.string.remote_info_nothing_playing),
+            )
+        }
+    }
+}
+
+@Composable
+private fun InfoMessage(text: String) {
+    Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

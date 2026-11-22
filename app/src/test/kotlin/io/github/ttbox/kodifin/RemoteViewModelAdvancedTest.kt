@@ -461,6 +461,14 @@ class RemoteViewModelAdvancedTest {
             RemoteLayouts.visiblePanels(RemoteLayout.TABLET_LANDSCAPE, RemoteTab.QUEUE, full),
         )
         assertEquals(emptySet<RemotePanel>(), RemoteLayouts.visiblePanels(RemoteLayout.PHONE, RemoteTab.REMOTE, full))
+        // Fiches disponibles : onglet « Fiche » après « Lecture », sans volet à charger.
+        val withInfo = full.copy(itemInfo = true)
+        assertEquals(
+            listOf(RemoteTab.REMOTE, RemoteTab.NOW_PLAYING, RemoteTab.INFO, RemoteTab.QUEUE, RemoteTab.LIBRARY),
+            RemoteLayouts.phoneTabs(emptySet(), withInfo),
+        )
+        assertEquals(listOf(RemoteTab.INFO, RemoteTab.QUEUE, RemoteTab.LIBRARY), RemoteLayouts.sideTabs(RemoteLayout.TABLET_LANDSCAPE, withInfo))
+        assertEquals(null, RemoteTab.INFO.panel)
         // Paysage, détails déplacés dans le volet de droite : onglet « Lecture » en tête.
         assertEquals(
             listOf(RemoteTab.NOW_PLAYING, RemoteTab.QUEUE, RemoteTab.LIBRARY),

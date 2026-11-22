@@ -54,6 +54,8 @@ import io.github.ttbox.kodifin.model.MediaEntry
 import io.github.ttbox.kodifin.model.MediaSection
 import androidx.compose.ui.res.stringResource
 import io.github.ttbox.kodifin.R
+import io.github.ttbox.kodifin.ui.text.asString
+import io.github.ttbox.kodifin.text.UiText
 
 @Composable
 private fun PanelHeader(
@@ -74,6 +76,10 @@ private fun PanelHeader(
         actions()
     }
 }
+
+/** Titre d'un élément de la file, ou « Élément N » traduit si l'appareil n'en donne aucun. */
+internal fun queueItemTitle(title: String, index: Int): UiText =
+    if (title.isBlank()) UiText.Res(R.string.remote_queue_item_number, index + 1) else UiText.Raw(title)
 
 @Composable
 private fun EmptyText(text: String) {
@@ -115,8 +121,9 @@ fun QueuePanel(
         LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
             itemsIndexed(queue.items, key = { index, item -> "$index:${item.id}" }) { index, item ->
                 val current = index == queue.position
+                val title = queueItemTitle(item.title, index).asString()
                 ListItem(
-                    headlineContent = { Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                    headlineContent = { Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                     supportingContent = item.subtitle?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
                     leadingContent = {
                         if (current) {
@@ -128,7 +135,7 @@ fun QueuePanel(
                     trailingContent = onRemove?.let { remove ->
                         {
                             IconButton(onClick = { remove(index) }) {
-                                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.remote_queue_remove, item.title))
+                                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.remote_queue_remove, title))
                             }
                         }
                     },

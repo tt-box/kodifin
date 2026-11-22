@@ -49,7 +49,7 @@ android {
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
-                // Clé ECDSA P-256. minSdk 26 : v1 (JAR) inutile, v2 couvre Android 7+,
+                // Clé d'envoi RSA 4096 (alias kodifin-upload). minSdk 26 : v1 (JAR) inutile, v2 couvre Android 7+,
                 // v3 / v3.1 permettent une future rotation de clé (Android 9+ / 13+).
                 enableV1Signing = false
                 enableV2Signing = true

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Forward30
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -209,7 +210,7 @@ fun NowPlayingBanner(
 
 /**
  * Pavé directionnel circulaire (OK au centre) entouré des touches Retour / Accueil en haut
- * et Menu contextuel / OSD / Info en bas. Sa taille s'adapte à la place disponible.
+ * et Menu contextuel / OSD / Plein écran / Info en bas. Sa taille s'adapte à la place disponible.
  */
 @Composable
 fun NavigationCluster(
@@ -239,6 +240,10 @@ fun NavigationCluster(
                 }
                 if (UiCommand.OSD in uiCommands) {
                     RemoteIconButton(Icons.Filled.Tune, stringResource(R.string.remote_key_osd), { actions.uiCommand(UiCommand.OSD) })
+                }
+                // Bascule plein écran, comme le bouton de l'OSD de Jellyfin (touche F).
+                if (UiCommand.FULLSCREEN in uiCommands) {
+                    RemoteIconButton(Icons.Filled.Fullscreen, stringResource(R.string.ui_command_fullscreen), { actions.uiCommand(UiCommand.FULLSCREEN) })
                 }
                 KeyButton(Icons.Filled.Info, stringResource(R.string.remote_key_info), RemoteKey.INFO, keys, actions.press)
             }
@@ -388,7 +393,10 @@ fun TransportRow(
     }
 }
 
-/** Muet, volume −, curseur (si l'appareil publie son volume), volume +. */
+/**
+ * Muet puis curseur, si l'appareil publie son volume ; sinon volume − et volume + (seul moyen de
+ * le régler).
+ */
 @Composable
 fun VolumeRow(
     keys: Set<RemoteKey>,
@@ -405,9 +413,7 @@ fun VolumeRow(
         val volumeUp = stringResource(R.string.remote_key_volume_up)
         if (RemoteKey.MUTE in keys) KeyButton(Icons.AutoMirrored.Filled.VolumeOff, stringResource(R.string.remote_key_mute), RemoteKey.MUTE, keys, actions.press, size = 48.dp)
         if (slider) {
-            if (RemoteKey.VOLUME_DOWN in keys) KeyButton(Icons.AutoMirrored.Filled.VolumeDown, volumeDown, RemoteKey.VOLUME_DOWN, keys, actions.press, size = 48.dp)
             VolumeSlider(volumePercent, actions.setVolume, Modifier.weight(1f))
-            if (RemoteKey.VOLUME_UP in keys) KeyButton(Icons.AutoMirrored.Filled.VolumeUp, volumeUp, RemoteKey.VOLUME_UP, keys, actions.press, size = 48.dp)
         } else {
             Spacer(Modifier.weight(1f))
             KeyButton(Icons.AutoMirrored.Filled.VolumeDown, volumeDown, RemoteKey.VOLUME_DOWN, keys, actions.press)
@@ -418,8 +424,8 @@ fun VolumeRow(
 }
 
 /**
- * Volume en colonne (tablette en paysage, colonne de gauche libérée) : volume + en haut,
- * curseur vertical sur toute la hauteur, volume −, pourcentage et muet en bas.
+ * Volume en colonne (tablette en paysage, colonne de gauche libérée) : curseur vertical sur
+ * toute la hauteur et muet en bas ; sans curseur, volume + en haut et volume − en bas.
  */
 @Composable
 fun VolumeColumn(
@@ -433,11 +439,11 @@ fun VolumeColumn(
     val anyKey = keys.any { it == RemoteKey.VOLUME_UP || it == RemoteKey.VOLUME_DOWN || it == RemoteKey.MUTE }
     if (!slider && !anyKey) return
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (RemoteKey.VOLUME_UP in keys) {
+        if (!slider && RemoteKey.VOLUME_UP in keys) {
             KeyButton(Icons.AutoMirrored.Filled.VolumeUp, stringResource(R.string.remote_key_volume_up), RemoteKey.VOLUME_UP, keys, actions.press, size = 48.dp)
         }
         if (slider) VolumeSlider(volumePercent, actions.setVolume, Modifier.weight(1f), vertical = true) else Spacer(Modifier.weight(1f))
-        if (RemoteKey.VOLUME_DOWN in keys) {
+        if (!slider && RemoteKey.VOLUME_DOWN in keys) {
             KeyButton(Icons.AutoMirrored.Filled.VolumeDown, stringResource(R.string.remote_key_volume_down), RemoteKey.VOLUME_DOWN, keys, actions.press, size = 48.dp)
         }
         if (RemoteKey.MUTE in keys) {

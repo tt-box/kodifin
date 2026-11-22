@@ -5,6 +5,10 @@
     <string name="diag_certificate_changed_advice">Le certificat présenté ne correspond plus à celui accepté (%1$s). Serveur réinstallé ou certificat renouvelé&#160;? Comparez la nouvelle empreinte avec celle du serveur avant de lui faire confiance&#160;; sinon, quelqu\'un intercepte peut-être la connexion.</string>
     <string name="diag_credentials_title">Identifiants refusés (HTTP %1$d)</string>
     <string name="diag_credentials_advice">Vérifiez l\'utilisateur et le mot de passe, ou les droits de ce compte sur le serveur.</string>
+    <string name="diag_stored_secret_title">Mot de passe enregistré illisible</string>
+    <string name="diag_secret_store_title">Coffre de clés momentanément indisponible</string>
+    <string name="diag_secret_store_advice">Le mot de passe (ou le jeton) enregistré n\'a pas pu être déchiffré pour le moment, mais il est conservé&#160;: réessayez dans quelques instants.</string>
+    <string name="diag_stored_secret_advice">Le mot de passe (ou le jeton) enregistré ne peut plus être déchiffré sur ce téléphone et a été effacé&#160;: ressaisissez le mot de passe dans la fiche de l\'appareil.</string>
     <string name="diag_not_found_title">Réponse inattendue (HTTP 404)</string>
     <string name="diag_not_found_advice">Le service attendu n\'est pas à cette adresse&#160;: vérifiez le type d\'appareil, le port et le chemin de base.</string>
     <string name="diag_http_title">Erreur du serveur (HTTP %1$d)</string>

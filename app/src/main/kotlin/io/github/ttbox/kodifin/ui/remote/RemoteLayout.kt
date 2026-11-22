@@ -20,6 +20,7 @@ enum class RemoteLayout {
 enum class RemoteTab(@param:StringRes val shortRes: Int, @param:StringRes val labelRes: Int) {
     REMOTE(R.string.remote_tab_remote, R.string.remote_tab_remote),
     NOW_PLAYING(R.string.remote_tab_now_playing_short, R.string.remote_tab_now_playing),
+    INFO(R.string.remote_tab_info_short, R.string.remote_tab_info),
     QUEUE(R.string.remote_tab_queue_short, R.string.remote_tab_queue),
     LIBRARY(R.string.remote_tab_library_short, R.string.remote_tab_library),
     ;
@@ -29,6 +30,8 @@ enum class RemoteTab(@param:StringRes val shortRes: Int, @param:StringRes val la
         get() = when (this) {
             REMOTE -> null
             NOW_PLAYING -> RemotePanel.DETAILS
+            // Fiche chargée à chaque changement de média, volet ouvert ou non.
+            INFO -> null
             QUEUE -> RemotePanel.QUEUE
             LIBRARY -> RemotePanel.LIBRARY
         }
@@ -55,6 +58,7 @@ object RemoteLayouts {
     fun phoneTabs(capabilities: Set<Capability>, features: RemoteFeatures): List<RemoteTab> = buildList {
         add(RemoteTab.REMOTE)
         if (Capability.PLAYBACK in capabilities || features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
+        if (features.itemInfo) add(RemoteTab.INFO)
         if (features.queue || features.series) add(RemoteTab.QUEUE)
         if (features.library) add(RemoteTab.LIBRARY)
     }
@@ -63,11 +67,13 @@ object RemoteLayouts {
      * Onglets du volet latéral. En portrait, la colonne de gauche porte déjà le bandeau et
      * le transport : « Lecture en cours » n'y figure que s'il a des détails (pistes, modes…).
      * En paysage, la colonne de gauche affiche ces détails, sauf s'ils ont été déplacés dans
-     * le volet ([detailsInPane]) : ils y deviennent alors l'onglet « Lecture ».
+     * le volet ([detailsInPane]) : ils y deviennent alors l'onglet « Lecture ». L'onglet « Fiche »
+     * (résumé, distribution… du média en cours) suit, si l'appareil fournit des fiches.
      */
     fun sideTabs(layout: RemoteLayout, features: RemoteFeatures, detailsInPane: Boolean = false): List<RemoteTab> = buildList {
         val details = layout == RemoteLayout.TABLET_PORTRAIT || (layout == RemoteLayout.TABLET_LANDSCAPE && detailsInPane)
         if (details && features.hasPlaybackDetails) add(RemoteTab.NOW_PLAYING)
+        if (features.itemInfo) add(RemoteTab.INFO)
         if (features.queue || features.series) add(RemoteTab.QUEUE)
         if (features.library) add(RemoteTab.LIBRARY)
     }

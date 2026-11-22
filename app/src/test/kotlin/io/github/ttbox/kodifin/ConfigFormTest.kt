@@ -65,6 +65,49 @@ class BuildDeviceTest {
     }
 
     @Test
+    fun `changing the host or the scheme does not carry the stored secrets to the new target`() {
+        val saved = Device(
+            "KODI:10.0.0.2:8080", "Kodi", DeviceKind.KODI, "10.0.0.2", 8080,
+            mapOf("username" to "kodi", DeviceSecrets.ENCRYPTED_PASSWORD to "enc:x", "wol_mac" to "AA:BB:CC:DD:EE:FF"),
+        )
+        // Même utilisateur, mot de passe non ressaisi, autre hôte : le chiffré ne suit pas.
+        val moved = form(prefill = saved, username = "kodi", host = "10.0.0.9")
+        assertEquals(mapOf("username" to "kodi", "wol_mac" to "AA:BB:CC:DD:EE:FF"), moved.device.extras)
+        assertNull(moved.password)
+        // Autre port : idem.
+        val otherPort = buildDevice(saved, DeviceKind.KODI, "", "10.0.0.2", "8081", "", "kodi", "")
+        assertFalse(DeviceSecrets.ENCRYPTED_PASSWORD in otherPort.device.extras)
+        // Ressaisi : envoyé au dépôt, qui le chiffre pour la nouvelle cible.
+        assertEquals("pw", form(prefill = saved, username = "kodi", password = "pw", host = "10.0.0.9").password)
+        // Même cible : conservé.
+        assertEquals("enc:x", form(prefill = saved, username = "kodi", host = "10.0.0.2").device.extras[DeviceSecrets.ENCRYPTED_PASSWORD])
+        // HTTPS → HTTP sur le même hôte : le mot de passe partirait en clair, il n'est pas conservé.
+        val https = saved.copy(extras = saved.extras + ("scheme" to "https"))
+        val downgraded = buildDevice(https, DeviceKind.KODI, "", "10.0.0.2", "8080", "", "kodi", "", DeviceOptions.read(saved))
+        assertFalse(DeviceSecrets.ENCRYPTED_PASSWORD in downgraded.device.extras)
+        // Jetons (Jellyfin) : même règle.
+        val jelly = Device("j", "J", DeviceKind.JELLYFIN, "10.0.0.2", 8096, mapOf("username" to "u", "token_enc" to "enc:t", "userId" to "1"))
+        val movedJelly = form(prefill = jelly, kind = DeviceKind.JELLYFIN, username = "u", host = "10.0.0.9")
+        assertEquals(mapOf("username" to "u", "userId" to "1"), movedJelly.device.extras)
+    }
+
+    @Test
+    fun `airplay password is kept without a username`() {
+        val draft = form(kind = DeviceKind.AIRPLAY, password = "pw")
+        assertEquals("pw", draft.password)
+        assertEquals(emptyMap<String, String>(), draft.device.extras)
+        val saved = Device("a", "AirPlay", DeviceKind.AIRPLAY, "10.0.0.2", 7000, mapOf(DeviceSecrets.ENCRYPTED_PASSWORD to "enc:x"))
+        // Vide : inchangé.
+        val kept = form(prefill = saved, kind = DeviceKind.AIRPLAY)
+        assertEquals(saved.extras, kept.device.extras)
+        assertNull(kept.password)
+        // Nouveau mot de passe : l'ancien chiffré est retiré, le nouveau sera chiffré par le dépôt.
+        val replaced = form(prefill = saved, kind = DeviceKind.AIRPLAY, password = "new")
+        assertEquals(emptyMap<String, String>(), replaced.device.extras)
+        assertEquals("new", replaced.password)
+    }
+
+    @Test
     fun `a stray password in the prefill is never copied`() {
         val prefill = Device("k", "Kodi", DeviceKind.KODI, "10.0.0.2", extras = mapOf("password" to "leak"))
         assertEquals(emptyMap<String, String>(), form(prefill = prefill).device.extras)
@@ -139,6 +182,22 @@ class ConfigValidationMessageTest {
             assertEquals(port, UiText.Res(R.string.config_error_invalid_port), ConfigValidation.error(DeviceKind.KODI, "tv.local", port, ""))
         }
         assertNull(ConfigValidation.error(DeviceKind.KODI, "tv.local", "65535", ""))
+    }
+
+    @Test
+    fun `a password without a username is refused instead of being silently ignored`() {
+        assertEquals(
+            UiText.Res(R.string.config_error_username_required_kodi),
+            ConfigValidation.error(DeviceKind.KODI, "tv.local", "8080", "", username = " ", password = "pw"),
+        )
+        assertEquals(
+            UiText.Res(R.string.config_error_username_required),
+            ConfigValidation.error(DeviceKind.JELLYFIN, "tv.local", "8096", "", username = "", password = "pw"),
+        )
+        assertNull(ConfigValidation.error(DeviceKind.KODI, "tv.local", "8080", "", username = "kodi", password = "pw"))
+        assertNull(ConfigValidation.error(DeviceKind.KODI, "tv.local", "8080", "", username = "", password = ""))
+        // AirPlay : mot de passe seul, sans utilisateur.
+        assertNull(ConfigValidation.error(DeviceKind.AIRPLAY, "tv.local", "7000", "", username = "", password = "pw"))
     }
 
     @Test

@@ -6,6 +6,8 @@
     <string name="config_error_upnp_location_required">URL de description UPnP requise</string>
     <string name="config_error_invalid_address">Adresse invalide</string>
     <string name="config_error_invalid_port">Port invalide</string>
+    <string name="config_error_username_required_kodi">Indiquez l\'utilisateur du mot de passe (par défaut «&#160;kodi&#160;»)&#160;: sans utilisateur, Kodi ne reçoit pas le mot de passe</string>
+    <string name="config_error_username_required">Indiquez l\'utilisateur associé au mot de passe</string>
     <string name="config_save_failed">Enregistrement impossible&#160;: %1$s</string>
     <string name="config_device_not_found">Appareil introuvable</string>
 
@@ -38,6 +40,10 @@
     <string name="config_username">Utilisateur</string>
     <string name="config_password">Mot de passe</string>
     <string name="config_unchanged_if_empty">Inchangé si laissé vide</string>
+    <string name="config_stored_password_unreadable">Le mot de passe enregistré ne pouvait plus être déchiffré sur ce téléphone et a été effacé&#160;: ressaisissez-le.</string>
+    <string name="config_token_reenter_new_target">Adresse modifiée&#160;: la connexion enregistrée (jeton) ne suit pas la nouvelle adresse. Ressaisissez le mot de passe du compte (laissez vide s\'il n\'en a pas) pour vous reconnecter.</string>
+    <string name="config_plex_token_reenter_new_target">Adresse modifiée&#160;: le jeton de l\'appareil n\'est pas transmis à la nouvelle adresse, ressaisissez-le (sinon le jeton du compte Plex lié est utilisé).</string>
+    <string name="config_password_reenter_new_target">Adresse modifiée&#160;: le mot de passe enregistré n\'est pas transmis à la nouvelle adresse, ressaisissez-le.</string>
     <string name="config_hide_password">Masquer le mot de passe</string>
     <string name="config_show_password">Afficher le mot de passe</string>
     <string name="config_hint_password_airplay">Facultatif&#160;: mot de passe AirPlay du récepteur. Conservé chiffré (Android Keystore).</string>

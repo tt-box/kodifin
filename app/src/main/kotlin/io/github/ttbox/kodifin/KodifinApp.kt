@@ -13,6 +13,7 @@ import io.github.ttbox.kodifin.data.SettingsRepository
 import io.github.ttbox.kodifin.data.SecretStore
 import io.github.ttbox.kodifin.discovery.androidDiscoveryManager
 import io.github.ttbox.kodifin.model.kodifinHttpClient
+import io.github.ttbox.kodifin.ui.remote.PanePreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,6 +62,8 @@ class KodifinApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        // Disposition tablette (volet masqué, détails à droite) conservée d'un lancement à l'autre.
+        PanePreferences.bind(container.settings, container.appScope)
     }
 }
 

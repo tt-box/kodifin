@@ -1,6 +1,5 @@
 package io.github.ttbox.kodifin.ui.remote
 
-import io.github.ttbox.kodifin.model.MediaItemInfo
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -94,11 +93,8 @@ fun PlaybackDetails(
     actions: PlaybackActions,
     press: (RemoteKey) -> Unit,
     modifier: Modifier = Modifier,
-    /** Fiche du média en cours (résumé de l'épisode, distribution), en tête du volet. */
-    info: MediaItemInfo? = null,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        info?.let { NowPlayingInfoCard(it) }
         if (features.tracks) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.remote_tracks_title), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
@@ -107,13 +103,13 @@ fun PlaybackDetails(
             }
         }
         if (features.tracks) {
-            val audio = details?.audioTracks?.firstOrNull { it.id == details.currentAudio }?.label
+            val audio = details?.audioTracks?.firstOrNull { it.id == details.currentAudio }?.displayText()?.asString()
             Section(stringResource(R.string.remote_audio), summary = audio ?: "—") {
                 TrackChips(details?.audioTracks.orEmpty(), details?.currentAudio, offLabel = null, onSelect = { it?.let(actions.setAudioTrack) })
                 TextAction(stringResource(R.string.remote_audio_next), actions.nextAudioTrack)
             }
             val subtitlesOff = stringResource(R.string.remote_subtitles_off)
-            val subtitle = details?.currentSubtitle?.let { id -> details.subtitles.firstOrNull { it.id == id }?.label } ?: subtitlesOff
+            val subtitle = details?.currentSubtitle?.let { id -> details.subtitles.firstOrNull { it.id == id }?.displayText()?.asString() } ?: subtitlesOff
             Section(stringResource(R.string.remote_subtitles), summary = subtitle) {
                 TrackChips(details?.subtitles.orEmpty(), details?.currentSubtitle, offLabel = subtitlesOff, onSelect = actions.setSubtitle)
                 TextAction(stringResource(R.string.remote_subtitles_next), actions.nextSubtitle)
@@ -217,6 +213,16 @@ private fun TextAction(label: String, onClick: () -> Unit, enabled: Boolean = tr
     ) { Text(label, maxLines = 1, softWrap = false) }
 }
 
+/**
+ * Libellé d'une piste : nom et langue, ou « Piste N » traduit quand l'appareil n'annonce ni
+ * l'un ni l'autre (libellé vide). Partagé par les puces et le résumé de la piste courante.
+ */
+internal fun MediaTrack.displayText(): UiText {
+    val text = listOfNotNull(label.takeIf { it.isNotBlank() }, language?.takeIf { it.isNotBlank() })
+        .distinct().joinToString(" · ")
+    return if (text.isEmpty()) UiText.Res(R.string.remote_track_number, id) else UiText.Raw(text)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TrackChips(tracks: List<MediaTrack>, current: Int?, offLabel: String?, onSelect: (Int?) -> Unit) {
@@ -225,8 +231,7 @@ private fun TrackChips(tracks: List<MediaTrack>, current: Int?, offLabel: String
             FilterChip(selected = current == null, onClick = { onSelect(null) }, label = { Text(offLabel) }, modifier = Modifier.heightIn(min = 48.dp))
         }
         tracks.forEach { track ->
-            val label = listOfNotNull(track.label.takeIf { it.isNotBlank() }, track.language?.takeIf { it.isNotBlank() })
-                .distinct().joinToString(" · ").ifEmpty { stringResource(R.string.remote_track_number, track.id) }
+            val label = track.displayText().asString()
             FilterChip(
                 selected = current == track.id,
                 onClick = { onSelect(track.id) },

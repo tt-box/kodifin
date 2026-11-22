@@ -44,9 +44,19 @@ class TransferFeature internal constructor(
         val c = session.connectedAs<SupportsTransferOut>() ?: return session.message(RemoteSession.NOT_SUPPORTED)
         session.update { it.copy(transfer = TransferState(open = true, loading = true)) }
         session.scope.launch {
-            val media = session.load { c.currentMedia() }
-            val devices = session.load { deps.allDevices() }.orEmpty()
-            if (media == null) session.message(UiText.Res(R.string.remote_transfer_no_media))
+            // Un seul message : l'erreur de lecture du média, ou « aucun média » s'il n'y en a pas.
+            var failed = false
+            val media = try {
+                withContext(session.io) { c.currentMedia() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed = true
+                session.message(session.errorMessage(e))
+                null
+            }
+            val devices = if (media == null) emptyList() else session.load { deps.allDevices() }.orEmpty()
+            if (media == null && !failed) session.message(UiText.Res(R.string.remote_transfer_no_media))
             session.update {
                 it.copy(transfer = TransferState(open = media != null, media = media, targets = transferTargets(devices, deviceId)))
             }

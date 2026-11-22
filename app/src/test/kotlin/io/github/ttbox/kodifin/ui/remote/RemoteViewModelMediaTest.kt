@@ -2,6 +2,7 @@ package io.github.ttbox.kodifin.ui.remote
 
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.SavedStateHandle
+import io.github.ttbox.kodifin.R
 import io.github.ttbox.kodifin.text.UiText
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
@@ -244,7 +245,7 @@ class RemoteViewModelMediaTest {
         val failed = env.vm.state.value.series
         // Pas de saison courante annoncée : la première est choisie.
         assertEquals("s1", failed.seasonId)
-        assertEquals(UiText.Raw("Serveur indisponible"), failed.error)
+        assertEquals(UiText.Res(R.string.remote_command_refused), failed.error)
         assertFalse(failed.episodesLoading)
         close(env)
     }
@@ -315,7 +316,7 @@ class RemoteViewModelMediaTest {
         env.fake.searchFailure = IllegalStateException("Délai dépassé")
         env.vm.search.setQuery("dune")
         advanceUntilIdle()
-        assertEquals(UiText.Raw("Délai dépassé"), env.vm.state.value.search.error)
+        assertEquals(UiText.Res(R.string.remote_command_refused), env.vm.state.value.search.error)
         assertFalse(env.vm.state.value.search.loading)
         close(env)
     }
